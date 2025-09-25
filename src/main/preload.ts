@@ -3,7 +3,7 @@ import type { RendererApi } from '../shared/api';
 
 const IPCChannels = {
   getState: 'project:get-state',
-  selectRoot: 'project:select-root',
+  addProject: 'project:add',
   createWorktree: 'worktree:create',
   removeWorktree: 'worktree:remove',
   startCodex: 'codex:start',
@@ -19,8 +19,9 @@ const IPCChannels = {
 
 const api: RendererApi = {
   getState: () => ipcRenderer.invoke(IPCChannels.getState),
-  selectProjectRoot: () => ipcRenderer.invoke(IPCChannels.selectRoot),
-  createWorktree: (featureName) => ipcRenderer.invoke(IPCChannels.createWorktree, { featureName }),
+  addProject: () => ipcRenderer.invoke(IPCChannels.addProject),
+  createWorktree: (projectId, featureName) =>
+    ipcRenderer.invoke(IPCChannels.createWorktree, { projectId, featureName }),
   removeWorktree: (worktreeId) => ipcRenderer.invoke(IPCChannels.removeWorktree, { worktreeId }),
   startCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.startCodex, { worktreeId }),
   stopCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.stopCodex, { worktreeId }),

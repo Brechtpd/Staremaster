@@ -24,27 +24,30 @@ export const registerIpcHandlers = (
     return worktreeService.getState();
   });
 
-  ipcMain.handle(IPCChannels.selectRoot, async () => {
-    console.log('[main] select root handler invoked');
+  ipcMain.handle(IPCChannels.addProject, async () => {
+    console.log('[main] add project handler invoked');
     const result = await dialog.showOpenDialog(window, {
       properties: ['openDirectory']
     });
 
     if (result.canceled || result.filePaths.length === 0) {
-      console.log('[main] select root cancelled');
+      console.log('[main] add project cancelled');
       return worktreeService.getState();
     }
 
     const selected = result.filePaths[0];
-    await worktreeService.setProjectRoot(selected);
-    console.log('[main] project root set', selected);
+    await worktreeService.addProject(selected);
+    console.log('[main] project added', selected);
     return worktreeService.getState();
   });
 
-  ipcMain.handle(IPCChannels.createWorktree, async (_event, payload: { featureName: string }) => {
-    const descriptor = await worktreeService.createWorktree(payload.featureName);
-    return descriptor;
-  });
+  ipcMain.handle(
+    IPCChannels.createWorktree,
+    async (_event, payload: { projectId: string; featureName: string }) => {
+      const descriptor = await worktreeService.createWorktree(payload.projectId, payload.featureName);
+      return descriptor;
+    }
+  );
 
   ipcMain.handle(IPCChannels.removeWorktree, async (_event, payload: { worktreeId: string }) => {
     try {
@@ -67,7 +70,7 @@ export const registerIpcHandlers = (
       throw new Error(`Unknown worktree ${payload.worktreeId}`);
     }
     const session = await codexManager.start(worktree);
-    await worktreeService.refreshWorktrees();
+    await worktreeService.refreshProjectWorktrees(worktree.projectId);
     return session;
   });
 
@@ -107,7 +110,7 @@ export const registerIpcHandlers = (
 
   window.on('closed', () => {
     ipcMain.removeHandler(IPCChannels.getState);
-    ipcMain.removeHandler(IPCChannels.selectRoot);
+    ipcMain.removeHandler(IPCChannels.addProject);
     ipcMain.removeHandler(IPCChannels.createWorktree);
     ipcMain.removeHandler(IPCChannels.removeWorktree);
     ipcMain.removeHandler(IPCChannels.startCodex);

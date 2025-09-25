@@ -11,8 +11,8 @@ import {
 
 export interface RendererApi {
   getState(): Promise<AppState>;
-  selectProjectRoot(): Promise<AppState>;
-  createWorktree(featureName: string): Promise<WorktreeDescriptor>;
+  addProject(): Promise<AppState>;
+  createWorktree(projectId: string, featureName: string): Promise<WorktreeDescriptor>;
   removeWorktree(worktreeId: string): Promise<AppState>;
   startCodex(worktreeId: string): Promise<CodexSessionDescriptor>;
   stopCodex(worktreeId: string): Promise<CodexSessionDescriptor[]>;

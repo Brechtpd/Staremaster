@@ -1,9 +1,10 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { AppState, CodexSessionDescriptor, WorktreeDescriptor } from '../../shared/ipc';
+import { createHash } from 'node:crypto';
+import { AppState, CodexSessionDescriptor, ProjectDescriptor, WorktreeDescriptor } from '../../shared/ipc';
 
 const DEFAULT_STATE: AppState = {
-  projectRoot: null,
+  projects: [],
   worktrees: [],
   sessions: []
 };
@@ -27,12 +28,49 @@ export class ProjectStore {
     try {
       const raw = await fs.readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as AppState;
+      const legacyProjectRoot = (parsed as { projectRoot?: string | null }).projectRoot ?? null;
+      const legacyCreatedAt = (parsed as { createdAt?: string }).createdAt;
+
+      const projects: ProjectDescriptor[] = (parsed.projects ?? []).map((project) => ({
+        ...project,
+        createdAt: project.createdAt ?? new Date().toISOString()
+      }));
+
+      const worktrees: WorktreeDescriptor[] = (parsed.worktrees ?? []).map((worktree) => ({
+        ...worktree
+      }));
+
+      if (projects.length === 0 && legacyProjectRoot) {
+        const projectId = hashFromPath(legacyProjectRoot);
+        const fallback: ProjectDescriptor = {
+          id: projectId,
+          root: legacyProjectRoot,
+          name: path.basename(legacyProjectRoot),
+          createdAt: legacyCreatedAt ?? new Date().toISOString()
+        };
+        projects.push(fallback);
+        for (const worktree of worktrees) {
+          if (!worktree.projectId) {
+            worktree.projectId = projectId;
+          }
+        }
+      }
+
+      for (const worktree of worktrees) {
+        if (!worktree.projectId && projects.length > 0) {
+          worktree.projectId = projects[0].id;
+        }
+      }
+
       this.state = {
         ...DEFAULT_STATE,
         ...parsed,
-        worktrees: parsed.worktrees ?? [],
+        projects,
+        worktrees,
         sessions: parsed.sessions ?? []
       };
+
+      delete (this.state as { projectRoot?: unknown }).projectRoot;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         console.error('Failed to load state file', error);
@@ -49,14 +87,6 @@ export class ProjectStore {
     return JSON.parse(JSON.stringify(this.state)) as AppState;
   }
 
-  async setProjectRoot(projectRoot: string): Promise<void> {
-    this.state = {
-      ...this.state,
-      projectRoot
-    };
-    await this.save();
-  }
-
   async upsertWorktree(descriptor: WorktreeDescriptor): Promise<void> {
     const existingIndex = this.state.worktrees.findIndex((item) => item.id === descriptor.id);
     if (existingIndex >= 0) {
@@ -64,6 +94,26 @@ export class ProjectStore {
     } else {
       this.state.worktrees.push(descriptor);
     }
+    await this.save();
+  }
+
+  async upsertProject(project: ProjectDescriptor): Promise<void> {
+    const index = this.state.projects.findIndex((item) => item.id === project.id);
+    if (index >= 0) {
+      this.state.projects[index] = project;
+    } else {
+      this.state.projects.push(project);
+    }
+    await this.save();
+  }
+
+  async removeProject(projectId: string): Promise<void> {
+    this.state.projects = this.state.projects.filter((item) => item.id !== projectId);
+    const worktreeIds = new Set(
+      this.state.worktrees.filter((item) => item.projectId === projectId).map((item) => item.id)
+    );
+    this.state.worktrees = this.state.worktrees.filter((item) => item.projectId !== projectId);
+    this.state.sessions = this.state.sessions.filter((session) => !worktreeIds.has(session.worktreeId));
     await this.save();
   }
 
@@ -115,3 +165,7 @@ export class ProjectStore {
     await fs.writeFile(this.filePath, JSON.stringify(this.state, null, 2), 'utf8');
   }
 }
+
+const hashFromPath = (input: string): string => {
+  return createHash('sha1').update(path.resolve(input)).digest('hex');
+};
