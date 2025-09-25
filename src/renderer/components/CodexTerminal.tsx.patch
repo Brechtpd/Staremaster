@@ -1,0 +1,16 @@
+*** Begin Patch
+*** Update File: src/renderer/components/CodexTerminal.tsx
+@@
+     const flushPending = useCallback(() => {
+       if (!readyRef.current || !terminalRef.current) {
+         return;
+       }
+       if (pendingRef.current.length === 0) {
+         return;
+       }
+       const buffered = pendingRef.current.join('');
+       pendingRef.current = [];
+-      terminalRef.current.write(buffered);
++      terminalRef.current.write(buffered);
+     }, []);
+*** End Patch

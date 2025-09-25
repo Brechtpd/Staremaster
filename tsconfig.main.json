@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "composite": true,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "types": ["node"],
+    "noEmit": false,
+    "importHelpers": false,
+    "tsBuildInfoFile": "dist/tsconfig.main.tsbuildinfo"
+  },
+  "include": ["src/main/**/*.ts", "src/shared/**/*.ts"],
+  "exclude": ["src/renderer"]
+}
