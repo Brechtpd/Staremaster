@@ -11,7 +11,13 @@ export const IPCChannels = {
   codexStatus: 'codex:status',
   codexLog: 'codex:log',
   gitStatus: 'git:status',
-  gitDiff: 'git:diff'
+  gitDiff: 'git:diff',
+  terminalStart: 'terminal:start',
+  terminalStop: 'terminal:stop',
+  terminalInput: 'terminal:input',
+  terminalResize: 'terminal:resize',
+  terminalOutput: 'terminal:output',
+  terminalExit: 'terminal:exit'
 } as const;
 
 type ValueOf<T> = T[keyof T];
@@ -98,4 +104,35 @@ export interface GitDiffResponse {
   staged: boolean;
   diff: string;
   binary: boolean;
+}
+
+export interface WorktreeTerminalDescriptor {
+  sessionId: string;
+  worktreeId: string;
+  shell: string;
+  pid: number;
+  startedAt: string;
+  status: 'running' | 'exited';
+  exitCode?: number;
+  signal?: string;
+  lastError?: string;
+}
+
+export interface TerminalOutputPayload {
+  sessionId: string;
+  worktreeId: string;
+  chunk: string;
+}
+
+export interface TerminalExitPayload {
+  sessionId: string;
+  worktreeId: string;
+  exitCode: number | null;
+  signal: string | null;
+}
+
+export interface TerminalResizeRequest {
+  worktreeId: string;
+  cols: number;
+  rows: number;
 }

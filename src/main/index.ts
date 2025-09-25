@@ -7,6 +7,7 @@ import { WorktreeService } from './services/WorktreeService';
 import { CodexSessionManager } from './services/CodexSessionManager';
 import { GitService } from './services/GitService';
 import { WindowStateStore, WindowBounds } from './services/WindowStateStore';
+import { TerminalService } from './services/TerminalService';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 const isHeadless = process.env.ELECTRON_HEADLESS === '1';
@@ -25,6 +26,7 @@ let worktreeService: WorktreeService;
 let gitService: GitService;
 let codexManager: CodexSessionManager;
 let windowStateStore: WindowStateStore;
+let terminalService: TerminalService;
 
 const preloadPath = (): string => {
   return path.join(__dirname, 'preload.js');
@@ -134,17 +136,18 @@ const bootstrap = async () => {
   worktreeService = new WorktreeService(store);
   gitService = new GitService((id) => worktreeService.getWorktreePath(id));
   codexManager = new CodexSessionManager(store);
+  terminalService = new TerminalService((id) => worktreeService.getWorktreePath(id));
   await worktreeService.load();
 
   const savedBounds = await windowStateStore.load();
   const window = await createMainWindow(savedBounds);
-  registerIpcHandlers(window, worktreeService, gitService, codexManager);
+  registerIpcHandlers(window, worktreeService, gitService, codexManager, terminalService);
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const latestBounds = await windowStateStore.load();
       const newWindow = await createMainWindow(latestBounds);
-      registerIpcHandlers(newWindow, worktreeService, gitService, codexManager);
+      registerIpcHandlers(newWindow, worktreeService, gitService, codexManager, terminalService);
     }
   });
 };

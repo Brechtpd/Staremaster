@@ -6,7 +6,11 @@ import {
   CodexStatusPayload,
   GitStatusSummary,
   GitDiffRequest,
-  GitDiffResponse
+  GitDiffResponse,
+  WorktreeTerminalDescriptor,
+  TerminalOutputPayload,
+  TerminalExitPayload,
+  TerminalResizeRequest
 } from './ipc';
 
 export interface RendererApi {
@@ -23,4 +27,10 @@ export interface RendererApi {
   getGitStatus(worktreeId: string): Promise<GitStatusSummary>;
   getGitDiff(request: GitDiffRequest): Promise<GitDiffResponse>;
   getCodexLog(worktreeId: string): Promise<string>;
+  startWorktreeTerminal(worktreeId: string): Promise<WorktreeTerminalDescriptor>;
+  stopWorktreeTerminal(worktreeId: string): Promise<void>;
+  sendTerminalInput(worktreeId: string, data: string): Promise<void>;
+  resizeTerminal(request: TerminalResizeRequest): Promise<void>;
+  onTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
+  onTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
 }
