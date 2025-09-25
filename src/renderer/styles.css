@@ -181,6 +181,7 @@ button {
 }
 
 .status-creating,
+.status-merging,
 .status-removing {
   background: rgba(59, 130, 246, 0.2);
   color: #1d4ed8;

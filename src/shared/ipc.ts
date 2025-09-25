@@ -2,6 +2,7 @@ export const IPCChannels = {
   getState: 'project:get-state',
   selectRoot: 'project:select-root',
   createWorktree: 'worktree:create',
+  mergeWorktree: 'worktree:merge',
   removeWorktree: 'worktree:remove',
   startCodex: 'codex:start',
   stopCodex: 'codex:stop',
@@ -18,7 +19,7 @@ type ValueOf<T> = T[keyof T];
 
 export type IpcChannel = ValueOf<typeof IPCChannels>;
 
-export type WorktreeStatus = 'idle' | 'creating' | 'ready' | 'removing' | 'error';
+export type WorktreeStatus = 'idle' | 'creating' | 'ready' | 'merging' | 'removing' | 'error';
 export type CodexStatus = 'idle' | 'starting' | 'resuming' | 'running' | 'stopped' | 'error';
 
 export interface WorktreeDescriptor {

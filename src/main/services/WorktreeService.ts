@@ -179,6 +179,63 @@ export class WorktreeService extends EventEmitter {
     this.emit('state-changed', this.store.getState());
   }
 
+  async mergeWorktree(worktreeId: string): Promise<AppState> {
+    if (!this.git || !this.projectRoot) {
+      throw new Error('Project root is not configured');
+    }
+
+    const state = this.store.getState();
+    const descriptor = state.worktrees.find((item) => item.id === worktreeId);
+
+    if (!descriptor) {
+      throw new Error(`Unknown worktree ${worktreeId}`);
+    }
+
+    const targetBranch = await this.resolvePrimaryBranch();
+    if (!targetBranch) {
+      throw new Error('Unable to determine the main branch to merge into');
+    }
+
+    if (descriptor.branch === targetBranch) {
+      throw new Error('Cannot merge the main branch into itself');
+    }
+
+    descriptor.status = 'merging';
+    descriptor.lastError = undefined;
+    await this.store.upsertWorktree(descriptor);
+    this.emit('worktree-updated', descriptor);
+
+    const branchSummary = await this.git.branch();
+    const previousBranch = branchSummary.current;
+
+    try {
+      await this.git.checkout(targetBranch);
+      await this.git.raw(['merge', '--no-ff', descriptor.branch]);
+      descriptor.status = 'ready';
+      descriptor.lastError = undefined;
+      await this.store.upsertWorktree(descriptor);
+      this.emit('worktree-updated', descriptor);
+    } catch (error) {
+      descriptor.status = 'error';
+      descriptor.lastError = (error as Error).message;
+      await this.store.upsertWorktree(descriptor);
+      this.emit('worktree-updated', descriptor);
+      throw error;
+    } finally {
+      if (previousBranch && previousBranch !== targetBranch) {
+        try {
+          await this.git.checkout(previousBranch);
+        } catch (restoreError) {
+          console.warn('[worktree] failed to restore branch after merge', restoreError);
+        }
+      }
+    }
+
+    const nextState = this.store.getState();
+    this.emit('state-changed', nextState);
+    return nextState;
+  }
+
   async updateCodexStatus(worktreeId: string, status: CodexStatus, error?: string): Promise<void> {
     await this.store.patchWorktree(worktreeId, {
       codexStatus: status,
@@ -224,6 +281,26 @@ export class WorktreeService extends EventEmitter {
         branch
       };
     });
+  }
+
+  private async resolvePrimaryBranch(): Promise<string | null> {
+    if (!this.git) {
+      return null;
+    }
+
+    try {
+      const summary = await this.git.branch();
+      if (summary.all.some((branch) => branch === 'main' || branch.endsWith('/main'))) {
+        return 'main';
+      }
+      if (summary.all.some((branch) => branch === 'master' || branch.endsWith('/master'))) {
+        return 'master';
+      }
+      return summary.current ?? null;
+    } catch (error) {
+      console.warn('[worktree] failed to resolve primary branch', error);
+      return null;
+    }
   }
 }
 

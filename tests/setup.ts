@@ -22,6 +22,7 @@ beforeEach(() => {
       status: 'ready',
       codexStatus: 'idle'
     }),
+    mergeWorktree: vi.fn().mockResolvedValue(emptyState),
     removeWorktree: vi.fn().mockResolvedValue(emptyState),
     startCodex: vi.fn().mockResolvedValue({
       id: 'session',
@@ -33,7 +34,15 @@ beforeEach(() => {
     sendCodexInput: vi.fn().mockResolvedValue(undefined),
     onStateUpdate: vi.fn().mockReturnValue(() => {}),
     onCodexOutput: vi.fn().mockReturnValue(() => {}),
-    onCodexStatus: vi.fn().mockReturnValue(() => {})
+    onCodexStatus: vi.fn().mockReturnValue(() => {}),
+    getGitStatus: vi.fn().mockResolvedValue({ staged: [], unstaged: [], untracked: [] }),
+    getGitDiff: vi.fn().mockResolvedValue({
+      filePath: '',
+      staged: false,
+      diff: '',
+      binary: false
+    }),
+    getCodexLog: vi.fn().mockResolvedValue('')
   };
 
   Object.defineProperty(window, 'api', {

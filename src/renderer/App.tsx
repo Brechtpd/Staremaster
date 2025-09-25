@@ -218,9 +218,23 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleRemoveWorktree = async (worktree: WorktreeDescriptor) => {
+  const handleMergeWorktree = async (worktree: WorktreeDescriptor) => {
     const confirmed = window.confirm(
-      `Remove worktree ${worktree.featureName}? Changes inside ${worktree.path} will persist on disk.`,
+      `Merge ${worktree.branch} into the main branch? Ensure commits are ready before proceeding.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    const nextState = await runAction(() => api.mergeWorktree(worktree.id));
+    if (nextState) {
+      setState(nextState);
+      changeWorktree(worktree.id);
+    }
+  };
+
+  const handleTrashWorktree = async (worktree: WorktreeDescriptor) => {
+    const confirmed = window.confirm(
+      `Trash worktree ${worktree.featureName}? Changes inside ${worktree.path} will persist on disk.`,
     );
     if (!confirmed) {
       return;
@@ -369,10 +383,17 @@ export const App: React.FC = () => {
               <div className="overview-actions">
                 <button
                   type="button"
-                  onClick={() => handleRemoveWorktree(selectedWorktree)}
+                  onClick={() => handleMergeWorktree(selectedWorktree)}
                   disabled={busy || !bridge}
                 >
-                  Remove
+                  Merge
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleTrashWorktree(selectedWorktree)}
+                  disabled={busy || !bridge}
+                >
+                  Thrash
                 </button>
               </div>
             </header>
@@ -443,6 +464,7 @@ const createRendererStub = (): RendererApi => {
     createWorktree: async () => {
       throw new Error('Renderer API unavailable: createWorktree');
     },
+    mergeWorktree: async () => state,
     removeWorktree: async () => state,
     startCodex: async () => {
       throw new Error('Renderer API unavailable: startCodex');

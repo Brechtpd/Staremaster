@@ -13,6 +13,7 @@ export interface RendererApi {
   getState(): Promise<AppState>;
   selectProjectRoot(): Promise<AppState>;
   createWorktree(featureName: string): Promise<WorktreeDescriptor>;
+  mergeWorktree(worktreeId: string): Promise<AppState>;
   removeWorktree(worktreeId: string): Promise<AppState>;
   startCodex(worktreeId: string): Promise<CodexSessionDescriptor>;
   stopCodex(worktreeId: string): Promise<CodexSessionDescriptor[]>;
