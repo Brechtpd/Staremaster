@@ -4,17 +4,22 @@ import {
   AppState,
   GitStatusRequest,
   GitDiffRequest,
-  CodexLogRequest
+  CodexLogRequest,
+  TerminalResizeRequest,
+  TerminalOutputPayload,
+  TerminalExitPayload
 } from '../../shared/ipc';
 import { WorktreeService } from '../services/WorktreeService';
 import { CodexSessionManager } from '../services/CodexSessionManager';
 import { GitService } from '../services/GitService';
+import { TerminalService } from '../services/TerminalService';
 
 export const registerIpcHandlers = (
   window: BrowserWindow,
   worktreeService: WorktreeService,
   gitService: GitService,
-  codexManager: CodexSessionManager
+  codexManager: CodexSessionManager,
+  terminalService: TerminalService
 ): void => {
   const sendState = (state: AppState) => {
     window.webContents.send(IPCChannels.stateUpdates, state);
@@ -109,9 +114,31 @@ export const registerIpcHandlers = (
     return codexManager.getLog(payload.worktreeId);
   });
 
+  ipcMain.handle(IPCChannels.terminalStart, async (_event, payload: { worktreeId: string }) => {
+    return terminalService.ensure(payload.worktreeId);
+  });
+
+  ipcMain.handle(IPCChannels.terminalStop, async (_event, payload: { worktreeId: string }) => {
+    await terminalService.stop(payload.worktreeId);
+  });
+
+  ipcMain.handle(
+    IPCChannels.terminalInput,
+    async (_event, payload: { worktreeId: string; data: string }) => {
+      terminalService.sendInput(payload.worktreeId, payload.data ?? '');
+    }
+  );
+
+  ipcMain.handle(IPCChannels.terminalResize, async (_event, payload: TerminalResizeRequest) => {
+    terminalService.resize(payload);
+  });
+
   worktreeService.on('state-changed', sendState);
   worktreeService.on('worktree-updated', () => sendState(worktreeService.getState()));
-  worktreeService.on('worktree-removed', () => sendState(worktreeService.getState()));
+  worktreeService.on('worktree-removed', (worktreeId) => {
+    terminalService.dispose(worktreeId);
+    sendState(worktreeService.getState());
+  });
 
   codexManager.on('codex-output', (payload) => {
     window.webContents.send(IPCChannels.codexOutput, payload);
@@ -121,6 +148,21 @@ export const registerIpcHandlers = (
     void worktreeService.updateCodexStatus(payload.worktreeId, payload.status, payload.error);
     window.webContents.send(IPCChannels.codexStatus, payload);
   });
+
+  const forwardTerminalOutput = (payload: TerminalOutputPayload) => {
+    if (!window.isDestroyed()) {
+      window.webContents.send(IPCChannels.terminalOutput, payload);
+    }
+  };
+
+  const forwardTerminalExit = (payload: TerminalExitPayload) => {
+    if (!window.isDestroyed()) {
+      window.webContents.send(IPCChannels.terminalExit, payload);
+    }
+  };
+
+  terminalService.on('terminal-output', forwardTerminalOutput);
+  terminalService.on('terminal-exit', forwardTerminalExit);
 
   window.on('closed', () => {
     ipcMain.removeHandler(IPCChannels.getState);
@@ -136,7 +178,13 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.gitDiff);
     ipcMain.removeHandler(IPCChannels.codexLog);
     ipcMain.removeHandler(IPCChannels.sendCodexInput);
+    ipcMain.removeHandler(IPCChannels.terminalStart);
+    ipcMain.removeHandler(IPCChannels.terminalStop);
+    ipcMain.removeHandler(IPCChannels.terminalInput);
+    ipcMain.removeHandler(IPCChannels.terminalResize);
     worktreeService.removeAllListeners();
     codexManager.removeAllListeners();
+    terminalService.off('terminal-output', forwardTerminalOutput);
+    terminalService.off('terminal-exit', forwardTerminalExit);
   });
 };

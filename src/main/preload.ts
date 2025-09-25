@@ -17,7 +17,13 @@ const IPCChannels = {
   codexStatus: 'codex:status',
   codexLog: 'codex:log',
   gitStatus: 'git:status',
-  gitDiff: 'git:diff'
+  gitDiff: 'git:diff',
+  terminalStart: 'terminal:start',
+  terminalStop: 'terminal:stop',
+  terminalInput: 'terminal:input',
+  terminalResize: 'terminal:resize',
+  terminalOutput: 'terminal:output',
+  terminalExit: 'terminal:exit'
 } as const;
 
 const api: RendererApi = {
@@ -39,7 +45,14 @@ const api: RendererApi = {
   onCodexStatus: (callback) => subscribe(IPCChannels.codexStatus, callback),
   getGitStatus: (worktreeId) => ipcRenderer.invoke(IPCChannels.gitStatus, { worktreeId }),
   getGitDiff: (request) => ipcRenderer.invoke(IPCChannels.gitDiff, request),
-  getCodexLog: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexLog, { worktreeId })
+  getCodexLog: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexLog, { worktreeId }),
+  startWorktreeTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.terminalStart, { worktreeId }),
+  stopWorktreeTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.terminalStop, { worktreeId }),
+  sendTerminalInput: (worktreeId, data) =>
+    ipcRenderer.invoke(IPCChannels.terminalInput, { worktreeId, data }),
+  resizeTerminal: (request) => ipcRenderer.invoke(IPCChannels.terminalResize, request),
+  onTerminalOutput: (callback) => subscribe(IPCChannels.terminalOutput, callback),
+  onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback)
 };
 
 const subscribe = <Payload>(channel: string, callback: (payload: Payload) => void): (() => void) => {

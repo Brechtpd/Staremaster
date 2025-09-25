@@ -4,6 +4,7 @@ import type { RendererApi } from '@shared/api';
 import { GitPanel } from './components/GitPanel';
 import { ResizableColumns } from './components/ResizableColumns';
 import { CodexPane } from './components/CodexPane';
+import { WorktreeTerminalPane } from './components/WorktreeTerminalPane';
 import {
   buildCodexSessions,
   getLatestSessionsByWorktree,
@@ -18,6 +19,9 @@ const EMPTY_STATE: AppState = {
 
 const SIDEBAR_MIN_RATIO = 0.1;
 const SIDEBAR_MAX_RATIO = 0.28;
+const DEFAULT_TAB = 'codex' as const;
+
+type WorktreeTabId = 'codex' | 'terminal';
 
 export const App: React.FC = () => {
   const [bridge, setBridge] = useState<RendererApi | null>(() => window.api ?? null);
@@ -35,6 +39,8 @@ export const App: React.FC = () => {
   );
   const sidebarStorageKey = useMemo(() => `layout/${projectKey}/sidebar-ratio`, [projectKey]);
   const codexColumnsStorageKey = useMemo(() => `layout/${projectKey}/codex-columns`, [projectKey]);
+  const worktreeTabStorageKey = useMemo(() => `layout/${projectKey}/worktree-tab`, [projectKey]);
+  const [activeTab, setActiveTab] = useState<WorktreeTabId>(DEFAULT_TAB);
 
   useEffect(() => {
     const defaultRatio = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, 0.25));
@@ -291,12 +297,13 @@ export const App: React.FC = () => {
 
   const renderCodexPane = useCallback(
     (worktree: WorktreeDescriptor, session: DerivedCodexSession | undefined) => {
-      const isActive = worktree.id === selectedWorktreeId;
+      const isSelectedWorktree = worktree.id === selectedWorktreeId;
+      const isActive = isSelectedWorktree && activeTab === 'codex';
       return (
         <div
           key={worktree.id}
           className="codex-pane-wrapper"
-          style={{ display: isActive ? 'flex' : 'none' }}
+          style={{ display: isSelectedWorktree ? 'flex' : 'none' }}
         >
           <CodexPane
             api={api}
@@ -309,7 +316,55 @@ export const App: React.FC = () => {
         </div>
       );
     },
-    [api, bridge, selectedWorktreeId]
+    [api, bridge, selectedWorktreeId, activeTab]
+  );
+
+  const renderTerminalPane = useCallback(
+    (worktree: WorktreeDescriptor) => {
+      const isSelectedWorktree = worktree.id === selectedWorktreeId;
+      const isActive = isSelectedWorktree && activeTab === 'terminal';
+      return (
+        <div
+          key={`${worktree.id}-terminal`}
+          className="codex-pane-wrapper"
+          style={{ display: isSelectedWorktree ? 'flex' : 'none' }}
+        >
+          <WorktreeTerminalPane
+            api={api}
+            worktree={worktree}
+            active={isActive}
+            onNotification={setNotification}
+          />
+        </div>
+      );
+    },
+    [api, selectedWorktreeId, activeTab]
+  );
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(worktreeTabStorageKey);
+      if (stored === 'codex' || stored === 'terminal') {
+        setActiveTab(stored);
+      } else {
+        setActiveTab(DEFAULT_TAB);
+      }
+    } catch (error) {
+      console.warn('[layout] failed to load worktree tab', error);
+      setActiveTab(DEFAULT_TAB);
+    }
+  }, [worktreeTabStorageKey]);
+
+  const selectTab = useCallback(
+    (tabId: WorktreeTabId) => {
+      setActiveTab(tabId);
+      try {
+        window.localStorage.setItem(worktreeTabStorageKey, tabId);
+      } catch (error) {
+        console.warn('[layout] failed to persist worktree tab', error);
+      }
+    },
+    [worktreeTabStorageKey]
   );
 
   if (!state.projectRoot) {
@@ -425,8 +480,51 @@ export const App: React.FC = () => {
             </header>
             <ResizableColumns
               left={
-                <div className="codex-pane-collection">
-                  {state.worktrees.map((worktree) => renderCodexPane(worktree, codexSessions.get(worktree.id)))}
+                <div className="worktree-tabs">
+                  <div className="worktree-tabs__list" role="tablist" aria-label="Worktree panes">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'codex'}
+                      className={`worktree-tabs__button${activeTab === 'codex' ? ' worktree-tabs__button--active' : ''}`}
+                      tabIndex={activeTab === 'codex' ? 0 : -1}
+                      onClick={() => selectTab('codex')}
+                    >
+                      Codex
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === 'terminal'}
+                      className={`worktree-tabs__button${activeTab === 'terminal' ? ' worktree-tabs__button--active' : ''}`}
+                      tabIndex={activeTab === 'terminal' ? 0 : -1}
+                      onClick={() => selectTab('terminal')}
+                    >
+                      Terminal
+                    </button>
+                  </div>
+                  <div className="worktree-tabs__panels">
+                    <div
+                      className={`worktree-tabs__panel${activeTab === 'codex' ? ' worktree-tabs__panel--active' : ''}`}
+                      role="tabpanel"
+                      aria-hidden={activeTab !== 'codex'}
+                    >
+                      <div className="codex-pane-collection">
+                        {state.worktrees.map((worktree) =>
+                          renderCodexPane(worktree, codexSessions.get(worktree.id))
+                        )}
+                      </div>
+                    </div>
+                    <div
+                      className={`worktree-tabs__panel${activeTab === 'terminal' ? ' worktree-tabs__panel--active' : ''}`}
+                      role="tabpanel"
+                      aria-hidden={activeTab !== 'terminal'}
+                    >
+                      <div className="codex-pane-collection">
+                        {state.worktrees.map((worktree) => renderTerminalPane(worktree))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               }
               right={
@@ -522,6 +620,14 @@ const createRendererStub = (): RendererApi => {
       diff: '',
       binary: false
     }),
-    getCodexLog: async () => ''
+    getCodexLog: async () => '',
+    startWorktreeTerminal: async () => {
+      throw new Error('Renderer API unavailable: startWorktreeTerminal');
+    },
+    stopWorktreeTerminal: async () => undefined,
+    sendTerminalInput: async () => undefined,
+    resizeTerminal: async () => undefined,
+    onTerminalOutput: () => noop,
+    onTerminalExit: () => noop
   };
 };

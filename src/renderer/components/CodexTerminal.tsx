@@ -27,10 +27,11 @@ export interface CodexTerminalHandle {
 interface CodexTerminalProps {
   onData(data: string): void;
   instanceId: string;
+  onResize?: (size: { cols: number; rows: number }) => void;
 }
 
 export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminalProps>(
-  ({ onData, instanceId }, ref) => {
+  ({ onData, instanceId, onResize }, ref) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -43,6 +44,27 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
     const readyRef = useRef(false);
 
     const retryTokenRef = useRef<number | null>(null);
+    const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+    const resizeHandlerRef = useRef(onResize);
+
+    useEffect(() => {
+      resizeHandlerRef.current = onResize;
+    }, [onResize]);
+
+    const notifyResize = useCallback(() => {
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        return;
+      }
+      const cols = terminal.cols;
+      const rows = terminal.rows;
+      const current = lastSizeRef.current;
+      if (current && current.cols === cols && current.rows === rows) {
+        return;
+      }
+      lastSizeRef.current = { cols, rows };
+      resizeHandlerRef.current?.({ cols, rows });
+    }, []);
 
     const getActiveBuffer = useCallback(() => {
       const terminal = terminalRef.current;
@@ -108,12 +130,13 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
           readyRef.current = true;
           flushPending();
         }
+        notifyResize();
       } catch (error) {
         console.warn('[terminal] fit failed', error);
         clearRetry();
         retryTokenRef.current = window.setTimeout(safeFit, 32);
       }
-    }, [flushPending]);
+    }, [flushPending, notifyResize]);
 
     useEffect(() => {
       dataHandlerRef.current = onData;
@@ -183,6 +206,7 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
             flushPending();
           }
           terminalInstance.focus();
+          notifyResize();
         });
       };
       rafId = window.requestAnimationFrame(ensureOpen);
@@ -219,8 +243,9 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
           window.clearTimeout(retryTokenRef.current);
           retryTokenRef.current = null;
         }
+        lastSizeRef.current = null;
       };
-    }, [flushPending, safeFit, instanceId]);
+    }, [flushPending, safeFit, instanceId, notifyResize]);
 
     useImperativeHandle(
       ref,
@@ -248,6 +273,7 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
           terminal.write(resetSequence);
           terminal.scrollToTop();
           safeFit();
+          notifyResize();
         },
         focus() {
           terminalRef.current?.focus();
@@ -265,6 +291,7 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         },
         refreshLayout() {
           safeFit();
+          notifyResize();
         },
         getScrollPosition() {
           const buffer = getActiveBuffer();
