@@ -5,6 +5,7 @@ import {
   GitStatusRequest,
   GitDiffRequest,
   CodexLogRequest,
+  CodexSummarizeRequest,
   TerminalResizeRequest,
   TerminalOutputPayload,
   TerminalExitPayload
@@ -13,6 +14,7 @@ import { WorktreeService } from '../services/WorktreeService';
 import { CodexSessionManager } from '../services/CodexSessionManager';
 import { GitService } from '../services/GitService';
 import { TerminalService } from '../services/TerminalService';
+import { CodexSummarizer } from '../services/CodexSummarizer';
 
 export const registerIpcHandlers = (
   window: BrowserWindow,
@@ -25,6 +27,8 @@ export const registerIpcHandlers = (
   const sendState = (state: AppState) => {
     window.webContents.send(IPCChannels.stateUpdates, state);
   };
+
+  const codexSummarizer = new CodexSummarizer();
 
   ipcMain.handle(IPCChannels.getState, async () => {
     return worktreeService.getState();
@@ -123,6 +127,20 @@ export const registerIpcHandlers = (
 
   ipcMain.handle(IPCChannels.codexLog, async (_event, payload: CodexLogRequest) => {
     return codexManager.getLog(payload.worktreeId);
+  });
+
+  ipcMain.handle(IPCChannels.codexSummarize, async (_event, payload: CodexSummarizeRequest) => {
+    if (!payload || typeof payload.worktreeId !== 'string' || typeof payload.text !== 'string') {
+      throw new Error('Invalid Codex summarize payload');
+    }
+    const worktreePath = worktreeService.getWorktreePath(payload.worktreeId);
+    if (!worktreePath) {
+      throw new Error(`Unknown worktree ${payload.worktreeId}`);
+    }
+    return codexSummarizer.summarize({
+      text: payload.text,
+      cwd: worktreePath
+    });
   });
 
   ipcMain.handle(IPCChannels.terminalStart, async (_event, payload: { worktreeId: string }) => {
@@ -228,6 +246,7 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.gitStatus);
     ipcMain.removeHandler(IPCChannels.gitDiff);
     ipcMain.removeHandler(IPCChannels.codexLog);
+    ipcMain.removeHandler(IPCChannels.codexSummarize);
     ipcMain.removeHandler(IPCChannels.sendCodexInput);
     ipcMain.removeHandler(IPCChannels.terminalStart);
     ipcMain.removeHandler(IPCChannels.terminalStop);

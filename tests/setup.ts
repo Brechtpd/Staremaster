@@ -68,6 +68,7 @@ beforeEach(() => {
       binary: false
     }),
     getCodexLog: vi.fn().mockResolvedValue(''),
+    summarizeCodexOutput: vi.fn().mockResolvedValue(''),
     startWorktreeTerminal: vi.fn().mockResolvedValue({
       sessionId: 'terminal-1',
       worktreeId: 'mock',

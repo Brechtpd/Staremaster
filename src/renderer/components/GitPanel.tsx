@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { parse as parseDiff, html as createDiffHtml } from 'diff2html';
 import hljs from 'highlight.js/lib/common';
 import 'diff2html/bundles/css/diff2html.min.css';
@@ -19,6 +19,12 @@ interface GitPanelProps {
 type Selection = {
   path: string;
   staged: boolean;
+};
+
+type WorktreeSnapshot = {
+  selection: Selection | null;
+  sidebarScroll: number;
+  diffScroll: number;
 };
 
 const SECTION_LABELS = {
@@ -43,15 +49,85 @@ export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree }) => {
   const sidebarStorageKey = useMemo(() => `layout/${worktree.id}/git-sidebar-ratio`, [worktree.id]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const sidebarRef = useRef<HTMLDivElement | null>(null);
+  const selectionRef = useRef<Selection | null>(null);
+  const snapshotsRef = useRef<Record<string, WorktreeSnapshot>>({});
+  const previousWorktreeIdRef = useRef<string | null>(null);
+  const restoreScrollRef = useRef<{ sidebar: number; diff: number } | null>(null);
 
   useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
+
+  const refreshStatus = useCallback(
+    async (preferredSelection?: Selection | null) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const summary = await api.getGitStatus(worktree.id);
+        setStatus(summary);
+        setSelection((current) => {
+          const resolveCandidate = (candidate: Selection | null | undefined): Selection | null => {
+            if (!candidate) {
+              return null;
+            }
+            const stagedMatch = summary.staged.find((file) => file.path === candidate.path);
+            if (stagedMatch) {
+              return { path: stagedMatch.path, staged: true };
+            }
+            const unstagedMatch = summary.unstaged.find((file) => file.path === candidate.path);
+            if (unstagedMatch) {
+              return { path: unstagedMatch.path, staged: false };
+            }
+            const untrackedMatch = summary.untracked.find((file) => file.path === candidate.path);
+            if (untrackedMatch) {
+              return { path: untrackedMatch.path, staged: false };
+            }
+            return null;
+          };
+
+          const preferred = resolveCandidate(preferredSelection);
+          if (preferred) {
+            return preferred;
+          }
+
+          const existing = resolveCandidate(current);
+          if (existing) {
+            return existing;
+          }
+
+          return findFirstPath(summary);
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load status');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [api, worktree.id]
+  );
+
+  useEffect(() => {
+    const previousId = previousWorktreeIdRef.current;
+    if (previousId && previousId !== worktree.id) {
+      snapshotsRef.current[previousId] = {
+        selection: selectionRef.current,
+        sidebarScroll: sidebarRef.current?.scrollTop ?? 0,
+        diffScroll: containerRef.current?.scrollTop ?? 0
+      };
+    }
+
+    previousWorktreeIdRef.current = worktree.id;
+
+    const snapshot = snapshotsRef.current[worktree.id];
+    restoreScrollRef.current = snapshot ? { sidebar: snapshot.sidebarScroll, diff: snapshot.diffScroll } : null;
+
     setStatus(null);
-    setSelection(null);
     setDiff(null);
     setError(null);
-    void refreshStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worktree.id]);
+    setSelection(null);
+    void refreshStatus(snapshot?.selection ?? null);
+  }, [worktree.id, refreshStatus]);
 
   useEffect(() => {
     if (!selection) {
@@ -93,34 +169,6 @@ export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree }) => {
     });
   }, [diff]);
 
-  const refreshStatus = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const summary = await api.getGitStatus(worktree.id);
-      setStatus(summary);
-      setSelection((current) => {
-        if (!current) {
-          const first = findFirstPath(summary);
-          return first;
-        }
-        const stillExists = summary[current.staged ? 'staged' : 'unstaged'].some(
-          (file) => file.path === current.path
-        );
-        const stillUntracked = summary.untracked.some((file) => file.path === current.path);
-        if (stillExists || stillUntracked) {
-          return current;
-        }
-        const first = findFirstPath(summary);
-        return first;
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load status');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const diffHtml = useMemo(() => {
     if (!diff || diff.diff.trim().length === 0) {
       return '';
@@ -161,19 +209,37 @@ export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree }) => {
     setSidebarRatio(defaultRatio);
   }, [sidebarStorageKey]);
 
+  const handleRefreshClick = useCallback(() => {
+    void refreshStatus(selectionRef.current);
+  }, [refreshStatus]);
+
+  useLayoutEffect(() => {
+    const pending = restoreScrollRef.current;
+    if (!pending) {
+      return;
+    }
+    if (sidebarRef.current) {
+      sidebarRef.current.scrollTop = pending.sidebar;
+    }
+    if (containerRef.current) {
+      containerRef.current.scrollTop = pending.diff;
+    }
+    restoreScrollRef.current = null;
+  }, [worktree.id, diffHtml]);
+
   return (
     <div className="git-panel">
       <header className="git-panel__header">
         <h2>Git Changes</h2>
         <div className="git-panel__actions">
-          <button type="button" onClick={refreshStatus} disabled={loading}>
+          <button type="button" onClick={handleRefreshClick} disabled={loading}>
             Refresh
           </button>
         </div>
       </header>
       {error ? <div className="git-panel__error">{error}</div> : null}
       <div className="git-panel__body" style={{ gridTemplateColumns: `${sidebarRatio * 100}% 6px 1fr` }}>
-        <aside className="git-panel__sidebar">
+        <aside className="git-panel__sidebar" ref={sidebarRef}>
           {(['staged', 'unstaged', 'untracked'] as SectionKey[]).map((section) => (
             <GitSection
               key={section}

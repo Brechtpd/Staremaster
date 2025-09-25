@@ -35,6 +35,7 @@ export interface RendererApi {
   getGitStatus(worktreeId: string): Promise<GitStatusSummary>;
   getGitDiff(request: GitDiffRequest): Promise<GitDiffResponse>;
   getCodexLog(worktreeId: string): Promise<string>;
+  summarizeCodexOutput(worktreeId: string, text: string): Promise<string>;
   startWorktreeTerminal(worktreeId: string): Promise<WorktreeTerminalDescriptor>;
   stopWorktreeTerminal(worktreeId: string): Promise<void>;
   sendTerminalInput(worktreeId: string, data: string): Promise<void>;

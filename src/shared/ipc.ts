@@ -14,6 +14,7 @@ export const IPCChannels = {
   codexOutput: 'codex:output',
   codexStatus: 'codex:status',
   codexLog: 'codex:log',
+  codexSummarize: 'codex:summarize',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   terminalStart: 'terminal:start',
@@ -87,6 +88,11 @@ export interface CodexStatusPayload {
 
 export interface CodexLogRequest {
   worktreeId: string;
+}
+
+export interface CodexSummarizeRequest {
+  worktreeId: string;
+  text: string;
 }
 
 export interface GitFileChange {

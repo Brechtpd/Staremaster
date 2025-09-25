@@ -171,7 +171,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   );
 
   return (
-    <section className={`terminal-pane${active ? '' : ' terminal-pane--inactive'}`}>
+    <section className={`terminal-pane terminal-pane--codex${active ? '' : ' terminal-pane--inactive'}`}>
       {status !== 'running' ? (
         <div className="terminal-inline-actions">
           <button

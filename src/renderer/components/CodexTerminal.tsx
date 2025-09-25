@@ -1,4 +1,11 @@
-import React, { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState
+} from 'react';
 import { Terminal, type IDisposable } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
@@ -37,8 +44,10 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
     const fitAddonRef = useRef<FitAddon | null>(null);
     const dataHandlerRef = useRef(onData);
     const themeRef = useRef({
-      background: '#0f172a',
-      foreground: '#f8fafc'
+      background: '#1c1d1f',
+      foreground: '#f8fafc',
+      cursor: '#f8fafc',
+      selection: 'rgba(148, 163, 184, 0.35)'
     });
     const pendingRef = useRef<string[]>([]);
     const readyRef = useRef(false);
@@ -46,10 +55,48 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
     const retryTokenRef = useRef<number | null>(null);
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null);
     const resizeHandlerRef = useRef(onResize);
+    const [contextMenu, setContextMenu] = useState<{
+      x: number;
+      y: number;
+      hasSelection: boolean;
+    } | null>(null);
+
+    const hideContextMenu = useCallback(() => {
+      setContextMenu(null);
+    }, []);
 
     useEffect(() => {
       resizeHandlerRef.current = onResize;
     }, [onResize]);
+
+    useEffect(() => {
+      if (!contextMenu) {
+        return undefined;
+      }
+      const handlePointerDown = (event: MouseEvent) => {
+        const target = event.target as HTMLElement | null;
+        if (target && target.closest('.codex-context-menu')) {
+          return;
+        }
+        hideContextMenu();
+      };
+      const handleBlur = () => {
+        hideContextMenu();
+      };
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (event.key === 'Escape') {
+          hideContextMenu();
+        }
+      };
+      window.addEventListener('mousedown', handlePointerDown, true);
+      window.addEventListener('blur', handleBlur);
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+        window.removeEventListener('mousedown', handlePointerDown, true);
+        window.removeEventListener('blur', handleBlur);
+        window.removeEventListener('keydown', handleKeyDown);
+      };
+    }, [contextMenu, hideContextMenu]);
 
     const notifyResize = useCallback(() => {
       const terminal = terminalRef.current;
@@ -91,6 +138,97 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
       pendingRef.current = [];
       terminalRef.current.write(buffered);
     }, []);
+
+    const copyToClipboard = useCallback(async (text: string) => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'absolute';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const succeeded = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        return succeeded;
+      } catch (error) {
+        console.warn('[terminal] copy failed', error);
+        return false;
+      }
+    }, []);
+
+    const handleCopySelection = useCallback(async () => {
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        hideContextMenu();
+        return;
+      }
+      const selection = terminal.getSelection();
+      if (!selection) {
+        hideContextMenu();
+        return;
+      }
+      await copyToClipboard(selection);
+      hideContextMenu();
+    }, [copyToClipboard, hideContextMenu]);
+
+    const handleCopyAll = useCallback(async () => {
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        hideContextMenu();
+        return;
+      }
+      terminal.selectAll();
+      const selection = terminal.getSelection();
+      if (selection) {
+        await copyToClipboard(selection);
+      }
+      terminal.clearSelection();
+      hideContextMenu();
+    }, [copyToClipboard, hideContextMenu]);
+
+    const handlePaste = useCallback(async () => {
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        hideContextMenu();
+        return;
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            const pasteCandidate = terminal as Terminal & { paste?: (value: string) => void };
+            if (typeof pasteCandidate.paste === 'function') {
+              pasteCandidate.paste(text);
+            } else {
+              terminal.write(text);
+              dataHandlerRef.current(text);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('[terminal] paste failed', error);
+      }
+      hideContextMenu();
+    }, [hideContextMenu]);
+
+    const handleContextMenu = useCallback(
+      (event: React.MouseEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        const terminal = terminalRef.current;
+        const selection = terminal?.getSelection() ?? '';
+        setContextMenu({
+          x: event.clientX,
+          y: event.clientY,
+          hasSelection: selection.trim().length > 0
+        });
+      },
+      []
+    );
 
     const safeFit = useCallback(() => {
       const clearRetry = () => {
@@ -313,8 +451,30 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
     );
 
     return (
-      <div className="codex-terminal" role="presentation">
+      <div className="codex-terminal" role="presentation" onContextMenu={handleContextMenu}>
         <div className="codex-terminal__viewport" ref={containerRef} />
+        {contextMenu ? (
+          <div
+            className="codex-context-menu"
+            style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+            role="menu"
+          >
+            <button
+              type="button"
+              className="codex-context-menu__item"
+              onClick={handleCopySelection}
+              disabled={!contextMenu.hasSelection}
+            >
+              Copy
+            </button>
+            <button type="button" className="codex-context-menu__item" onClick={handleCopyAll}>
+              Copy All
+            </button>
+            <button type="button" className="codex-context-menu__item" onClick={handlePaste}>
+              Paste
+            </button>
+          </div>
+        ) : null}
       </div>
     );
   }

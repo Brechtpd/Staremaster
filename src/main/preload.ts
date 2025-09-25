@@ -17,6 +17,7 @@ const IPCChannels = {
   codexOutput: 'codex:output',
   codexStatus: 'codex:status',
   codexLog: 'codex:log',
+  codexSummarize: 'codex:summarize',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   terminalStart: 'terminal:start',
@@ -65,6 +66,8 @@ const api: RendererApi = {
   getGitStatus: (worktreeId) => ipcRenderer.invoke(IPCChannels.gitStatus, { worktreeId }),
   getGitDiff: (request) => ipcRenderer.invoke(IPCChannels.gitDiff, request),
   getCodexLog: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexLog, { worktreeId }),
+  summarizeCodexOutput: (worktreeId, text) =>
+    ipcRenderer.invoke(IPCChannels.codexSummarize, { worktreeId, text }),
   startWorktreeTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.terminalStart, { worktreeId }),
   stopWorktreeTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.terminalStop, { worktreeId }),
   sendTerminalInput: (worktreeId, data) =>

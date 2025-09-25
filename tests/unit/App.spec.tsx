@@ -3,7 +3,7 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../../src/renderer/App';
 import type { RendererApi } from '../../src/shared/api';
-import type { AppState, WorktreeDescriptor } from '../../src/shared/ipc';
+import type { AppState, TerminalOutputPayload, WorktreeDescriptor } from '../../src/shared/ipc';
 
 vi.mock('../../src/renderer/components/CodexPane', () => ({
   CodexPane: () => <div data-testid="mock-codex-pane" />
@@ -127,6 +127,7 @@ describe('App with project state', () => {
       getGitStatus: vi.fn(),
       getGitDiff: vi.fn(),
       getCodexLog: vi.fn(),
+      summarizeCodexOutput: vi.fn(async () => ''),
       startWorktreeTerminal: vi.fn(async () => ({
         sessionId: 'terminal-1',
         worktreeId: worktree.id,
@@ -217,6 +218,7 @@ describe('App with project state', () => {
       getGitStatus: vi.fn(),
       getGitDiff: vi.fn(),
       getCodexLog: vi.fn(),
+      summarizeCodexOutput: vi.fn(async () => ''),
       startWorktreeTerminal: vi.fn(async () => ({
         sessionId: 'terminal-1',
         worktreeId: worktree.id,
@@ -252,6 +254,32 @@ describe('App with project state', () => {
 
     expect(
       await screen.findByText('Reviewing and refining documentation and imports', { exact: false })
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      terminalOutputListener?.({
+        sessionId: 'terminal-1',
+        worktreeId: worktree.id,
+        chunk:
+          "36 use alloy_signer::SignerSync;Identifying redundant import in tests(15m 10s • Esc to interrupt)▌Explain this codebase ⏎ send Ctrl+J newline Ctrl+T transcript Ctrl+C quit 208K tokens used 74% context left\n"
+      });
+    });
+
+    expect(
+      await screen.findByText('Identifying redundant import in tests', { exact: false })
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      terminalOutputListener?.({
+        sessionId: 'terminal-1',
+        worktreeId: worktree.id,
+        chunk:
+          'make: *** [Makefile:440: clippy] Error 101Reviewing and refining documentation and imports(6m 30s • Esc to interrupt)\n'
+      });
+    });
+
+    expect(
+      await screen.findByText('Error 101 Reviewing and refining documentation and imports', { exact: false })
     ).toBeInTheDocument();
   });
 
@@ -307,6 +335,7 @@ describe('App with project state', () => {
       getGitStatus: vi.fn(),
       getGitDiff: vi.fn(),
       getCodexLog: vi.fn(),
+      summarizeCodexOutput: vi.fn(async () => ''),
       startWorktreeTerminal: vi.fn(async () => ({
         sessionId: 'terminal-1',
         worktreeId: 'project-root:proj-1',

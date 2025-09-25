@@ -9,7 +9,8 @@ import { WorktreeTerminalPane } from './components/WorktreeTerminalPane';
 import {
   buildCodexSessions,
   getLatestSessionsByWorktree,
-  DerivedCodexSession
+  DerivedCodexSession,
+  isInteractiveStatus
 } from './codex-model';
 
 const EMPTY_STATE: AppState = {
@@ -24,7 +25,9 @@ const DEFAULT_TAB = 'codex' as const;
 
 type WorktreeTabId = 'codex' | 'terminal';
 const CODEX_BUSY_WINDOW_MS = 1500;
+const CODEX_STATUS_IDLE_WINDOW_MS = 10_000;
 const ECHO_BUFFER_LIMIT = 4096;
+const SUMMARY_BUFFER_LIMIT = 4000;
 
 type CodexMode = 'custom' | 'terminal';
 const DEFAULT_CODEX_MODE: CodexMode = 'terminal';
@@ -169,8 +172,12 @@ export const App: React.FC = () => {
   const [codexStatusLines, setCodexStatusLines] = useState<Record<string, string>>({});
   const codexLastInputRef = useRef<Record<string, number>>({});
   const codexEchoBufferRef = useRef<Record<string, string>>({});
+  const codexStatusHeartbeatRef = useRef<Record<string, number>>({});
+  const codexSummaryBufferRef = useRef<Record<string, string>>({});
   const longRunTrackerRef = useRef(new LongRunTracker(10_000));
-  const busyStatesRef = useRef<Array<{ id: string; busy: boolean }>>([]);
+  const busyStatesRef = useRef<Array<{ id: string; busy: boolean; running: boolean }>>([]);
+  const codexBusyFlagRef = useRef<Record<string, boolean>>({});
+  const codexRunningFlagRef = useRef<Record<string, boolean>>({});
   const isTerminalCodex = DEFAULT_CODEX_MODE === 'terminal';
   const filteredWorktrees = useMemo(() => {
     if (state.projects.length === 0) {
@@ -182,13 +189,33 @@ export const App: React.FC = () => {
       return !root || worktree.path !== root;
     });
   }, [state.projects, state.worktrees]);
-  const busyStates: Array<{ id: string; busy: boolean }> = [];
+  const busyStates: Array<{ id: string; busy: boolean; running: boolean }> = [];
   const busySignatureParts: string[] = [];
   const busyTimestamp = Date.now();
-  const registerBusyState = (id: string, busy: boolean) => {
-    busyStates.push({ id, busy });
-    busySignatureParts.push(`${id}:${busy ? 1 : 0}`);
+  const registerBusyState = (id: string, busy: boolean, running = false) => {
+    busyStates.push({ id, busy, running });
+    busySignatureParts.push(`${id}:${busy ? 1 : 0}:${running ? 1 : 0}`);
+    const previousBusy = codexBusyFlagRef.current[id] ?? false;
+    codexBusyFlagRef.current[id] = busy;
+    if (busy && !previousBusy) {
+      delete codexSummaryBufferRef.current[id];
+    }
+    const previousRunning = codexRunningFlagRef.current[id] ?? false;
+    codexRunningFlagRef.current[id] = running;
+    if (running && !previousRunning) {
+      delete codexSummaryBufferRef.current[id];
+    }
   };
+
+  const appendSummaryBuffer = useCallback((worktreeId: string, chunk: string) => {
+    if (!chunk) {
+      return;
+    }
+    const existing = codexSummaryBufferRef.current[worktreeId] ?? '';
+    const combined = existing ? `${existing}${chunk}` : chunk;
+    codexSummaryBufferRef.current[worktreeId] =
+      combined.length > SUMMARY_BUFFER_LIMIT ? combined.slice(combined.length - SUMMARY_BUFFER_LIMIT) : combined;
+  }, []);
 
   const captureStatusLine = useCallback((worktreeId: string, plainText: string) => {
     const lines = plainText.split(/\n/);
@@ -200,20 +227,40 @@ export const App: React.FC = () => {
       if (!/esc to interrupt/i.test(trimmed)) {
         continue;
       }
-      const normalized = trimmed.replace(/\s+/g, ' ').trim();
-      const summary = normalized
-        .replace(/^[-•\s]+/, '')
-        .replace(/\s*\([^)]*\)\s*$/, '')
-        .trim();
-      setCodexStatusLines((prev) => {
-        if (!summary) {
+
+      let sanitized = trimmed;
+      sanitized = sanitized.replace(/▌.*$/u, '');
+      sanitized = sanitized.replace(/;(?=\S)/g, '; ');
+      sanitized = sanitized.replace(/([0-9])([A-Za-z])/g, '$1 $2');
+      sanitized = sanitized.replace(/([a-z])([A-Z])/g, '$1 $2');
+      const match = sanitized.match(/^(.*?)(?:\(\s*[^)]*Esc to interrupt[^)]*\).*)$/i);
+      let candidateText = match ? match[1] : sanitized.replace(/Esc to interrupt.*$/i, '');
+      candidateText = candidateText.replace(/([0-9])([A-Za-z])/g, '$1 $2');
+      candidateText = candidateText.replace(/([a-z])([A-Z])/g, '$1 $2');
+      candidateText = candidateText.replace(/\s+/g, ' ').trim();
+      const parts = candidateText
+        .split(/(?:;|•|\||›)+/u)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      const candidate = parts.length > 0 ? parts[parts.length - 1] : candidateText;
+      const summary = candidate.replace(/^[0-9]+[\s.:_-]*/, '').trim();
+
+      if (!summary) {
+        delete codexStatusHeartbeatRef.current[worktreeId];
+        setCodexStatusLines((prev) => {
           if (!prev[worktreeId]) {
             return prev;
           }
           const next = { ...prev };
           delete next[worktreeId];
           return next;
-        }
+        });
+        return;
+      }
+
+      codexStatusHeartbeatRef.current[worktreeId] = Date.now();
+
+      setCodexStatusLines((prev) => {
         if (prev[worktreeId] === summary) {
           return prev;
         }
@@ -266,11 +313,24 @@ export const App: React.FC = () => {
   );
 
   const notifyLongRunCompletion = useCallback(
-    (worktreeId: string) => {
-      const { title, detail } = describeWorktree(worktreeId);
+    async (worktreeId: string) => {
+      const { title, detail: fallbackDetail } = describeWorktree(worktreeId);
+      let detail = fallbackDetail;
+      const bufferedOutput = codexSummaryBufferRef.current[worktreeId];
+      if (bufferedOutput && api?.summarizeCodexOutput) {
+        try {
+          const summary = await api.summarizeCodexOutput(worktreeId, bufferedOutput);
+          if (summary.trim()) {
+            detail = summary.trim();
+          }
+        } catch (error) {
+          console.warn('[codex] notification summary failed', error);
+        }
+      }
+      delete codexSummaryBufferRef.current[worktreeId];
       pushDesktopNotification(title, detail);
     },
-    [describeWorktree, pushDesktopNotification]
+    [api, describeWorktree, pushDesktopNotification]
   );
 
   const applyState = useCallback(
@@ -454,6 +514,30 @@ export const App: React.FC = () => {
         delete echoEntries[id];
       }
     }
+    const statusHeartbeatEntries = codexStatusHeartbeatRef.current;
+    for (const id of Object.keys(statusHeartbeatEntries)) {
+      if (!known.has(id)) {
+        delete statusHeartbeatEntries[id];
+      }
+    }
+    const summaryEntries = codexSummaryBufferRef.current;
+    for (const id of Object.keys(summaryEntries)) {
+      if (!known.has(id)) {
+        delete summaryEntries[id];
+      }
+    }
+    const busyEntries = codexBusyFlagRef.current;
+    for (const id of Object.keys(busyEntries)) {
+      if (!known.has(id)) {
+        delete busyEntries[id];
+      }
+    }
+    const runningEntries = codexRunningFlagRef.current;
+    for (const id of Object.keys(runningEntries)) {
+      if (!known.has(id)) {
+        delete runningEntries[id];
+      }
+    }
   }, [state.projects, state.worktrees]);
 
   useEffect(() => {
@@ -596,8 +680,6 @@ export const App: React.FC = () => {
     return projectName ? `${projectName} / ${selectedWorktree.featureName}` : selectedWorktree.featureName;
   }, [selectedWorktree, selectedWorktreeProject]);
 
-  const selectedWorktreeStatus = selectedWorktree ? codexStatusLines[selectedWorktree.id] ?? null : null;
-
   const renderableWorktrees = useMemo(() => {
     if (rootWorktree) {
       return [rootWorktree, ...filteredWorktrees];
@@ -680,6 +762,7 @@ export const App: React.FC = () => {
       const normalized = remainder.replace(/\r/g, '');
       const plain = stripAnsi(normalized);
       captureStatusLine(payload.worktreeId, plain);
+      appendSummaryBuffer(payload.worktreeId, plain);
       if (!plain.trim()) {
         return;
       }
@@ -690,7 +773,7 @@ export const App: React.FC = () => {
       setCodexActivity((prev) => ({ ...prev, [payload.worktreeId]: now }));
     });
     return unsubscribe;
-  }, [bridge, captureStatusLine, consumeEcho]);
+  }, [appendSummaryBuffer, bridge, captureStatusLine, consumeEcho]);
 
   useEffect(() => {
     const unsubscribe = api.onCodexTerminalOutput((payload) => {
@@ -701,6 +784,7 @@ export const App: React.FC = () => {
       const normalized = remainder.replace(/\r/g, '');
       const plain = stripAnsi(normalized);
       captureStatusLine(payload.worktreeId, plain);
+      appendSummaryBuffer(payload.worktreeId, plain);
       if (!plain.trim()) {
         return;
       }
@@ -708,7 +792,7 @@ export const App: React.FC = () => {
       setCodexActivity((prev) => ({ ...prev, [payload.worktreeId]: now }));
     });
     return unsubscribe;
-  }, [api, captureStatusLine, consumeEcho]);
+  }, [api, appendSummaryBuffer, captureStatusLine, consumeEcho]);
 
   useEffect(() => {
     if (!bridge) {
@@ -1030,15 +1114,16 @@ export const App: React.FC = () => {
     const validIds = new Set<string>();
     const idleIds: string[] = [];
 
-    snapshot.forEach(({ id, busy }) => {
+    snapshot.forEach(({ id, busy, running }) => {
       validIds.add(id);
-      if (!busy) {
+      const effectiveBusy = busy || running;
+      if (!effectiveBusy) {
         idleIds.push(id);
       }
-      if (!tracker.update(id, busy, timestamp)) {
+      if (!tracker.update(id, effectiveBusy, timestamp)) {
         return;
       }
-      notifyLongRunCompletion(id);
+      void notifyLongRunCompletion(id);
     });
 
     setCodexStatusLines((prev) => {
@@ -1051,12 +1136,14 @@ export const App: React.FC = () => {
         if (next[id]) {
           delete next[id];
           changed = true;
+          delete codexStatusHeartbeatRef.current[id];
         }
       });
       Object.keys(next).forEach((key) => {
         if (!validIds.has(key)) {
           delete next[key];
           changed = true;
+          delete codexStatusHeartbeatRef.current[key];
         }
       });
       return changed ? next : prev;
@@ -1170,7 +1257,10 @@ export const App: React.FC = () => {
                             lastInput: lastUserInput,
                             now: busyTimestamp
                           });
-                          registerBusyState(entry.id, isBusy);
+                          const lastStatusHeartbeat = codexStatusHeartbeatRef.current[entry.id] ?? 0;
+                          const isWorking = lastStatusHeartbeat > 0 && busyTimestamp - lastStatusHeartbeat < CODEX_STATUS_IDLE_WINDOW_MS;
+                          const tabStatusLine = codexStatusLines[entry.id] ?? null;
+                          registerBusyState(entry.id, isBusy, isWorking);
                           return (
                             <button
                               key={entry.id}
@@ -1191,8 +1281,17 @@ export const App: React.FC = () => {
                                   />
                                 )}
                               </span>
-                              <span className="project-worktree__name">main</span>
-                              <span className="project-worktree__branch">{projectBranch}</span>
+                              <span className="project-worktree__info">
+                                <span className="project-worktree__primary">
+                                  <span className="project-worktree__name">main</span>
+                                  <span className="project-worktree__branch">{projectBranch}</span>
+                                </span>
+                                {tabStatusLine ? (
+                                  <span className="project-worktree__status-text" title={tabStatusLine}>
+                                    {tabStatusLine}
+                                  </span>
+                                ) : null}
+                              </span>
                             </button>
                           );
                         }
@@ -1202,14 +1301,17 @@ export const App: React.FC = () => {
                         const session = codexSessions.get(worktree.id);
                         const lastActivity = codexActivity[worktree.id];
                         const lastUserInput = codexLastInputRef.current[worktree.id] ?? 0;
-                        const allowSpinner = session?.status === 'running' || isTerminalCodex;
+                        const allowSpinner = (session ? isInteractiveStatus(session.status) : false) || isTerminalCodex;
                         const isCodexBusy = computeBusyFlag({
                           allowSpinner,
                           lastActivity,
                           lastInput: lastUserInput,
                           now: busyTimestamp
                         });
-                        registerBusyState(worktree.id, isCodexBusy);
+                        const lastStatusHeartbeat = codexStatusHeartbeatRef.current[worktree.id] ?? 0;
+                        const isWorking = lastStatusHeartbeat > 0 && busyTimestamp - lastStatusHeartbeat < CODEX_STATUS_IDLE_WINDOW_MS;
+                        const tabStatusLine = codexStatusLines[worktree.id] ?? null;
+                        registerBusyState(worktree.id, isCodexBusy, isWorking);
                         return (
                           <button
                             key={worktree.id}
@@ -1227,8 +1329,17 @@ export const App: React.FC = () => {
                                 <span className="project-worktree__status-icon" aria-hidden="true" />
                               )}
                             </span>
-                            <span className="project-worktree__name">{worktree.featureName}</span>
-                            <span className="project-worktree__branch">{worktree.branch}</span>
+                            <span className="project-worktree__info">
+                              <span className="project-worktree__primary">
+                                <span className="project-worktree__name">{worktree.featureName}</span>
+                                <span className="project-worktree__branch">{worktree.branch}</span>
+                              </span>
+                              {tabStatusLine ? (
+                                <span className="project-worktree__status-text" title={tabStatusLine}>
+                                  {tabStatusLine}
+                                </span>
+                              ) : null}
+                            </span>
                           </button>
                         );
                       })}
@@ -1255,9 +1366,6 @@ export const App: React.FC = () => {
               <header className="overview-header">
                 <div>
                   <h1>{selectedWorktreeTitle}</h1>
-                  {selectedWorktreeStatus ? (
-                    <p className="overview-subtitle">{selectedWorktreeStatus}</p>
-                  ) : null}
                   <p>
                     Branch <code>{selectedWorktree.branch}</code>
                     {' · Path '}
@@ -1502,6 +1610,11 @@ const createRendererStub = (): RendererApi => {
     getCodexLog: async (worktreeId: string) => {
       void worktreeId;
       return '';
+    },
+    summarizeCodexOutput: async (worktreeId: string, text: string) => {
+      void worktreeId;
+      void text;
+      throw new Error('Renderer API unavailable: summarizeCodexOutput');
     },
     startWorktreeTerminal: async (worktreeId: string) => {
       void worktreeId;
