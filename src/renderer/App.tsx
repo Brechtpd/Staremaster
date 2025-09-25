@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, WorktreeDescriptor } from '@shared/ipc';
 import type { RendererApi } from '@shared/api';
 import { GitPanel } from './components/GitPanel';
@@ -22,6 +22,15 @@ const SIDEBAR_MAX_RATIO = 0.28;
 const DEFAULT_TAB = 'codex' as const;
 
 type WorktreeTabId = 'codex' | 'terminal';
+const CODEX_BUSY_WINDOW_MS = 1500;
+const ECHO_BUFFER_LIMIT = 4096;
+
+const ANSI_PATTERN = new RegExp(
+  ['\\u001B\\[[0-9;?]*[ -/]*[@-~]', '\\u001B][^\\u0007]*\\u0007'].join('|'),
+  'g'
+);
+
+const stripAnsi = (value: string): string => value.replace(ANSI_PATTERN, '');
 
 export const App: React.FC = () => {
   const [bridge, setBridge] = useState<RendererApi | null>(() => window.api ?? null);
@@ -41,6 +50,54 @@ export const App: React.FC = () => {
   const codexColumnsStorageKey = useMemo(() => `layout/${projectKey}/codex-columns`, [projectKey]);
   const worktreeTabStorageKey = useMemo(() => `layout/${projectKey}/worktree-tab`, [projectKey]);
   const [activeTab, setActiveTab] = useState<WorktreeTabId>(DEFAULT_TAB);
+  const [codexActivity, setCodexActivity] = useState<Record<string, number>>({});
+  const codexLastInputRef = useRef<Record<string, number>>({});
+  const codexEchoBufferRef = useRef<Record<string, string>>({});
+
+  const consumeEcho = useCallback((worktreeId: string, chunk: string): string => {
+    const buffer = codexEchoBufferRef.current[worktreeId];
+    if (!buffer || buffer.length === 0) {
+      return chunk;
+    }
+
+    let bufferIndex = 0;
+    let chunkIndex = 0;
+    const bufferLength = buffer.length;
+
+    while (chunkIndex < chunk.length && bufferIndex < bufferLength) {
+      const chunkChar = chunk.charAt(chunkIndex);
+      const bufferChar = buffer.charAt(bufferIndex);
+
+      if (chunkChar === bufferChar) {
+        chunkIndex += 1;
+        bufferIndex += 1;
+        continue;
+      }
+
+      if (chunkChar === '\r' || chunkChar === '\n') {
+        chunkIndex += 1;
+        continue;
+      }
+
+      if (bufferChar === '\r' || bufferChar === '\n') {
+        bufferIndex += 1;
+        continue;
+      }
+
+      break;
+    }
+
+    if (bufferIndex > 0) {
+      if (bufferIndex >= bufferLength) {
+        delete codexEchoBufferRef.current[worktreeId];
+      } else {
+        codexEchoBufferRef.current[worktreeId] = buffer.slice(bufferIndex);
+      }
+      return chunk.slice(chunkIndex);
+    }
+
+    return chunk;
+  }, []);
 
   useEffect(() => {
     const defaultRatio = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, 0.25));
@@ -94,6 +151,70 @@ export const App: React.FC = () => {
     () => buildCodexSessions(state.worktrees, latestSessionsByWorktree),
     [state.worktrees, latestSessionsByWorktree]
   );
+
+  useEffect(() => {
+    if (!bridge) {
+      return undefined;
+    }
+    const unsubscribe = bridge.onCodexOutput((payload) => {
+      const remainder = consumeEcho(payload.worktreeId, payload.chunk);
+      if (!remainder) {
+        return;
+      }
+      const normalized = remainder.replace(/\r/g, '');
+      const visible = stripAnsi(normalized).trim();
+      if (!visible) {
+        return;
+      }
+      const now = Date.now();
+      if (codexEchoBufferRef.current[payload.worktreeId]) {
+        delete codexEchoBufferRef.current[payload.worktreeId];
+      }
+      setCodexActivity((prev) => ({ ...prev, [payload.worktreeId]: now }));
+    });
+    return unsubscribe;
+  }, [bridge, consumeEcho]);
+
+  useEffect(() => {
+    const known = new Set(state.worktrees.map((worktree) => worktree.id));
+    setCodexActivity((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      const now = Date.now();
+      for (const id of Object.keys(prev)) {
+        if (known.has(id) && now - prev[id] < CODEX_BUSY_WINDOW_MS * 2) {
+          next[id] = prev[id];
+        } else if (known.has(id)) {
+          // keep entry but mark stale
+          next[id] = 0;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    const inputEntries = codexLastInputRef.current;
+    for (const id of Object.keys(inputEntries)) {
+      if (!known.has(id)) {
+        delete inputEntries[id];
+      }
+    }
+    const echoEntries = codexEchoBufferRef.current;
+    for (const id of Object.keys(echoEntries)) {
+      if (!known.has(id)) {
+        delete echoEntries[id];
+      }
+    }
+  }, [state.worktrees]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setCodexActivity((prev) => ({ ...prev }));
+    }, 300);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   useEffect(() => {
     if (!bridge) {
@@ -312,6 +433,15 @@ export const App: React.FC = () => {
             session={session}
             active={isActive}
             onNotification={setNotification}
+            onUserInput={(data) => {
+              codexLastInputRef.current[worktree.id] = Date.now();
+              if (!data) {
+                return;
+              }
+              const existing = codexEchoBufferRef.current[worktree.id] ?? '';
+              const next = (existing + data).slice(-ECHO_BUFFER_LIMIT);
+              codexEchoBufferRef.current[worktree.id] = next;
+            }}
           />
         </div>
       );
@@ -344,15 +474,14 @@ export const App: React.FC = () => {
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(worktreeTabStorageKey);
-      if (stored === 'codex' || stored === 'terminal') {
-        setActiveTab(stored);
-      } else {
-        setActiveTab(DEFAULT_TAB);
+      if (stored === 'terminal') {
+        setActiveTab('terminal');
+        return;
       }
     } catch (error) {
       console.warn('[layout] failed to load worktree tab', error);
-      setActiveTab(DEFAULT_TAB);
     }
+    setActiveTab(DEFAULT_TAB);
   }, [worktreeTabStorageKey]);
 
   const selectTab = useCallback(
@@ -405,24 +534,34 @@ export const App: React.FC = () => {
           </button>
         </div>
         <div className="worktree-list">
-          {state.worktrees.map((worktree) => {
-            const isActive = worktree.id === selectedWorktreeId;
-            return (
-              <button
-                key={worktree.id}
-                type="button"
-                className={`worktree-item ${isActive ? 'active' : ''}`}
-                onClick={() => changeWorktree(worktree.id)}
-                disabled={busy || !bridge}
-              >
-                <div className="worktree-name">{worktree.featureName}</div>
-                <div className="worktree-meta">
-                  <span className={`chip status-${worktree.status}`}>{worktree.status}</span>
-                  <span className={`chip codex-${worktree.codexStatus}`}>Codex {worktree.codexStatus}</span>
-                </div>
-              </button>
-            );
-          })}
+          {(() => {
+            const now = Date.now();
+            return state.worktrees.map((worktree) => {
+              const isActive = worktree.id === selectedWorktreeId;
+              const session = codexSessions.get(worktree.id);
+              const lastActivity = codexActivity[worktree.id] ?? 0;
+              const isCodexBusy = session?.status === 'running' && now - lastActivity < CODEX_BUSY_WINDOW_MS;
+              return (
+                <button
+                  key={worktree.id}
+                  type="button"
+                  className={`worktree-item ${isActive ? 'active' : ''}`}
+                  onClick={() => changeWorktree(worktree.id)}
+                  disabled={busy || !bridge}
+                >
+                  <div className="worktree-name">
+                    {isCodexBusy ? (
+                      <span className="worktree-spinner" aria-label="Codex processing" />
+                    ) : (
+                      <span className="worktree-idle-dot" aria-hidden="true" />
+                    )}
+                    {worktree.featureName}
+                  </div>
+                  <div className="worktree-meta" />
+                </button>
+              );
+            });
+          })()}
           {state.worktrees.length === 0 ? (
             <p className="worktree-empty">No worktrees yet. Create one to begin.</p>
           ) : null}

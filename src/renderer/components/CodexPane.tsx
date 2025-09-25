@@ -34,6 +34,7 @@ interface CodexPaneProps {
   session: DerivedCodexSession | undefined;
   active: boolean;
   onNotification(message: string | null): void;
+  onUserInput?(data: string): void;
 }
 
 const stripCodexLogAnnotations = (log: string): string => {
@@ -137,7 +138,8 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   worktree,
   session,
   active,
-  onNotification
+  onNotification,
+  onUserInput
 }) => {
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
   const hydratorRef = useRef<Hydrator | null>(null);
@@ -270,6 +272,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       if (!data) {
         return;
       }
+      onUserInput?.(data);
       pendingInputsRef.current += data;
       if (session?.status === 'running' && !pendingStartRef.current) {
         tryFlushInputsRef.current();
@@ -277,7 +280,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         void startSessionRef.current({ throttled: true });
       }
     },
-    [session?.status]
+    [onUserInput, session?.status]
   );
 
   useEffect(() => {
@@ -467,27 +470,9 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     }
   }, [active, status]);
 
-  const errorMessage = derivedError;
-
   return (
     <section className={`terminal-pane${active ? '' : ' terminal-pane--inactive'}`}>
-      <header>
-        <h2>Codex Session</h2>
-        <div className="terminal-status">
-          <span className={`chip codex-${status}`}>{status}</span>
-          {status === 'error' ? (
-            <button
-              type="button"
-              onClick={() => {
-                void startSessionRef.current({ forceStart: true });
-              }}
-            >
-              Retry
-            </button>
-          ) : null}
-        </div>
-      </header>
-      {errorMessage ? <p className="terminal-error">{errorMessage}</p> : null}
+      {derivedError ? <p className="terminal-error">{derivedError}</p> : null}
       <CodexTerminal ref={handleTerminalRef} onData={handleTerminalData} instanceId={worktree.id} />
       {status !== 'running' ? (
         <p className="terminal-hint">

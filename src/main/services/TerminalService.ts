@@ -8,11 +8,11 @@ import type {
   TerminalResizeRequest
 } from '../../shared/ipc';
 
-interface TerminalEvents {
-  'terminal-output': (payload: TerminalOutputPayload) => void;
-  'terminal-exit': (payload: TerminalExitPayload) => void;
-  'terminal-started': (descriptor: WorktreeTerminalDescriptor) => void;
-}
+type TerminalEvents = {
+  'terminal-output': [TerminalOutputPayload];
+  'terminal-exit': [TerminalExitPayload];
+  'terminal-started': [WorktreeTerminalDescriptor];
+};
 
 interface TerminalSession {
   descriptor: WorktreeTerminalDescriptor;
@@ -174,7 +174,7 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     child.onExit(({ exitCode, signal }) => {
       descriptor.status = 'exited';
       descriptor.exitCode = exitCode === undefined ? undefined : exitCode;
-      descriptor.signal = signal === undefined ? undefined : signal;
+      descriptor.signal = signal === undefined ? undefined : String(signal);
       if (this.sessions.get(worktreeId)?.descriptor.sessionId === descriptor.sessionId) {
         this.sessions.delete(worktreeId);
       }
@@ -182,7 +182,7 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
         sessionId: descriptor.sessionId,
         worktreeId,
         exitCode: exitCode ?? null,
-        signal: signal ?? null
+        signal: signal === undefined || signal === null ? null : String(signal)
       };
       this.emit('terminal-exit', payload);
     });
@@ -190,4 +190,3 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     return descriptor;
   }
 }
-

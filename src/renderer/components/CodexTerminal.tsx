@@ -309,7 +309,7 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
           terminalRef.current?.scrollToBottom();
         }
       }),
-      [safeFit, getActiveBuffer, instanceId]
+      [safeFit, getActiveBuffer, instanceId, notifyResize]
     );
 
     return (

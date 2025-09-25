@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { RendererApi } from '@shared/api';
 import type {
   WorktreeDescriptor,
@@ -23,8 +23,6 @@ const getErrorMessage = (error: unknown): string => {
   }
   return 'Unexpected terminal error';
 };
-
-const TERMINAL_TAB_HINT = 'The terminal starts in the worktree directory and stays private to this worktree.';
 
 export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   api,
@@ -172,35 +170,19 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
     [api, worktree.id]
   );
 
-  const statusChip = useMemo(() => {
-    if (status === 'running') {
-      return 'running';
-    }
-    if (status === 'starting') {
-      return 'starting';
-    }
-    if (status === 'exited') {
-      return 'stopped';
-    }
-    return 'idle';
-  }, [status]);
-
   return (
     <section className={`terminal-pane${active ? '' : ' terminal-pane--inactive'}`}>
-      <header>
-        <div>
-          <h2>Terminal</h2>
-          <p className="terminal-subtitle">{TERMINAL_TAB_HINT}</p>
+      {status !== 'running' ? (
+        <div className="terminal-inline-actions">
+          <button
+            type="button"
+            onClick={() => void ensureTerminalStarted()}
+            disabled={status === 'starting'}
+          >
+            {status === 'starting' ? 'Starting…' : 'Start Terminal'}
+          </button>
         </div>
-        <div className="terminal-status">
-          <span className={`chip codex-${statusChip}`}>{statusChip}</span>
-          {status !== 'running' ? (
-            <button type="button" onClick={() => void ensureTerminalStarted()}>
-              Start
-            </button>
-          ) : null}
-        </div>
-      </header>
+      ) : null}
       {lastExit ? (
         <p className="terminal-hint">
           Terminal exited (code {lastExit.code ?? 'null'}{lastExit.signal ? `, signal ${lastExit.signal}` : ''}).
