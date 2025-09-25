@@ -9,6 +9,10 @@ vi.mock('../../src/renderer/components/CodexPane', () => ({
   CodexPane: () => <div data-testid="mock-codex-pane" />
 }));
 
+vi.mock('../../src/renderer/components/CodexTerminalShellPane', () => ({
+  CodexTerminalShellPane: () => <div data-testid="mock-codex-terminal-pane" />
+}));
+
 vi.mock('../../src/renderer/components/WorktreeTerminalPane', () => ({
   WorktreeTerminalPane: () => <div data-testid="mock-terminal-pane" />
 }));
@@ -110,9 +114,15 @@ describe('App with project state', () => {
       startCodex: vi.fn(),
       stopCodex: vi.fn(),
       sendCodexInput: vi.fn(),
+      startCodexTerminal: vi.fn(),
+      stopCodexTerminal: vi.fn(),
+      sendCodexTerminalInput: vi.fn(),
+      resizeCodexTerminal: vi.fn(),
       onStateUpdate: vi.fn(() => () => {}),
       onCodexOutput: vi.fn(() => () => {}),
       onCodexStatus: vi.fn(() => () => {}),
+      onCodexTerminalOutput: vi.fn(() => () => {}),
+      onCodexTerminalExit: vi.fn(() => () => {}),
       getGitStatus: vi.fn(),
       getGitDiff: vi.fn(),
       getCodexLog: vi.fn(),

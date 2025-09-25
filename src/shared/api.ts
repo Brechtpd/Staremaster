@@ -24,6 +24,10 @@ export interface RendererApi {
   startCodex(worktreeId: string): Promise<CodexSessionDescriptor>;
   stopCodex(worktreeId: string): Promise<CodexSessionDescriptor[]>;
   sendCodexInput(worktreeId: string, input: string): Promise<void>;
+  startCodexTerminal(worktreeId: string): Promise<WorktreeTerminalDescriptor>;
+  stopCodexTerminal(worktreeId: string): Promise<void>;
+  sendCodexTerminalInput(worktreeId: string, data: string): Promise<void>;
+  resizeCodexTerminal(request: TerminalResizeRequest): Promise<void>;
   onStateUpdate(callback: (state: AppState) => void): () => void;
   onCodexOutput(callback: (payload: CodexOutputPayload) => void): () => void;
   onCodexStatus(callback: (payload: CodexStatusPayload) => void): () => void;
@@ -36,4 +40,6 @@ export interface RendererApi {
   resizeTerminal(request: TerminalResizeRequest): Promise<void>;
   onTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
   onTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
+  onCodexTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
+  onCodexTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
 }

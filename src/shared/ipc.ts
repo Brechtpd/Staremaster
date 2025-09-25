@@ -20,7 +20,13 @@ export const IPCChannels = {
   terminalInput: 'terminal:input',
   terminalResize: 'terminal:resize',
   terminalOutput: 'terminal:output',
-  terminalExit: 'terminal:exit'
+  terminalExit: 'terminal:exit',
+  codexTerminalStart: 'codex-terminal:start',
+  codexTerminalStop: 'codex-terminal:stop',
+  codexTerminalInput: 'codex-terminal:input',
+  codexTerminalResize: 'codex-terminal:resize',
+  codexTerminalOutput: 'codex-terminal:output',
+  codexTerminalExit: 'codex-terminal:exit'
 } as const;
 
 type ValueOf<T> = T[keyof T];

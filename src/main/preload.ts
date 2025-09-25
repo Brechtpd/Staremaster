@@ -23,7 +23,13 @@ const IPCChannels = {
   terminalInput: 'terminal:input',
   terminalResize: 'terminal:resize',
   terminalOutput: 'terminal:output',
-  terminalExit: 'terminal:exit'
+  terminalExit: 'terminal:exit',
+  codexTerminalStart: 'codex-terminal:start',
+  codexTerminalStop: 'codex-terminal:stop',
+  codexTerminalInput: 'codex-terminal:input',
+  codexTerminalResize: 'codex-terminal:resize',
+  codexTerminalOutput: 'codex-terminal:output',
+  codexTerminalExit: 'codex-terminal:exit'
 } as const;
 
 const api: RendererApi = {
@@ -41,6 +47,11 @@ const api: RendererApi = {
   startCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.startCodex, { worktreeId }),
   stopCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.stopCodex, { worktreeId }),
   sendCodexInput: (worktreeId, input) => ipcRenderer.invoke(IPCChannels.sendCodexInput, { worktreeId, input }),
+  startCodexTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexTerminalStart, { worktreeId }),
+  stopCodexTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexTerminalStop, { worktreeId }),
+  sendCodexTerminalInput: (worktreeId, data) =>
+    ipcRenderer.invoke(IPCChannels.codexTerminalInput, { worktreeId, data }),
+  resizeCodexTerminal: (request) => ipcRenderer.invoke(IPCChannels.codexTerminalResize, request),
   onStateUpdate: (callback) => subscribe(IPCChannels.stateUpdates, callback),
   onCodexOutput: (callback) => subscribe(IPCChannels.codexOutput, callback),
   onCodexStatus: (callback) => subscribe(IPCChannels.codexStatus, callback),
@@ -53,7 +64,9 @@ const api: RendererApi = {
     ipcRenderer.invoke(IPCChannels.terminalInput, { worktreeId, data }),
   resizeTerminal: (request) => ipcRenderer.invoke(IPCChannels.terminalResize, request),
   onTerminalOutput: (callback) => subscribe(IPCChannels.terminalOutput, callback),
-  onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback)
+  onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback),
+  onCodexTerminalOutput: (callback) => subscribe(IPCChannels.codexTerminalOutput, callback),
+  onCodexTerminalExit: (callback) => subscribe(IPCChannels.codexTerminalExit, callback)
 };
 
 const subscribe = <Payload>(channel: string, callback: (payload: Payload) => void): (() => void) => {

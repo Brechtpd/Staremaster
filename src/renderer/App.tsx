@@ -4,6 +4,7 @@ import type { RendererApi } from '@shared/api';
 import { GitPanel } from './components/GitPanel';
 import { ResizableColumns } from './components/ResizableColumns';
 import { CodexPane } from './components/CodexPane';
+import { CodexTerminalShellPane } from './components/CodexTerminalShellPane';
 import { WorktreeTerminalPane } from './components/WorktreeTerminalPane';
 import {
   buildCodexSessions,
@@ -24,6 +25,9 @@ const DEFAULT_TAB = 'codex' as const;
 type WorktreeTabId = 'codex' | 'terminal';
 const CODEX_BUSY_WINDOW_MS = 1500;
 const ECHO_BUFFER_LIMIT = 4096;
+
+type CodexMode = 'custom' | 'terminal';
+const DEFAULT_CODEX_MODE: CodexMode = 'terminal';
 
 const ANSI_PATTERN = new RegExp(
   ['\\u001B\\[[0-9;?]*[ -/]*[@-~]', '\\u001B][^\\u0007]*\\u0007'].join('|'),
@@ -61,6 +65,7 @@ export const App: React.FC = () => {
   const [codexActivity, setCodexActivity] = useState<Record<string, number>>({});
   const codexLastInputRef = useRef<Record<string, number>>({});
   const codexEchoBufferRef = useRef<Record<string, string>>({});
+  const isTerminalCodex = DEFAULT_CODEX_MODE === 'terminal';
 
   const applyState = useCallback(
     (nextState: AppState, preferredProjectId?: string | null, preferredWorktreeId?: string | null) => {
@@ -304,6 +309,23 @@ export const App: React.FC = () => {
   }, [bridge, consumeEcho]);
 
   useEffect(() => {
+    const unsubscribe = api.onCodexTerminalOutput((payload) => {
+      const remainder = consumeEcho(payload.worktreeId, payload.chunk);
+      if (!remainder) {
+        return;
+      }
+      const normalized = remainder.replace(/\r/g, '');
+      const visible = stripAnsi(normalized).trim();
+      if (!visible) {
+        return;
+      }
+      const now = Date.now();
+      setCodexActivity((prev) => ({ ...prev, [payload.worktreeId]: now }));
+    });
+    return unsubscribe;
+  }, [api, consumeEcho]);
+
+  useEffect(() => {
     if (!bridge) {
       return undefined;
     }
@@ -524,6 +546,16 @@ export const App: React.FC = () => {
     event.preventDefault();
   }, [sidebarRatio, setPersistedSidebarRatio]);
 
+  const handleCodexUserInput = useCallback((worktreeId: string, data: string) => {
+    codexLastInputRef.current[worktreeId] = Date.now();
+    if (!data) {
+      return;
+    }
+    const existing = codexEchoBufferRef.current[worktreeId] ?? '';
+    const next = (existing + data).slice(-ECHO_BUFFER_LIMIT);
+    codexEchoBufferRef.current[worktreeId] = next;
+  }, []);
+
   const renderCodexPane = useCallback(
     (worktree: WorktreeDescriptor, session: DerivedCodexSession | undefined) => {
       const isSelectedWorktree = worktree.id === selectedWorktreeId;
@@ -534,27 +566,30 @@ export const App: React.FC = () => {
           className="codex-pane-wrapper"
           style={{ display: isSelectedWorktree ? 'flex' : 'none' }}
         >
-          <CodexPane
-            api={api}
-            bridge={bridge}
-            worktree={worktree}
-            session={session}
-            active={isActive}
-            onNotification={setNotification}
-            onUserInput={(data) => {
-              codexLastInputRef.current[worktree.id] = Date.now();
-              if (!data) {
-                return;
-              }
-              const existing = codexEchoBufferRef.current[worktree.id] ?? '';
-              const next = (existing + data).slice(-ECHO_BUFFER_LIMIT);
-              codexEchoBufferRef.current[worktree.id] = next;
-            }}
-          />
+          {isTerminalCodex ? (
+            <CodexTerminalShellPane
+              api={api}
+              worktree={worktree}
+              session={session}
+              active={isActive}
+              onNotification={setNotification}
+              onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
+            />
+          ) : (
+            <CodexPane
+              api={api}
+              bridge={bridge}
+              worktree={worktree}
+              session={session}
+              active={isActive}
+              onNotification={setNotification}
+              onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
+            />
+          )}
         </div>
       );
     },
-    [activeTab, api, bridge, selectedWorktreeId]
+    [activeTab, api, bridge, handleCodexUserInput, isTerminalCodex, selectedWorktreeId, setNotification]
   );
 
   const renderTerminalPane = useCallback(
@@ -882,6 +917,23 @@ const createRendererStub = (): RendererApi => {
       void input;
       return undefined;
     },
+    startCodexTerminal: async (worktreeId: string) => {
+      void worktreeId;
+      throw new Error('Renderer API unavailable: startCodexTerminal');
+    },
+    stopCodexTerminal: async (worktreeId: string) => {
+      void worktreeId;
+      return undefined;
+    },
+    sendCodexTerminalInput: async (worktreeId: string, data: string) => {
+      void worktreeId;
+      void data;
+      return undefined;
+    },
+    resizeCodexTerminal: async (request) => {
+      void request;
+      return undefined;
+    },
     onStateUpdate: (callback) => {
       void callback;
       return noop;
@@ -926,6 +978,8 @@ const createRendererStub = (): RendererApi => {
       return undefined;
     },
     onTerminalOutput: () => noop,
-    onTerminalExit: () => noop
+    onTerminalExit: () => noop,
+    onCodexTerminalOutput: () => noop,
+    onCodexTerminalExit: () => noop
   };
 };
