@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AppState, WorktreeDescriptor } from '@shared/ipc';
+import type { AppState, WorktreeDescriptor, ProjectDescriptor } from '@shared/ipc';
 import type { RendererApi } from '@shared/api';
 import { GitPanel } from './components/GitPanel';
 import { ResizableColumns } from './components/ResizableColumns';
@@ -12,7 +12,7 @@ import {
 } from './codex-model';
 
 const EMPTY_STATE: AppState = {
-  projectRoot: null,
+  projects: [],
   worktrees: [],
   sessions: []
 };
@@ -36,15 +36,23 @@ export const App: React.FC = () => {
   const [bridge, setBridge] = useState<RendererApi | null>(() => window.api ?? null);
   const api = useMemo(() => bridge ?? createRendererStub(), [bridge]);
   const [state, setState] = useState<AppState>(EMPTY_STATE);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
   const [isCreateModalOpen, setCreateModalOpen] = useState(false);
   const [createName, setCreateName] = useState('');
+  const [createProjectId, setCreateProjectId] = useState<string | null>(null);
   const [sidebarRatio, setSidebarRatio] = useState(0.25);
+  const selectedProject = useMemo<ProjectDescriptor | null>(() => {
+    if (!selectedProjectId) {
+      return null;
+    }
+    return state.projects.find((project) => project.id === selectedProjectId) ?? null;
+  }, [selectedProjectId, state.projects]);
   const projectKey = useMemo(
-    () => (state.projectRoot ? encodeURIComponent(state.projectRoot) : 'global'),
-    [state.projectRoot]
+    () => (selectedProject ? encodeURIComponent(selectedProject.root) : 'global'),
+    [selectedProject]
   );
   const sidebarStorageKey = useMemo(() => `layout/${projectKey}/sidebar-ratio`, [projectKey]);
   const codexColumnsStorageKey = useMemo(() => `layout/${projectKey}/codex-columns`, [projectKey]);
@@ -53,6 +61,179 @@ export const App: React.FC = () => {
   const [codexActivity, setCodexActivity] = useState<Record<string, number>>({});
   const codexLastInputRef = useRef<Record<string, number>>({});
   const codexEchoBufferRef = useRef<Record<string, string>>({});
+
+  const applyState = useCallback(
+    (nextState: AppState, preferredProjectId?: string | null, preferredWorktreeId?: string | null) => {
+      setState(nextState);
+
+      const candidateProjectId = preferredProjectId ?? selectedProjectId;
+      const resolvedProjectId = candidateProjectId && nextState.projects.some((project) => project.id === candidateProjectId)
+        ? candidateProjectId
+        : nextState.projects[0]?.id ?? null;
+
+      const candidateWorktreeId = preferredWorktreeId ?? selectedWorktreeId;
+      let resolvedWorktreeId = candidateWorktreeId && nextState.worktrees.some((worktree) => worktree.id === candidateWorktreeId)
+        ? candidateWorktreeId
+        : null;
+
+      if (!resolvedWorktreeId && resolvedProjectId) {
+        resolvedWorktreeId =
+          nextState.worktrees.find((worktree) => worktree.projectId === resolvedProjectId)?.id ?? null;
+      }
+
+      setSelectedProjectId(resolvedProjectId);
+      setSelectedWorktreeId(resolvedWorktreeId);
+    },
+    [selectedProjectId, selectedWorktreeId]
+  );
+
+  useEffect(() => {
+    const defaultRatio = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, 0.25));
+    try {
+      const stored = window.localStorage.getItem(sidebarStorageKey);
+      if (stored) {
+        const parsed = Number.parseFloat(stored);
+        if (!Number.isNaN(parsed)) {
+          const clamped = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, parsed));
+          setSidebarRatio(clamped);
+          return;
+        }
+      }
+    } catch (error) {
+      console.warn('[layout] failed to load sidebar ratio', error);
+    }
+    setSidebarRatio(defaultRatio);
+  }, [sidebarStorageKey]);
+
+  const setPersistedSidebarRatio = useCallback((value: number) => {
+    const clamped = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, value));
+    setSidebarRatio(clamped);
+    try {
+      window.localStorage.setItem(sidebarStorageKey, clamped.toString());
+    } catch (error) {
+      console.warn('[layout] failed to persist sidebar ratio', error);
+    }
+  }, [sidebarStorageKey]);
+
+  useEffect(() => {
+    const known = new Set(state.worktrees.map((worktree) => worktree.id));
+    setCodexActivity((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      const now = Date.now();
+      for (const id of Object.keys(prev)) {
+        if (known.has(id) && now - prev[id] < CODEX_BUSY_WINDOW_MS * 2) {
+          next[id] = prev[id];
+        } else if (known.has(id)) {
+          next[id] = 0;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    const inputEntries = codexLastInputRef.current;
+    for (const id of Object.keys(inputEntries)) {
+      if (!known.has(id)) {
+        delete inputEntries[id];
+      }
+    }
+    const echoEntries = codexEchoBufferRef.current;
+    for (const id of Object.keys(echoEntries)) {
+      if (!known.has(id)) {
+        delete echoEntries[id];
+      }
+    }
+  }, [state.worktrees]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setCodexActivity((prev) => ({ ...prev }));
+    }, 300);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  const changeWorktree = useCallback(
+    (nextId: string | null, projectHint?: string) => {
+      const resolvedProjectId = (() => {
+        if (projectHint) {
+          return projectHint;
+        }
+        if (!nextId) {
+          return null;
+        }
+        return state.worktrees.find((worktree) => worktree.id === nextId)?.projectId ?? null;
+      })();
+
+      if (resolvedProjectId) {
+        setSelectedProjectId(resolvedProjectId);
+      }
+
+      setSelectedWorktreeId((current) => {
+        if (current && current === nextId) {
+          return current;
+        }
+        return nextId;
+      });
+    },
+    [state.worktrees]
+  );
+
+  const selectProject = useCallback(
+    (projectId: string) => {
+      setSelectedProjectId(projectId);
+      setSelectedWorktreeId((current) => {
+        if (current) {
+          const descriptor = state.worktrees.find((item) => item.id === current);
+          if (descriptor?.projectId === projectId) {
+            return current;
+          }
+        }
+        const fallback = state.worktrees.find((item) => item.projectId === projectId);
+        return fallback?.id ?? null;
+      });
+    },
+    [state.worktrees]
+  );
+
+  const selectedWorktree = useMemo<WorktreeDescriptor | null>(() => {
+    if (!selectedWorktreeId) {
+      return null;
+    }
+    return state.worktrees.find((worktree) => worktree.id === selectedWorktreeId) ?? null;
+  }, [selectedWorktreeId, state.worktrees]);
+
+  const worktreesByProject = useMemo(() => {
+    const map = new Map<string, WorktreeDescriptor[]>();
+    for (const worktree of state.worktrees) {
+      const list = map.get(worktree.projectId);
+      if (list) {
+        list.push(worktree);
+      } else {
+        map.set(worktree.projectId, [worktree]);
+      }
+    }
+    return map;
+  }, [state.worktrees]);
+
+  const modalProject = useMemo(() => {
+    const targetId = createProjectId ?? selectedProjectId;
+    if (!targetId) {
+      return null;
+    }
+    return state.projects.find((project) => project.id === targetId) ?? null;
+  }, [createProjectId, selectedProjectId, state.projects]);
+
+  const latestSessionsByWorktree = useMemo(
+    () => getLatestSessionsByWorktree(state.sessions),
+    [state.sessions]
+  );
+  const codexSessions = useMemo(
+    () => buildCodexSessions(state.worktrees, latestSessionsByWorktree),
+    [state.worktrees, latestSessionsByWorktree]
+  );
 
   const consumeEcho = useCallback((worktreeId: string, chunk: string): string => {
     const buffer = codexEchoBufferRef.current[worktreeId];
@@ -100,59 +281,6 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const defaultRatio = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, 0.25));
-    try {
-      const stored = window.localStorage.getItem(sidebarStorageKey);
-      if (stored) {
-        const parsed = Number.parseFloat(stored);
-        if (!Number.isNaN(parsed)) {
-          const clamped = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, parsed));
-          setSidebarRatio(clamped);
-          return;
-        }
-      }
-    } catch (error) {
-      console.warn('[layout] failed to load sidebar ratio', error);
-    }
-    setSidebarRatio(defaultRatio);
-  }, [sidebarStorageKey]);
-
-  const setPersistedSidebarRatio = useCallback((value: number) => {
-    const clamped = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, value));
-    setSidebarRatio(clamped);
-    try {
-      window.localStorage.setItem(sidebarStorageKey, clamped.toString());
-    } catch (error) {
-      console.warn('[layout] failed to persist sidebar ratio', error);
-    }
-  }, [sidebarStorageKey]);
-
-  const changeWorktree = useCallback((nextId: string | null) => {
-    setSelectedWorktreeId((current) => {
-      if (current && current === nextId) {
-        return current;
-      }
-      return nextId;
-    });
-  }, []);
-
-  const selectedWorktree = useMemo<WorktreeDescriptor | null>(() => {
-    if (!selectedWorktreeId) {
-      return null;
-    }
-    return state.worktrees.find((worktree) => worktree.id === selectedWorktreeId) ?? null;
-  }, [selectedWorktreeId, state.worktrees]);
-
-  const latestSessionsByWorktree = useMemo(
-    () => getLatestSessionsByWorktree(state.sessions),
-    [state.sessions]
-  );
-  const codexSessions = useMemo(
-    () => buildCodexSessions(state.worktrees, latestSessionsByWorktree),
-    [state.worktrees, latestSessionsByWorktree]
-  );
-
-  useEffect(() => {
     if (!bridge) {
       return undefined;
     }
@@ -176,47 +304,6 @@ export const App: React.FC = () => {
   }, [bridge, consumeEcho]);
 
   useEffect(() => {
-    const known = new Set(state.worktrees.map((worktree) => worktree.id));
-    setCodexActivity((prev) => {
-      let changed = false;
-      const next: Record<string, number> = {};
-      const now = Date.now();
-      for (const id of Object.keys(prev)) {
-        if (known.has(id) && now - prev[id] < CODEX_BUSY_WINDOW_MS * 2) {
-          next[id] = prev[id];
-        } else if (known.has(id)) {
-          // keep entry but mark stale
-          next[id] = 0;
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    const inputEntries = codexLastInputRef.current;
-    for (const id of Object.keys(inputEntries)) {
-      if (!known.has(id)) {
-        delete inputEntries[id];
-      }
-    }
-    const echoEntries = codexEchoBufferRef.current;
-    for (const id of Object.keys(echoEntries)) {
-      if (!known.has(id)) {
-        delete echoEntries[id];
-      }
-    }
-  }, [state.worktrees]);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      setCodexActivity((prev) => ({ ...prev }));
-    }, 300);
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!bridge) {
       return undefined;
     }
@@ -229,10 +316,7 @@ export const App: React.FC = () => {
         if (!mounted) {
           return;
         }
-        setState(initialState);
-        if (initialState.worktrees.length > 0) {
-          setSelectedWorktreeId(initialState.worktrees[0].id);
-        }
+        applyState(initialState);
       } catch (error) {
         setNotification((error as Error).message);
       }
@@ -243,20 +327,14 @@ export const App: React.FC = () => {
     });
 
     const unsubscribeState = bridge.onStateUpdate((nextState) => {
-      setState(nextState);
-      setSelectedWorktreeId((current) => {
-        if (current && nextState.worktrees.some((worktree) => worktree.id === current)) {
-          return current;
-        }
-        return nextState.worktrees[0]?.id ?? null;
-      });
+      applyState(nextState);
     });
 
     return () => {
       mounted = false;
       unsubscribeState();
     };
-  }, [bridge]);
+  }, [applyState, bridge]);
 
   useEffect(() => {
     if (!bridge) {
@@ -300,17 +378,45 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSelectProject = async () => {
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(worktreeTabStorageKey);
+      if (stored === 'terminal') {
+        setActiveTab('terminal');
+        return;
+      }
+    } catch (error) {
+      console.warn('[layout] failed to load worktree tab', error);
+    }
+    setActiveTab(DEFAULT_TAB);
+  }, [worktreeTabStorageKey]);
+
+  const selectTab = useCallback(
+    (tabId: WorktreeTabId) => {
+      setActiveTab(tabId);
+      try {
+        window.localStorage.setItem(worktreeTabStorageKey, tabId);
+      } catch (error) {
+        console.warn('[layout] failed to persist worktree tab', error);
+      }
+    },
+    [worktreeTabStorageKey]
+  );
+
+  const handleAddProject = async () => {
     await runAction(async () => {
-      const nextState = await api.selectProjectRoot();
-      setState(nextState);
-      changeWorktree(nextState.worktrees[0]?.id ?? null);
+      const nextState = await api.addProject();
+      const newProject = nextState.projects.find(
+        (candidate) => !state.projects.some((existing) => existing.id === candidate.id)
+      );
+      applyState(nextState, newProject?.id ?? undefined);
     });
   };
 
-  const openCreateModal = () => {
+  const openCreateModal = (projectId?: string) => {
     setNotification(null);
     setCreateName('');
+    setCreateProjectId(projectId ?? selectedProjectId);
     setCreateModalOpen(true);
   };
 
@@ -320,6 +426,7 @@ export const App: React.FC = () => {
     }
     setCreateModalOpen(false);
     setCreateName('');
+    setCreateProjectId(null);
   };
 
   const submitCreateWorktree = async () => {
@@ -328,9 +435,14 @@ export const App: React.FC = () => {
       setNotification('Feature name is required');
       return;
     }
-    const descriptor = await runAction(() => api.createWorktree(trimmed));
+    const targetProjectId = createProjectId ?? selectedProjectId;
+    if (!targetProjectId) {
+      setNotification('Select a project before creating a worktree');
+      return;
+    }
+    const descriptor = await runAction(() => api.createWorktree(targetProjectId, trimmed));
     if (descriptor) {
-      changeWorktree(descriptor.id);
+      changeWorktree(descriptor.id, descriptor.projectId);
       closeCreateModal();
     }
   };
@@ -354,8 +466,7 @@ export const App: React.FC = () => {
     }
     const nextState = await runAction(() => api.mergeWorktree(worktree.id));
     if (nextState) {
-      setState(nextState);
-      changeWorktree(worktree.id);
+      applyState(nextState, worktree.projectId, worktree.id);
     }
   };
 
@@ -372,10 +483,7 @@ export const App: React.FC = () => {
     }
     const nextState = await runAction(() => api.removeWorktree(worktree.id, deleteFolder));
     if (nextState) {
-      setState(nextState);
-      if (!nextState.worktrees.some((item) => item.id === selectedWorktreeId)) {
-        changeWorktree(nextState.worktrees[0]?.id ?? null);
-      }
+      applyState(nextState, worktree.projectId);
     }
   };
 
@@ -446,7 +554,7 @@ export const App: React.FC = () => {
         </div>
       );
     },
-    [api, bridge, selectedWorktreeId, activeTab]
+    [activeTab, api, bridge, selectedWorktreeId]
   );
 
   const renderTerminalPane = useCallback(
@@ -468,42 +576,17 @@ export const App: React.FC = () => {
         </div>
       );
     },
-    [api, selectedWorktreeId, activeTab]
+    [activeTab, api, selectedWorktreeId]
   );
 
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(worktreeTabStorageKey);
-      if (stored === 'terminal') {
-        setActiveTab('terminal');
-        return;
-      }
-    } catch (error) {
-      console.warn('[layout] failed to load worktree tab', error);
-    }
-    setActiveTab(DEFAULT_TAB);
-  }, [worktreeTabStorageKey]);
-
-  const selectTab = useCallback(
-    (tabId: WorktreeTabId) => {
-      setActiveTab(tabId);
-      try {
-        window.localStorage.setItem(worktreeTabStorageKey, tabId);
-      } catch (error) {
-        console.warn('[layout] failed to persist worktree tab', error);
-      }
-    },
-    [worktreeTabStorageKey]
-  );
-
-  if (!state.projectRoot) {
+  if (state.projects.length === 0) {
     return (
       <main className="empty-state">
         <div className="empty-card">
           <h1>Staremaster</h1>
-          <p>Select a git repository to start coordinating worktrees and Codex sessions.</p>
-          <button type="button" onClick={handleSelectProject} disabled={busy || !bridge}>
-            Choose Project Folder
+          <p>Add a git repository to start coordinating worktrees and Codex sessions.</p>
+          <button type="button" onClick={handleAddProject} disabled={busy || !bridge}>
+            Add Project
           </button>
           {notification ? <p className="banner banner-error">{notification}</p> : null}
         </div>
@@ -514,173 +597,210 @@ export const App: React.FC = () => {
   return (
     <>
       <div className="app-shell" style={{ gridTemplateColumns: `${sidebarRatio * 100}% 6px 1fr` }}>
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <div>
-            <h2>Project</h2>
-            <p title={state.projectRoot}>{state.projectRoot}</p>
+        <aside className="sidebar">
+          <div className="sidebar-header">
+            <div>
+              <h2>Projects</h2>
+              {selectedProject ? (
+                <p title={selectedProject.root}>{selectedProject.root}</p>
+              ) : (
+                <p>No project selected</p>
+              )}
+            </div>
+            <button type="button" onClick={handleAddProject} disabled={busy || !bridge}>
+              Add new project
+            </button>
           </div>
-          <button type="button" onClick={handleSelectProject} disabled={busy || !bridge}>
-            Switch
-          </button>
-        </div>
-        <div className="sidebar-actions">
-          <button
-            type="button"
-            onClick={openCreateModal}
-            disabled={busy || !state.projectRoot || !bridge}
-          >
-            + New Worktree
-          </button>
-        </div>
-        <div className="worktree-list">
-          {(() => {
-            const now = Date.now();
-            return state.worktrees.map((worktree) => {
-              const isActive = worktree.id === selectedWorktreeId;
-              const session = codexSessions.get(worktree.id);
-              const lastActivity = codexActivity[worktree.id] ?? 0;
-              const isCodexBusy = session?.status === 'running' && now - lastActivity < CODEX_BUSY_WINDOW_MS;
+          <div className="project-list">
+            {state.projects.map((project) => {
+              const isProjectActive = project.id === selectedProject?.id;
+              const projectWorktrees = worktreesByProject.get(project.id) ?? [];
+              const now = Date.now();
               return (
-                <button
-                  key={worktree.id}
-                  type="button"
-                  className={`worktree-item ${isActive ? 'active' : ''}`}
-                  onClick={() => changeWorktree(worktree.id)}
-                  disabled={busy || !bridge}
-                >
-                  <div className="worktree-name">
-                    {isCodexBusy ? (
-                      <span className="worktree-spinner" aria-label="Codex processing" />
-                    ) : (
-                      <span className="worktree-idle-dot" aria-hidden="true" />
-                    )}
-                    {worktree.featureName}
-                  </div>
-                  <div className="worktree-meta" />
-                </button>
-              );
-            });
-          })()}
-          {state.worktrees.length === 0 ? (
-            <p className="worktree-empty">No worktrees yet. Create one to begin.</p>
-          ) : null}
-        </div>
-      </aside>
-      <div
-        className="app-shell__divider"
-        role="separator"
-        aria-orientation="vertical"
-        onPointerDown={handleSidebarPointerDown}
-      />
-      <section className="main-pane">
-        {notification ? <div className="banner banner-error">{notification}</div> : null}
-        {selectedWorktree ? (
-          <div className="worktree-overview">
-            <header className="overview-header">
-              <div>
-                <h1>{selectedWorktree.featureName}</h1>
-                <p>
-                  Branch <code>{selectedWorktree.branch}</code>
-                  {' · Path '}
-                  <code title={selectedWorktree.path}>{selectedWorktree.path}</code>
-                </p>
-              </div>
-              <div className="overview-actions">
-                <button
-                  type="button"
-                  onClick={() => handleOpenWorktreeInVSCode(selectedWorktree)}
-                  disabled={busy || !bridge}
-                >
-                  Open in VS Code
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleOpenWorktreeInGitGui(selectedWorktree)}
-                  disabled={busy || !bridge}
-                >
-                  Open in Git GUI
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleMergeWorktree(selectedWorktree)}
-                  disabled={busy || !bridge}
-                >
-                  Merge
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteWorktree(selectedWorktree)}
-                  disabled={busy || !bridge}
-                >
-                  Delete
-                </button>
-              </div>
-            </header>
-            <ResizableColumns
-              left={
-                <div className="worktree-tabs">
-                  <div className="worktree-tabs__list" role="tablist" aria-label="Worktree panes">
+                <div key={project.id} className={`project-group ${isProjectActive ? 'active' : ''}`}>
+                  <div className="project-group-header">
                     <button
                       type="button"
-                      role="tab"
-                      aria-selected={activeTab === 'codex'}
-                      className={`worktree-tabs__button${activeTab === 'codex' ? ' worktree-tabs__button--active' : ''}`}
-                      tabIndex={activeTab === 'codex' ? 0 : -1}
-                      onClick={() => selectTab('codex')}
+                      className={`project-item ${isProjectActive ? 'active' : ''}`}
+                      onClick={() => selectProject(project.id)}
+                      disabled={busy || !bridge}
+                      title={project.root}
                     >
-                      Codex
+                      <div className="project-name">{project.name}</div>
+                      <div className="project-path">{project.root}</div>
                     </button>
                     <button
                       type="button"
-                      role="tab"
-                      aria-selected={activeTab === 'terminal'}
-                      className={`worktree-tabs__button${activeTab === 'terminal' ? ' worktree-tabs__button--active' : ''}`}
-                      tabIndex={activeTab === 'terminal' ? 0 : -1}
-                      onClick={() => selectTab('terminal')}
+                      onClick={() => openCreateModal(project.id)}
+                      disabled={busy || !bridge}
+                      className="project-create"
                     >
-                      Terminal
+                      + New Worktree
                     </button>
                   </div>
-                  <div className="worktree-tabs__panels">
-                    <div
-                      className={`worktree-tabs__panel${activeTab === 'codex' ? ' worktree-tabs__panel--active' : ''}`}
-                      role="tabpanel"
-                      aria-hidden={activeTab !== 'codex'}
-                    >
-                      <div className="codex-pane-collection">
-                        {state.worktrees.map((worktree) =>
-                          renderCodexPane(worktree, codexSessions.get(worktree.id))
-                        )}
-                      </div>
-                    </div>
-                    <div
-                      className={`worktree-tabs__panel${activeTab === 'terminal' ? ' worktree-tabs__panel--active' : ''}`}
-                      role="tabpanel"
-                      aria-hidden={activeTab !== 'terminal'}
-                    >
-                      <div className="codex-pane-collection">
-                        {state.worktrees.map((worktree) => renderTerminalPane(worktree))}
-                      </div>
-                    </div>
+                  <div className="worktree-list">
+                    {projectWorktrees.map((worktree) => {
+                      const isActive = worktree.id === selectedWorktreeId;
+                      const session = codexSessions.get(worktree.id);
+                      const lastActivity = codexActivity[worktree.id] ?? 0;
+                      const isCodexBusy =
+                        session?.status === 'running' && now - lastActivity < CODEX_BUSY_WINDOW_MS;
+                      return (
+                        <button
+                          key={worktree.id}
+                          type="button"
+                          className={`worktree-item ${isActive ? 'active' : ''}`}
+                          onClick={() => changeWorktree(worktree.id, project.id)}
+                          disabled={busy || !bridge}
+                        >
+                          <div className="worktree-name">
+                            {isCodexBusy ? (
+                              <span className="worktree-spinner" aria-label="Codex processing" />
+                            ) : (
+                              <span className="worktree-idle-dot" aria-hidden="true" />
+                            )}
+                            {worktree.featureName}
+                          </div>
+                          <div className="worktree-meta">
+                            <span className={`chip status-${worktree.status}`}>{worktree.status}</span>
+                            <span className={`chip codex-${worktree.codexStatus}`}>
+                              Codex {worktree.codexStatus}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {projectWorktrees.length === 0 ? (
+                      <p className="worktree-empty">No worktrees yet. Create one to begin.</p>
+                    ) : null}
                   </div>
                 </div>
-              }
-              right={
-                <section className="diff-pane">
-                  <GitPanel api={api} worktree={selectedWorktree} />
-                </section>
-              }
-              storageKey={codexColumnsStorageKey}
-            />
+              );
+            })}
           </div>
-        ) : (
-          <div className="worktree-overview">
-            <h1>Select a worktree</h1>
-            <p>Choose a worktree on the left to view its Codex session and git changes.</p>
-          </div>
-        )}
-      </section>
+        </aside>
+        <div
+          className="app-shell__divider"
+          role="separator"
+          aria-orientation="vertical"
+          onPointerDown={handleSidebarPointerDown}
+        />
+        <section className="main-pane">
+          {notification ? <div className="banner banner-error">{notification}</div> : null}
+          {selectedWorktree ? (
+            <div className="worktree-overview">
+              <header className="overview-header">
+                <div>
+                  <h1>{selectedWorktree.featureName}</h1>
+                  <p>
+                    Branch <code>{selectedWorktree.branch}</code>
+                    {' · Path '}
+                    <code title={selectedWorktree.path}>{selectedWorktree.path}</code>
+                  </p>
+                </div>
+                <div className="overview-actions">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenWorktreeInVSCode(selectedWorktree)}
+                    disabled={busy || !bridge}
+                  >
+                    Open in VS Code
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenWorktreeInGitGui(selectedWorktree)}
+                    disabled={busy || !bridge}
+                  >
+                    Open in Git GUI
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleMergeWorktree(selectedWorktree)}
+                    disabled={busy || !bridge}
+                  >
+                    Merge
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteWorktree(selectedWorktree)}
+                    disabled={busy || !bridge}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </header>
+              <ResizableColumns
+                left={
+                  <div className="worktree-tabs">
+                    <div className="worktree-tabs__list" role="tablist" aria-label="Worktree panes">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={activeTab === 'codex'}
+                        className={`worktree-tabs__button${
+                          activeTab === 'codex' ? ' worktree-tabs__button--active' : ''
+                        }`}
+                        tabIndex={activeTab === 'codex' ? 0 : -1}
+                        onClick={() => selectTab('codex')}
+                      >
+                        Codex
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={activeTab === 'terminal'}
+                        className={`worktree-tabs__button${
+                          activeTab === 'terminal' ? ' worktree-tabs__button--active' : ''
+                        }`}
+                        tabIndex={activeTab === 'terminal' ? 0 : -1}
+                        onClick={() => selectTab('terminal')}
+                      >
+                        Terminal
+                      </button>
+                    </div>
+                    <div className="worktree-tabs__panels">
+                      <div
+                        className={`worktree-tabs__panel${
+                          activeTab === 'codex' ? ' worktree-tabs__panel--active' : ''
+                        }`}
+                        role="tabpanel"
+                        aria-hidden={activeTab !== 'codex'}
+                      >
+                        <div className="codex-pane-collection">
+                          {state.worktrees.map((worktree) =>
+                            renderCodexPane(worktree, codexSessions.get(worktree.id))
+                          )}
+                        </div>
+                      </div>
+                      <div
+                        className={`worktree-tabs__panel${
+                          activeTab === 'terminal' ? ' worktree-tabs__panel--active' : ''
+                        }`}
+                        role="tabpanel"
+                        aria-hidden={activeTab !== 'terminal'}
+                      >
+                        <div className="codex-pane-collection">
+                          {state.worktrees.map((worktree) => renderTerminalPane(worktree))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                }
+                right={
+                  <section className="diff-pane">
+                    <GitPanel api={api} worktree={selectedWorktree} />
+                  </section>
+                }
+                storageKey={codexColumnsStorageKey}
+              />
+            </div>
+          ) : (
+            <div className="worktree-overview">
+              <h1>Select a worktree</h1>
+              <p>Choose a worktree on the left to view its Codex session and git changes.</p>
+            </div>
+          )}
+        </section>
       </div>
       {isCreateModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={closeCreateModal}>
@@ -692,7 +812,10 @@ export const App: React.FC = () => {
             onClick={(event) => event.stopPropagation()}
           >
             <h2 id="create-worktree-title">Create Worktree</h2>
-            <p>Enter a feature name to create a new worktree.</p>
+            <p>
+              Enter a feature name to create a new worktree in{' '}
+              {modalProject ? modalProject.name : 'the selected project'}.
+            </p>
             <input
               type="text"
               value={createName}
@@ -723,23 +846,42 @@ const createRendererStub = (): RendererApi => {
 
   return {
     getState: async () => state,
-    selectProjectRoot: async () => state,
-    createWorktree: async () => {
+    addProject: async () => state,
+    createWorktree: async (projectId: string, featureName: string) => {
+      void projectId;
+      void featureName;
       throw new Error('Renderer API unavailable: createWorktree');
     },
-    mergeWorktree: async () => state,
-    removeWorktree: async (worktreeId, deleteFolder) => {
+    mergeWorktree: async (_worktreeId?: string) => {
+      void _worktreeId;
+      return state;
+    },
+    removeWorktree: async (worktreeId: string, deleteFolder?: boolean) => {
       void worktreeId;
       void deleteFolder;
       return state;
     },
-    openWorktreeInVSCode: async () => undefined,
-    openWorktreeInGitGui: async () => undefined,
-    startCodex: async () => {
+    openWorktreeInVSCode: async (worktreeId: string) => {
+      void worktreeId;
+      return undefined;
+    },
+    openWorktreeInGitGui: async (worktreeId: string) => {
+      void worktreeId;
+      return undefined;
+    },
+    startCodex: async (worktreeId: string) => {
+      void worktreeId;
       throw new Error('Renderer API unavailable: startCodex');
     },
-    stopCodex: async () => [],
-    sendCodexInput: async () => undefined,
+    stopCodex: async (worktreeId: string) => {
+      void worktreeId;
+      return [];
+    },
+    sendCodexInput: async (worktreeId: string, input: string) => {
+      void worktreeId;
+      void input;
+      return undefined;
+    },
     onStateUpdate: (callback) => {
       void callback;
       return noop;
@@ -752,20 +894,37 @@ const createRendererStub = (): RendererApi => {
       void callback;
       return noop;
     },
-    getGitStatus: async () => ({ staged: [], unstaged: [], untracked: [] }),
+    getGitStatus: async (worktreeId: string) => {
+      void worktreeId;
+      return { staged: [], unstaged: [], untracked: [] };
+    },
     getGitDiff: async (request) => ({
       filePath: request.filePath,
       staged: request.staged ?? false,
       diff: '',
       binary: false
     }),
-    getCodexLog: async () => '',
-    startWorktreeTerminal: async () => {
+    getCodexLog: async (worktreeId: string) => {
+      void worktreeId;
+      return '';
+    },
+    startWorktreeTerminal: async (worktreeId: string) => {
+      void worktreeId;
       throw new Error('Renderer API unavailable: startWorktreeTerminal');
     },
-    stopWorktreeTerminal: async () => undefined,
-    sendTerminalInput: async () => undefined,
-    resizeTerminal: async () => undefined,
+    stopWorktreeTerminal: async (worktreeId: string) => {
+      void worktreeId;
+      return undefined;
+    },
+    sendTerminalInput: async (worktreeId: string, data: string) => {
+      void worktreeId;
+      void data;
+      return undefined;
+    },
+    resizeTerminal: async (request) => {
+      void request;
+      return undefined;
+    },
     onTerminalOutput: () => noop,
     onTerminalExit: () => noop
   };

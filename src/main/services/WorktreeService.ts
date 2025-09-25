@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { spawn } from 'node:child_process';
-import { WorktreeDescriptor, AppState, CodexStatus } from '../../shared/ipc';
+import { WorktreeDescriptor, AppState, CodexStatus, ProjectDescriptor } from '../../shared/ipc';
 import { ProjectStore } from './ProjectStore';
 
 export interface WorktreeEvents {
@@ -18,11 +18,16 @@ interface ParsedWorktree {
   branch: string;
 }
 
+interface ProjectContext {
+  id: string;
+  root: string;
+  git: SimpleGit;
+}
+
 const FEATURE_NAME_REGEX = /[^a-z0-9-_]/gi;
 
 export class WorktreeService extends EventEmitter {
-  private git: SimpleGit | null = null;
-  private projectRoot: string | null = null;
+  private readonly projects = new Map<string, ProjectContext>();
 
   constructor(private readonly store: ProjectStore) {
     super();
@@ -31,15 +36,15 @@ export class WorktreeService extends EventEmitter {
   async load(): Promise<void> {
     await this.store.init();
     const state = this.store.getState();
-    if (state.projectRoot) {
-      await this.setProjectRoot(state.projectRoot);
-    } else {
-      this.emit('state-changed', this.store.getState());
+    for (const project of state.projects) {
+      try {
+        await this.ensureProjectContext(project.id, project.root);
+        await this.refreshProjectWorktrees(project.id);
+      } catch (error) {
+        console.error('[worktree] failed to load project', project.root, error);
+      }
     }
-  }
-
-  getProjectRoot(): string | null {
-    return this.projectRoot;
+    this.emit('state-changed', this.store.getState());
   }
 
   getState(): AppState {
@@ -52,24 +57,30 @@ export class WorktreeService extends EventEmitter {
     return descriptor?.path ?? null;
   }
 
-  async setProjectRoot(directory: string): Promise<void> {
+  async addProject(directory: string): Promise<void> {
     const resolved = await this.validateGitRepository(directory);
-    this.projectRoot = resolved;
-    this.git = simpleGit(resolved);
-    await this.store.setProjectRoot(resolved);
-    await this.refreshWorktrees();
+    const id = hashFromPath(resolved);
+    await this.ensureProjectContext(id, resolved);
+    const state = this.store.getState();
+    const current = state.projects.find((item) => item.id === id);
+    const descriptor: ProjectDescriptor = {
+      id,
+      root: resolved,
+      name: path.basename(resolved),
+      createdAt: current?.createdAt ?? new Date().toISOString()
+    };
+    await this.store.upsertProject(descriptor);
+    await this.refreshProjectWorktrees(id);
     this.emit('state-changed', this.store.getState());
   }
 
-  async refreshWorktrees(): Promise<void> {
-    if (!this.git || !this.projectRoot) {
-      return;
-    }
-
-    const listed = await this.parseExistingWorktrees();
+  async refreshProjectWorktrees(projectId: string): Promise<void> {
+    const context = await this.ensureProjectContextFromStore(projectId);
+    const listed = await this.parseExistingWorktrees(context.git);
     const state = this.store.getState();
 
-    const knownById = new Map(state.worktrees.map((wt) => [wt.id, wt] as const));
+    const existingForProject = state.worktrees.filter((item) => item.projectId === projectId);
+    const knownById = new Map(existingForProject.map((wt) => [wt.id, wt] as const));
     const seen = new Set<string>();
 
     for (const entry of listed) {
@@ -78,18 +89,20 @@ export class WorktreeService extends EventEmitter {
       const current = knownById.get(id);
       const descriptor: WorktreeDescriptor = {
         id,
+        projectId,
         featureName: current?.featureName ?? deriveFeatureName(entry.path),
         branch: entry.branch,
         path: entry.path,
         createdAt: current?.createdAt ?? new Date().toISOString(),
         status: 'ready',
-        codexStatus: current?.codexStatus ?? 'idle'
+        codexStatus: current?.codexStatus ?? 'idle',
+        lastError: current?.lastError
       };
       await this.store.upsertWorktree(descriptor);
       this.emit('worktree-updated', descriptor);
     }
 
-    for (const item of state.worktrees) {
+    for (const item of existingForProject) {
       if (!seen.has(item.id)) {
         await this.store.removeWorktree(item.id);
         this.emit('worktree-removed', item.id);
@@ -99,21 +112,20 @@ export class WorktreeService extends EventEmitter {
     this.emit('state-changed', this.store.getState());
   }
 
-  async createWorktree(featureNameRaw: string): Promise<WorktreeDescriptor> {
-    if (!this.git || !this.projectRoot) {
-      throw new Error('Project root is not configured');
-    }
+  async createWorktree(projectId: string, featureNameRaw: string): Promise<WorktreeDescriptor> {
+    const context = await this.ensureProjectContextFromStore(projectId);
     const featureName = sanitizeFeatureName(featureNameRaw);
     if (!featureName) {
       throw new Error('Feature name must contain alphanumeric characters');
     }
 
     const branch = featureName;
-    const targetDir = path.resolve(this.projectRoot, '..', featureName);
+    const targetDir = path.resolve(context.root, '..', featureName);
     const id = hashFromPath(targetDir);
 
     const descriptor: WorktreeDescriptor = {
       id,
+      projectId,
       featureName,
       branch,
       path: targetDir,
@@ -128,12 +140,12 @@ export class WorktreeService extends EventEmitter {
     try {
       await ensureDirectoryDoesNotExist(targetDir);
 
-      const branchSummary = await this.git.branchLocal();
+      const branchSummary = await context.git.branchLocal();
       if (branchSummary.all.includes(branch)) {
         throw new Error(`Branch ${branch} already exists`);
       }
 
-      await this.git.raw(['worktree', 'add', targetDir, '-b', branch]);
+      await context.git.raw(['worktree', 'add', targetDir, '-b', branch]);
       descriptor.status = 'ready';
       await this.store.upsertWorktree(descriptor);
       this.emit('worktree-updated', descriptor);
@@ -145,15 +157,11 @@ export class WorktreeService extends EventEmitter {
       throw error;
     }
 
-    await this.refreshWorktrees();
+    await this.refreshProjectWorktrees(projectId);
     return descriptor;
   }
 
   async removeWorktree(worktreeId: string, options?: { deleteFolder?: boolean }): Promise<void> {
-    if (!this.git || !this.projectRoot) {
-      throw new Error('Project root is not configured');
-    }
-
     const state = this.store.getState();
     const descriptor = state.worktrees.find((item) => item.id === worktreeId);
 
@@ -161,12 +169,14 @@ export class WorktreeService extends EventEmitter {
       throw new Error(`Unknown worktree ${worktreeId}`);
     }
 
+    const context = await this.ensureProjectContextFromStore(descriptor.projectId);
+
     descriptor.status = 'removing';
     await this.store.upsertWorktree(descriptor);
     this.emit('worktree-updated', descriptor);
 
     try {
-      await this.git.raw(['worktree', 'remove', descriptor.path]);
+      await context.git.raw(['worktree', 'remove', descriptor.path]);
       if (options?.deleteFolder) {
         try {
           await fs.rm(descriptor.path, { recursive: true, force: true });
@@ -188,10 +198,6 @@ export class WorktreeService extends EventEmitter {
   }
 
   async mergeWorktree(worktreeId: string): Promise<AppState> {
-    if (!this.git || !this.projectRoot) {
-      throw new Error('Project root is not configured');
-    }
-
     const state = this.store.getState();
     const descriptor = state.worktrees.find((item) => item.id === worktreeId);
 
@@ -199,7 +205,10 @@ export class WorktreeService extends EventEmitter {
       throw new Error(`Unknown worktree ${worktreeId}`);
     }
 
-    const targetBranch = await this.resolvePrimaryBranch();
+    const context = await this.ensureProjectContextFromStore(descriptor.projectId);
+    const git = context.git;
+
+    const targetBranch = await this.resolvePrimaryBranch(git);
     if (!targetBranch) {
       throw new Error('Unable to determine the main branch to merge into');
     }
@@ -213,12 +222,12 @@ export class WorktreeService extends EventEmitter {
     await this.store.upsertWorktree(descriptor);
     this.emit('worktree-updated', descriptor);
 
-    const branchSummary = await this.git.branch();
+    const branchSummary = await git.branch();
     const previousBranch = branchSummary.current;
 
     try {
-      await this.git.checkout(targetBranch);
-      await this.git.raw(['merge', '--no-ff', descriptor.branch]);
+      await git.checkout(targetBranch);
+      await git.raw(['merge', '--no-ff', descriptor.branch]);
       descriptor.status = 'ready';
       descriptor.lastError = undefined;
       await this.store.upsertWorktree(descriptor);
@@ -232,7 +241,7 @@ export class WorktreeService extends EventEmitter {
     } finally {
       if (previousBranch && previousBranch !== targetBranch) {
         try {
-          await this.git.checkout(previousBranch);
+          await git.checkout(previousBranch);
         } catch (restoreError) {
           console.warn('[worktree] failed to restore branch after merge', restoreError);
         }
@@ -290,6 +299,30 @@ export class WorktreeService extends EventEmitter {
     });
   }
 
+  private async ensureProjectContext(projectId: string, root: string): Promise<ProjectContext> {
+    const resolved = await this.validateGitRepository(root);
+    const existing = this.projects.get(projectId);
+    if (existing && path.resolve(existing.root) === resolved) {
+      return existing;
+    }
+    const context: ProjectContext = {
+      id: projectId,
+      root: resolved,
+      git: simpleGit(resolved)
+    };
+    this.projects.set(projectId, context);
+    return context;
+  }
+
+  private async ensureProjectContextFromStore(projectId: string): Promise<ProjectContext> {
+    const state = this.store.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error(`Unknown project ${projectId}`);
+    }
+    return this.ensureProjectContext(project.id, project.root);
+  }
+
   private async validateGitRepository(directory: string): Promise<string> {
     const resolved = path.resolve(directory);
     const gitDir = path.join(resolved, '.git');
@@ -301,12 +334,8 @@ export class WorktreeService extends EventEmitter {
     return resolved;
   }
 
-  private async parseExistingWorktrees(): Promise<ParsedWorktree[]> {
-    if (!this.git) {
-      return [];
-    }
-
-    const output = await this.git.raw(['worktree', 'list', '--porcelain']);
+  private async parseExistingWorktrees(git: SimpleGit): Promise<ParsedWorktree[]> {
+    const output = await git.raw(['worktree', 'list', '--porcelain']);
     const entries = output.split(/\n(?=worktree )/g).filter(Boolean);
 
     return entries.map((entry) => {
@@ -329,13 +358,9 @@ export class WorktreeService extends EventEmitter {
     });
   }
 
-  private async resolvePrimaryBranch(): Promise<string | null> {
-    if (!this.git) {
-      return null;
-    }
-
+  private async resolvePrimaryBranch(git: SimpleGit): Promise<string | null> {
     try {
-      const summary = await this.git.branch();
+      const summary = await git.branch();
       if (summary.all.some((branch) => branch === 'main' || branch.endsWith('/main'))) {
         return 'main';
       }

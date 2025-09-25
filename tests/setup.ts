@@ -4,7 +4,7 @@ import type { RendererApi } from '@shared/api';
 import type { AppState } from '@shared/ipc';
 
 const emptyState: AppState = {
-  projectRoot: null,
+  projects: [],
   worktrees: [],
   sessions: []
 };
@@ -12,16 +12,17 @@ const emptyState: AppState = {
 beforeEach(() => {
   const api: RendererApi = {
     getState: vi.fn().mockResolvedValue(emptyState),
-    selectProjectRoot: vi.fn().mockResolvedValue(emptyState),
-    createWorktree: vi.fn().mockResolvedValue({
+    addProject: vi.fn().mockResolvedValue(emptyState),
+    createWorktree: vi.fn().mockImplementation(async (projectId) => ({
       id: 'mock',
+      projectId,
       featureName: 'mock',
       branch: 'mock',
       path: '/tmp/mock',
       createdAt: new Date().toISOString(),
       status: 'ready',
       codexStatus: 'idle'
-    }),
+    })),
     mergeWorktree: vi.fn().mockResolvedValue(emptyState),
     removeWorktree: vi.fn().mockResolvedValue(emptyState),
     openWorktreeInVSCode: vi.fn().mockResolvedValue(undefined),
@@ -44,7 +45,20 @@ beforeEach(() => {
       diff: '',
       binary: false
     }),
-    getCodexLog: vi.fn().mockResolvedValue('')
+    getCodexLog: vi.fn().mockResolvedValue(''),
+    startWorktreeTerminal: vi.fn().mockResolvedValue({
+      sessionId: 'terminal-1',
+      worktreeId: 'mock',
+      shell: '/bin/bash',
+      pid: 123,
+      startedAt: new Date().toISOString(),
+      status: 'running'
+    }),
+    stopWorktreeTerminal: vi.fn().mockResolvedValue(undefined),
+    sendTerminalInput: vi.fn().mockResolvedValue(undefined),
+    resizeTerminal: vi.fn().mockResolvedValue(undefined),
+    onTerminalOutput: vi.fn().mockReturnValue(() => {}),
+    onTerminalExit: vi.fn().mockReturnValue(() => {})
   };
 
   Object.defineProperty(window, 'api', {

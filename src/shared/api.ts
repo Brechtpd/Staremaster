@@ -15,8 +15,8 @@ import {
 
 export interface RendererApi {
   getState(): Promise<AppState>;
-  selectProjectRoot(): Promise<AppState>;
-  createWorktree(featureName: string): Promise<WorktreeDescriptor>;
+  addProject(): Promise<AppState>;
+  createWorktree(projectId: string, featureName: string): Promise<WorktreeDescriptor>;
   mergeWorktree(worktreeId: string): Promise<AppState>;
   removeWorktree(worktreeId: string, deleteFolder?: boolean): Promise<AppState>;
   openWorktreeInVSCode(worktreeId: string): Promise<void>;

@@ -1,6 +1,6 @@
 export const IPCChannels = {
   getState: 'project:get-state',
-  selectRoot: 'project:select-root',
+  addProject: 'project:add',
   createWorktree: 'worktree:create',
   mergeWorktree: 'worktree:merge',
   removeWorktree: 'worktree:remove',
@@ -30,8 +30,16 @@ export type IpcChannel = ValueOf<typeof IPCChannels>;
 export type WorktreeStatus = 'idle' | 'creating' | 'ready' | 'merging' | 'removing' | 'error';
 export type CodexStatus = 'idle' | 'starting' | 'resuming' | 'running' | 'stopped' | 'error';
 
+export interface ProjectDescriptor {
+  id: string;
+  root: string;
+  name: string;
+  createdAt: string;
+}
+
 export interface WorktreeDescriptor {
   id: string;
+  projectId: string;
   featureName: string;
   branch: string;
   path: string;
@@ -52,14 +60,9 @@ export interface CodexSessionDescriptor {
 }
 
 export interface AppState {
-  projectRoot: string | null;
+  projects: ProjectDescriptor[];
   worktrees: WorktreeDescriptor[];
   sessions: CodexSessionDescriptor[];
-}
-
-export interface SelectRootResult {
-  projectRoot: string;
-  worktrees: WorktreeDescriptor[];
 }
 
 export interface CodexOutputPayload {
