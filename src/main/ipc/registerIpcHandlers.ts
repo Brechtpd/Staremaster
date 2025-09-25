@@ -46,18 +46,31 @@ export const registerIpcHandlers = (
     return descriptor;
   });
 
-  ipcMain.handle(IPCChannels.removeWorktree, async (_event, payload: { worktreeId: string }) => {
-    try {
-      await codexManager.stop(payload.worktreeId);
-    } catch (error) {
-      if ((error as Error).message.startsWith('No running Codex session')) {
-        // Ignore when no active session is present.
-      } else {
-        throw error;
+  ipcMain.handle(
+    IPCChannels.removeWorktree,
+    async (_event, payload: { worktreeId: string; deleteFolder?: boolean }) => {
+      try {
+        await codexManager.stop(payload.worktreeId);
+      } catch (error) {
+        if ((error as Error).message.startsWith('No running Codex session')) {
+          // Ignore when no active session is present.
+        } else {
+          throw error;
+        }
       }
+      await worktreeService.removeWorktree(payload.worktreeId, {
+        deleteFolder: Boolean(payload.deleteFolder)
+      });
+      return worktreeService.getState();
     }
-    await worktreeService.removeWorktree(payload.worktreeId);
-    return worktreeService.getState();
+  );
+
+  ipcMain.handle(IPCChannels.openWorktreeInVSCode, async (_event, payload: { worktreeId: string }) => {
+    await worktreeService.openWorktreeInVSCode(payload.worktreeId);
+  });
+
+  ipcMain.handle(IPCChannels.openWorktreeInGitGui, async (_event, payload: { worktreeId: string }) => {
+    await worktreeService.openWorktreeInGitGui(payload.worktreeId);
   });
 
   ipcMain.handle(IPCChannels.mergeWorktree, async (_event, payload: { worktreeId: string }) => {
@@ -115,6 +128,8 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.createWorktree);
     ipcMain.removeHandler(IPCChannels.mergeWorktree);
     ipcMain.removeHandler(IPCChannels.removeWorktree);
+    ipcMain.removeHandler(IPCChannels.openWorktreeInVSCode);
+    ipcMain.removeHandler(IPCChannels.openWorktreeInGitGui);
     ipcMain.removeHandler(IPCChannels.startCodex);
     ipcMain.removeHandler(IPCChannels.stopCodex);
     ipcMain.removeHandler(IPCChannels.gitStatus);

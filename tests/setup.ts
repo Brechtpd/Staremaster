@@ -24,6 +24,8 @@ beforeEach(() => {
     }),
     mergeWorktree: vi.fn().mockResolvedValue(emptyState),
     removeWorktree: vi.fn().mockResolvedValue(emptyState),
+    openWorktreeInVSCode: vi.fn().mockResolvedValue(undefined),
+    openWorktreeInGitGui: vi.fn().mockResolvedValue(undefined),
     startCodex: vi.fn().mockResolvedValue({
       id: 'session',
       worktreeId: 'mock',

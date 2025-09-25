@@ -7,6 +7,8 @@ const IPCChannels = {
   createWorktree: 'worktree:create',
   mergeWorktree: 'worktree:merge',
   removeWorktree: 'worktree:remove',
+  openWorktreeInVSCode: 'worktree:open-vscode',
+  openWorktreeInGitGui: 'worktree:open-git-gui',
   startCodex: 'codex:start',
   stopCodex: 'codex:stop',
   sendCodexInput: 'codex:input',
@@ -23,7 +25,12 @@ const api: RendererApi = {
   selectProjectRoot: () => ipcRenderer.invoke(IPCChannels.selectRoot),
   createWorktree: (featureName) => ipcRenderer.invoke(IPCChannels.createWorktree, { featureName }),
   mergeWorktree: (worktreeId) => ipcRenderer.invoke(IPCChannels.mergeWorktree, { worktreeId }),
-  removeWorktree: (worktreeId) => ipcRenderer.invoke(IPCChannels.removeWorktree, { worktreeId }),
+  removeWorktree: (worktreeId, deleteFolder) =>
+    ipcRenderer.invoke(IPCChannels.removeWorktree, { worktreeId, deleteFolder }),
+  openWorktreeInVSCode: (worktreeId) =>
+    ipcRenderer.invoke(IPCChannels.openWorktreeInVSCode, { worktreeId }),
+  openWorktreeInGitGui: (worktreeId) =>
+    ipcRenderer.invoke(IPCChannels.openWorktreeInGitGui, { worktreeId }),
   startCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.startCodex, { worktreeId }),
   stopCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.stopCodex, { worktreeId }),
   sendCodexInput: (worktreeId, input) => ipcRenderer.invoke(IPCChannels.sendCodexInput, { worktreeId, input }),

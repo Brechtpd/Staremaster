@@ -232,20 +232,32 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleTrashWorktree = async (worktree: WorktreeDescriptor) => {
+  const handleDeleteWorktree = async (worktree: WorktreeDescriptor) => {
     const confirmed = window.confirm(
-      `Trash worktree ${worktree.featureName}? Changes inside ${worktree.path} will persist on disk.`,
+      `Delete worktree ${worktree.featureName}? Changes inside ${worktree.path} will persist on disk.`
     );
     if (!confirmed) {
       return;
     }
-    const nextState = await runAction(() => api.removeWorktree(worktree.id));
+    let deleteFolder = false;
+    if (window.confirm('Also delete the worktree directory from disk? This cannot be undone.')) {
+      deleteFolder = true;
+    }
+    const nextState = await runAction(() => api.removeWorktree(worktree.id, deleteFolder));
     if (nextState) {
       setState(nextState);
       if (!nextState.worktrees.some((item) => item.id === selectedWorktreeId)) {
         changeWorktree(nextState.worktrees[0]?.id ?? null);
       }
     }
+  };
+
+  const handleOpenWorktreeInVSCode = async (worktree: WorktreeDescriptor) => {
+    await runAction(() => api.openWorktreeInVSCode(worktree.id));
+  };
+
+  const handleOpenWorktreeInGitGui = async (worktree: WorktreeDescriptor) => {
+    await runAction(() => api.openWorktreeInGitGui(worktree.id));
   };
 
   const handleSidebarPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -383,6 +395,20 @@ export const App: React.FC = () => {
               <div className="overview-actions">
                 <button
                   type="button"
+                  onClick={() => handleOpenWorktreeInVSCode(selectedWorktree)}
+                  disabled={busy || !bridge}
+                >
+                  Open in VS Code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenWorktreeInGitGui(selectedWorktree)}
+                  disabled={busy || !bridge}
+                >
+                  Open in Git GUI
+                </button>
+                <button
+                  type="button"
                   onClick={() => handleMergeWorktree(selectedWorktree)}
                   disabled={busy || !bridge}
                 >
@@ -390,10 +416,10 @@ export const App: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleTrashWorktree(selectedWorktree)}
+                  onClick={() => handleDeleteWorktree(selectedWorktree)}
                   disabled={busy || !bridge}
                 >
-                  Thrash
+                  Delete
                 </button>
               </div>
             </header>
@@ -465,7 +491,13 @@ const createRendererStub = (): RendererApi => {
       throw new Error('Renderer API unavailable: createWorktree');
     },
     mergeWorktree: async () => state,
-    removeWorktree: async () => state,
+    removeWorktree: async (worktreeId, deleteFolder) => {
+      void worktreeId;
+      void deleteFolder;
+      return state;
+    },
+    openWorktreeInVSCode: async () => undefined,
+    openWorktreeInGitGui: async () => undefined,
     startCodex: async () => {
       throw new Error('Renderer API unavailable: startCodex');
     },

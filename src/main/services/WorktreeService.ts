@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import simpleGit, { SimpleGit } from 'simple-git';
+import { spawn } from 'node:child_process';
 import { WorktreeDescriptor, AppState, CodexStatus } from '../../shared/ipc';
 import { ProjectStore } from './ProjectStore';
 
@@ -148,7 +149,7 @@ export class WorktreeService extends EventEmitter {
     return descriptor;
   }
 
-  async removeWorktree(worktreeId: string): Promise<void> {
+  async removeWorktree(worktreeId: string, options?: { deleteFolder?: boolean }): Promise<void> {
     if (!this.git || !this.projectRoot) {
       throw new Error('Project root is not configured');
     }
@@ -166,6 +167,13 @@ export class WorktreeService extends EventEmitter {
 
     try {
       await this.git.raw(['worktree', 'remove', descriptor.path]);
+      if (options?.deleteFolder) {
+        try {
+          await fs.rm(descriptor.path, { recursive: true, force: true });
+        } catch (removeError) {
+          console.warn('[worktree] failed to delete directory', descriptor.path, removeError);
+        }
+      }
       await this.store.removeWorktree(descriptor.id);
       this.emit('worktree-removed', descriptor.id);
     } catch (error) {
@@ -242,6 +250,44 @@ export class WorktreeService extends EventEmitter {
       lastError: error
     });
     this.emit('state-changed', this.store.getState());
+  }
+
+  async openWorktreeInVSCode(worktreeId: string): Promise<void> {
+    const worktreePath = this.getWorktreePath(worktreeId);
+    if (!worktreePath) {
+      throw new Error(`Unknown worktree ${worktreeId}`);
+    }
+    const command = process.platform === 'win32' ? 'code.cmd' : 'code';
+    await this.launchExternal(command, [worktreePath], worktreePath, 'VS Code');
+  }
+
+  async openWorktreeInGitGui(worktreeId: string): Promise<void> {
+    const worktreePath = this.getWorktreePath(worktreeId);
+    if (!worktreePath) {
+      throw new Error(`Unknown worktree ${worktreeId}`);
+    }
+    await this.launchExternal('git', ['gui'], worktreePath, 'Git GUI');
+  }
+
+  private async launchExternal(
+    command: string,
+    args: string[],
+    cwd: string,
+    label: string
+  ): Promise<void> {
+    await fs.access(cwd);
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd,
+        stdio: 'ignore',
+        detached: true
+      });
+      child.on('error', (error) => {
+        reject(new Error(`Failed to launch ${label}: ${(error as Error).message}`));
+      });
+      child.unref();
+      resolve();
+    });
   }
 
   private async validateGitRepository(directory: string): Promise<string> {
