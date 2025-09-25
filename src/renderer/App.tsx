@@ -28,6 +28,76 @@ const ECHO_BUFFER_LIMIT = 4096;
 
 type CodexMode = 'custom' | 'terminal';
 const DEFAULT_CODEX_MODE: CodexMode = 'terminal';
+const hiddenProjectsStorageKey = 'layout/hidden-projects';
+const collapsedProjectsStorageKey = 'layout/collapsed-projects';
+const sidebarRatioStorageKey = 'layout/sidebar-ratio';
+
+export class LongRunTracker {
+  constructor(private readonly thresholdMs: number) {}
+
+  private readonly starts = new Map<string, number>();
+  private readonly notified = new Set<string>();
+
+  update(worktreeId: string, busy: boolean, timestamp: number): boolean {
+    if (busy) {
+      if (!this.starts.has(worktreeId)) {
+        this.starts.set(worktreeId, timestamp);
+        this.notified.delete(worktreeId);
+      }
+      return false;
+    }
+
+    const start = this.starts.get(worktreeId);
+    if (start == null) {
+      this.notified.delete(worktreeId);
+      return false;
+    }
+
+    this.starts.delete(worktreeId);
+
+    if (this.notified.has(worktreeId)) {
+      return false;
+    }
+
+    if (timestamp - start >= this.thresholdMs) {
+      this.notified.add(worktreeId);
+      return true;
+    }
+
+    this.notified.delete(worktreeId);
+    return false;
+  }
+
+  prune(validIds: Set<string>): void {
+    for (const id of Array.from(this.starts.keys())) {
+      if (!validIds.has(id)) {
+        this.starts.delete(id);
+      }
+    }
+    for (const id of Array.from(this.notified.values())) {
+      if (!validIds.has(id)) {
+        this.notified.delete(id);
+      }
+    }
+  }
+}
+
+const computeBusyFlag = (params: {
+  allowSpinner: boolean;
+  lastActivity?: number;
+  lastInput?: number;
+  now: number;
+}): boolean => {
+  if (!params.allowSpinner) {
+    return false;
+  }
+  const activity = params.lastActivity ?? 0;
+  const input = params.lastInput ?? 0;
+  if (activity === 0 || activity <= input) {
+    return false;
+  }
+  return params.now - activity < CODEX_BUSY_WINDOW_MS;
+};
 
 const ANSI_PATTERN = new RegExp(
   ['\\u001B\\[[0-9;?]*[ -/]*[@-~]', '\\u001B][^\\u0007]*\\u0007'].join('|'),
@@ -35,6 +105,25 @@ const ANSI_PATTERN = new RegExp(
 );
 
 const stripAnsi = (value: string): string => value.replace(ANSI_PATTERN, '');
+
+const readStoredList = (key: string): string[] => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((value): value is string => typeof value === 'string');
+    }
+  } catch (error) {
+    console.warn(`[layout] failed to parse stored list for ${key}`, error);
+  }
+  return [];
+};
 
 export const App: React.FC = () => {
   const [bridge, setBridge] = useState<RendererApi | null>(() => window.api ?? null);
@@ -48,54 +137,198 @@ export const App: React.FC = () => {
   const [createName, setCreateName] = useState('');
   const [createProjectId, setCreateProjectId] = useState<string | null>(null);
   const [sidebarRatio, setSidebarRatio] = useState(0.25);
+  const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>(() => readStoredList(hiddenProjectsStorageKey));
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<string[]>(() => readStoredList(collapsedProjectsStorageKey));
+  const stateInitializedRef = useRef(false);
   const selectedProject = useMemo<ProjectDescriptor | null>(() => {
     if (!selectedProjectId) {
       return null;
     }
     return state.projects.find((project) => project.id === selectedProjectId) ?? null;
   }, [selectedProjectId, state.projects]);
-  const projectKey = useMemo(
-    () => (selectedProject ? encodeURIComponent(selectedProject.root) : 'global'),
-    [selectedProject]
+  const hiddenProjects = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
+  const collapsedProjects = useMemo(() => new Set(collapsedProjectIds), [collapsedProjectIds]);
+  const visibleProjects = useMemo(
+    () => state.projects.filter((project) => !hiddenProjects.has(project.id)),
+    [hiddenProjects, state.projects]
   );
-  const sidebarStorageKey = useMemo(() => `layout/${projectKey}/sidebar-ratio`, [projectKey]);
+  const effectiveProject = useMemo(() => {
+    if (selectedProject && !hiddenProjects.has(selectedProject.id)) {
+      return selectedProject;
+    }
+    return visibleProjects[0] ?? null;
+  }, [hiddenProjects, selectedProject, visibleProjects]);
+  const projectKey = useMemo(
+    () => (effectiveProject ? encodeURIComponent(effectiveProject.root) : 'global'),
+    [effectiveProject]
+  );
   const codexColumnsStorageKey = useMemo(() => `layout/${projectKey}/codex-columns`, [projectKey]);
   const worktreeTabStorageKey = useMemo(() => `layout/${projectKey}/worktree-tab`, [projectKey]);
   const [activeTab, setActiveTab] = useState<WorktreeTabId>(DEFAULT_TAB);
   const [codexActivity, setCodexActivity] = useState<Record<string, number>>({});
+  const [codexStatusLines, setCodexStatusLines] = useState<Record<string, string>>({});
   const codexLastInputRef = useRef<Record<string, number>>({});
   const codexEchoBufferRef = useRef<Record<string, string>>({});
+  const longRunTrackerRef = useRef(new LongRunTracker(10_000));
+  const busyStatesRef = useRef<Array<{ id: string; busy: boolean }>>([]);
   const isTerminalCodex = DEFAULT_CODEX_MODE === 'terminal';
+  const filteredWorktrees = useMemo(() => {
+    if (state.projects.length === 0) {
+      return state.worktrees;
+    }
+    const roots = new Map(state.projects.map((project) => [project.id, project.root] as const));
+    return state.worktrees.filter((worktree) => {
+      const root = roots.get(worktree.projectId);
+      return !root || worktree.path !== root;
+    });
+  }, [state.projects, state.worktrees]);
+  const busyStates: Array<{ id: string; busy: boolean }> = [];
+  const busySignatureParts: string[] = [];
+  const busyTimestamp = Date.now();
+  const registerBusyState = (id: string, busy: boolean) => {
+    busyStates.push({ id, busy });
+    busySignatureParts.push(`${id}:${busy ? 1 : 0}`);
+  };
+
+  const captureStatusLine = useCallback((worktreeId: string, plainText: string) => {
+    const lines = plainText.split(/\n/);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const trimmed = lines[index].trim();
+      if (!trimmed) {
+        continue;
+      }
+      if (!/esc to interrupt/i.test(trimmed)) {
+        continue;
+      }
+      const normalized = trimmed.replace(/\s+/g, ' ').trim();
+      const summary = normalized
+        .replace(/^[-•\s]+/, '')
+        .replace(/\s*\([^)]*\)\s*$/, '')
+        .trim();
+      setCodexStatusLines((prev) => {
+        if (!summary) {
+          if (!prev[worktreeId]) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[worktreeId];
+          return next;
+        }
+        if (prev[worktreeId] === summary) {
+          return prev;
+        }
+        return { ...prev, [worktreeId]: summary };
+      });
+      return;
+    }
+  }, []);
+
+  const pushDesktopNotification = useCallback((title: string, body: string) => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      return;
+    }
+    const spawn = () => {
+      try {
+        // eslint-disable-next-line no-new
+        new Notification(title, { body });
+      } catch (error) {
+        console.warn('[codex] notification failed', error);
+      }
+    };
+    if (Notification.permission === 'granted') {
+      spawn();
+    } else if (Notification.permission === 'default') {
+      Notification.requestPermission()
+        .then((permission) => {
+          if (permission === 'granted') {
+            spawn();
+          }
+        })
+        .catch((error) => {
+          console.warn('[codex] notification permission request failed', error);
+        });
+    }
+  }, []);
+
+  const describeWorktree = useCallback(
+    (worktreeId: string): { title: string; detail: string } => {
+      const worktree = state.worktrees.find((item) => item.id === worktreeId);
+      const projectIdFromRoot = worktreeId.startsWith('project-root:')
+        ? worktreeId.slice('project-root:'.length)
+        : null;
+      const project = state.projects.find((item) => item.id === (worktree?.projectId ?? projectIdFromRoot));
+      const featureName = worktree?.featureName ?? 'main';
+      const title = project ? `${project.name} / ${featureName}` : featureName;
+      const detail = codexStatusLines[worktreeId] ?? 'Codex finished processing.';
+      return { title, detail };
+    },
+    [codexStatusLines, state.projects, state.worktrees]
+  );
+
+  const notifyLongRunCompletion = useCallback(
+    (worktreeId: string) => {
+      const { title, detail } = describeWorktree(worktreeId);
+      pushDesktopNotification(title, detail);
+    },
+    [describeWorktree, pushDesktopNotification]
+  );
 
   const applyState = useCallback(
     (nextState: AppState, preferredProjectId?: string | null, preferredWorktreeId?: string | null) => {
+      if (stateInitializedRef.current) {
+        const previousProjectIds = new Set(state.projects.map((project) => project.id));
+        const newProjectIds = nextState.projects
+          .filter((project) => !previousProjectIds.has(project.id))
+          .map((project) => project.id);
+
+        if (newProjectIds.length > 0) {
+          setHiddenProjectIds((prev) => prev.filter((id) => !newProjectIds.includes(id)));
+          setCollapsedProjectIds((prev) => prev.filter((id) => !newProjectIds.includes(id)));
+        }
+      }
+
       setState(nextState);
 
+      const hiddenSet = new Set(hiddenProjectIds);
+      const findFirstVisibleProjectId = () =>
+        nextState.projects.find((project) => !hiddenSet.has(project.id))?.id ?? null;
+
       const candidateProjectId = preferredProjectId ?? selectedProjectId;
-      const resolvedProjectId = candidateProjectId && nextState.projects.some((project) => project.id === candidateProjectId)
+      const resolvedProjectId = candidateProjectId &&
+        nextState.projects.some((project) => project.id === candidateProjectId && !hiddenSet.has(project.id))
         ? candidateProjectId
-        : nextState.projects[0]?.id ?? null;
+        : findFirstVisibleProjectId();
 
       const candidateWorktreeId = preferredWorktreeId ?? selectedWorktreeId;
-      let resolvedWorktreeId = candidateWorktreeId && nextState.worktrees.some((worktree) => worktree.id === candidateWorktreeId)
-        ? candidateWorktreeId
-        : null;
+      const isRootCandidate = candidateWorktreeId?.startsWith('project-root:') ?? false;
+      let resolvedWorktreeId =
+        candidateWorktreeId &&
+        (isRootCandidate ||
+          nextState.worktrees.some(
+            (worktree) =>
+              worktree.id === candidateWorktreeId &&
+              (!resolvedProjectId || worktree.projectId === resolvedProjectId)
+          ))
+          ? candidateWorktreeId
+          : null;
 
       if (!resolvedWorktreeId && resolvedProjectId) {
-        resolvedWorktreeId =
-          nextState.worktrees.find((worktree) => worktree.projectId === resolvedProjectId)?.id ?? null;
+        const rootId = `project-root:${resolvedProjectId}`;
+        const fallbackWorktree = nextState.worktrees.find((worktree) => worktree.projectId === resolvedProjectId);
+        resolvedWorktreeId = fallbackWorktree?.id ?? rootId;
       }
 
       setSelectedProjectId(resolvedProjectId);
       setSelectedWorktreeId(resolvedWorktreeId);
+      stateInitializedRef.current = true;
     },
-    [selectedProjectId, selectedWorktreeId]
+    [hiddenProjectIds, selectedProjectId, selectedWorktreeId, state.projects]
   );
 
   useEffect(() => {
     const defaultRatio = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, 0.25));
     try {
-      const stored = window.localStorage.getItem(sidebarStorageKey);
+      const stored = window.localStorage.getItem(sidebarRatioStorageKey);
       if (stored) {
         const parsed = Number.parseFloat(stored);
         if (!Number.isNaN(parsed)) {
@@ -108,20 +341,92 @@ export const App: React.FC = () => {
       console.warn('[layout] failed to load sidebar ratio', error);
     }
     setSidebarRatio(defaultRatio);
-  }, [sidebarStorageKey]);
+  }, []);
 
   const setPersistedSidebarRatio = useCallback((value: number) => {
     const clamped = Math.min(SIDEBAR_MAX_RATIO, Math.max(SIDEBAR_MIN_RATIO, value));
     setSidebarRatio(clamped);
     try {
-      window.localStorage.setItem(sidebarStorageKey, clamped.toString());
+      window.localStorage.setItem(sidebarRatioStorageKey, clamped.toString());
     } catch (error) {
       console.warn('[layout] failed to persist sidebar ratio', error);
     }
-  }, [sidebarStorageKey]);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const storedHidden = window.localStorage.getItem(hiddenProjectsStorageKey);
+      if (storedHidden) {
+        const parsed = JSON.parse(storedHidden);
+        if (Array.isArray(parsed)) {
+          setHiddenProjectIds(parsed.filter((value): value is string => typeof value === 'string'));
+        }
+      }
+    } catch (error) {
+      console.warn('[layout] failed to load hidden projects', error);
+    }
+    try {
+      const storedCollapsed = window.localStorage.getItem(collapsedProjectsStorageKey);
+      if (storedCollapsed) {
+        const parsed = JSON.parse(storedCollapsed);
+        if (Array.isArray(parsed)) {
+          setCollapsedProjectIds(parsed.filter((value): value is string => typeof value === 'string'));
+        }
+      }
+    } catch (error) {
+      console.warn('[layout] failed to load collapsed projects', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!stateInitializedRef.current) {
+      return;
+    }
+    setHiddenProjectIds((prev) => {
+      const valid = prev.filter((id) => state.projects.some((project) => project.id === id));
+      return valid.length === prev.length ? prev : valid;
+    });
+  }, [state.projects]);
+
+  useEffect(() => {
+    if (!stateInitializedRef.current) {
+      return;
+    }
+    setCollapsedProjectIds((prev) => {
+      const valid = prev.filter((id) => state.projects.some((project) => project.id === id));
+      return valid.length === prev.length ? prev : valid;
+    });
+  }, [state.projects]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(hiddenProjectsStorageKey, JSON.stringify(hiddenProjectIds));
+    } catch (error) {
+      console.warn('[layout] failed to persist hidden projects', error);
+    }
+  }, [hiddenProjectIds]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(collapsedProjectsStorageKey, JSON.stringify(collapsedProjectIds));
+    } catch (error) {
+      console.warn('[layout] failed to persist collapsed projects', error);
+    }
+  }, [collapsedProjectIds]);
+
+  useEffect(() => {
+    if (effectiveProject) {
+      setSelectedProjectId((current) => (current === effectiveProject.id ? current : effectiveProject.id));
+    } else if (selectedProjectId) {
+      setSelectedProjectId(null);
+    }
+  }, [effectiveProject, selectedProjectId]);
 
   useEffect(() => {
     const known = new Set(state.worktrees.map((worktree) => worktree.id));
+    for (const project of state.projects) {
+      known.add(`project-root:${project.id}`);
+    }
     setCodexActivity((prev) => {
       let changed = false;
       const next: Record<string, number> = {};
@@ -149,7 +454,7 @@ export const App: React.FC = () => {
         delete echoEntries[id];
       }
     }
-  }, [state.worktrees]);
+  }, [state.projects, state.worktrees]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -174,6 +479,7 @@ export const App: React.FC = () => {
 
       if (resolvedProjectId) {
         setSelectedProjectId(resolvedProjectId);
+        setCollapsedProjectIds((prev) => prev.filter((id) => id !== resolvedProjectId));
       }
 
       setSelectedWorktreeId((current) => {
@@ -188,6 +494,7 @@ export const App: React.FC = () => {
 
   const selectProject = useCallback(
     (projectId: string) => {
+      setCollapsedProjectIds((prev) => prev.filter((id) => id !== projectId));
       setSelectedProjectId(projectId);
       setSelectedWorktreeId((current) => {
         if (current) {
@@ -203,33 +510,108 @@ export const App: React.FC = () => {
     [state.worktrees]
   );
 
+  const toggleProjectCollapse = useCallback((projectId: string) => {
+    setCollapsedProjectIds((prev) =>
+      prev.includes(projectId) ? prev.filter((id) => id !== projectId) : [...prev, projectId]
+    );
+  }, []);
+
+  const handleHideProject = useCallback(
+    (projectId: string) => {
+      const nextHidden = new Set(hiddenProjects);
+      nextHidden.add(projectId);
+      const fallbackProjectId = state.projects.find((project) => !nextHidden.has(project.id))?.id ?? null;
+
+      setHiddenProjectIds((prev) => (prev.includes(projectId) ? prev : [...prev, projectId]));
+      setCollapsedProjectIds((prev) => prev.filter((id) => id !== projectId));
+
+      setSelectedProjectId((current) => {
+        if (current && !nextHidden.has(current) && current !== projectId) {
+          return current;
+        }
+        return fallbackProjectId;
+      });
+
+      setSelectedWorktreeId((current) => {
+        const currentDescriptor = state.worktrees.find((worktree) => worktree.id === current);
+        if (currentDescriptor && !nextHidden.has(currentDescriptor.projectId) && currentDescriptor.projectId !== projectId) {
+          return current;
+        }
+        if (!fallbackProjectId) {
+          return null;
+        }
+        return state.worktrees.find((worktree) => worktree.projectId === fallbackProjectId)?.id ?? null;
+      });
+    },
+    [hiddenProjects, state.projects, state.worktrees]
+  );
+
+  const rootWorktree = useMemo<WorktreeDescriptor | null>(() => {
+    if (!selectedWorktreeId?.startsWith('project-root:')) {
+      return null;
+    }
+    const projectId = selectedWorktreeId.slice('project-root:'.length);
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      return null;
+    }
+    const representative = state.worktrees.find((item) => item.projectId === project.id);
+    const branch = representative?.branch ?? 'main';
+    return {
+      id: selectedWorktreeId,
+      projectId: project.id,
+      featureName: 'main',
+      branch,
+      path: project.root,
+      createdAt: project.createdAt,
+      status: 'ready',
+      codexStatus: 'idle'
+    };
+  }, [selectedWorktreeId, state.projects, state.worktrees]);
+
   const selectedWorktree = useMemo<WorktreeDescriptor | null>(() => {
+    if (rootWorktree) {
+      return rootWorktree;
+    }
     if (!selectedWorktreeId) {
       return null;
     }
     return state.worktrees.find((worktree) => worktree.id === selectedWorktreeId) ?? null;
-  }, [selectedWorktreeId, state.worktrees]);
+  }, [rootWorktree, selectedWorktreeId, state.worktrees]);
 
-  const worktreesByProject = useMemo(() => {
-    const map = new Map<string, WorktreeDescriptor[]>();
-    for (const worktree of state.worktrees) {
-      const list = map.get(worktree.projectId);
-      if (list) {
-        list.push(worktree);
-      } else {
-        map.set(worktree.projectId, [worktree]);
-      }
+  const isRootSelection = Boolean(rootWorktree);
+
+  const selectedWorktreeProject = useMemo<ProjectDescriptor | null>(() => {
+    if (!selectedWorktree) {
+      return null;
     }
-    return map;
-  }, [state.worktrees]);
+    return state.projects.find((project) => project.id === selectedWorktree.projectId) ?? null;
+  }, [selectedWorktree, state.projects]);
+
+  const selectedWorktreeTitle = useMemo(() => {
+    if (!selectedWorktree) {
+      return '';
+    }
+    const projectName = selectedWorktreeProject?.name;
+    return projectName ? `${projectName} / ${selectedWorktree.featureName}` : selectedWorktree.featureName;
+  }, [selectedWorktree, selectedWorktreeProject]);
+
+  const selectedWorktreeStatus = selectedWorktree ? codexStatusLines[selectedWorktree.id] ?? null : null;
+
+  const renderableWorktrees = useMemo(() => {
+    if (rootWorktree) {
+      return [rootWorktree, ...filteredWorktrees];
+    }
+    return filteredWorktrees;
+  }, [filteredWorktrees, rootWorktree]);
 
   const modalProject = useMemo(() => {
-    const targetId = createProjectId ?? selectedProjectId;
+    const targetId = createProjectId ?? effectiveProject?.id ?? null;
     if (!targetId) {
       return null;
     }
     return state.projects.find((project) => project.id === targetId) ?? null;
-  }, [createProjectId, selectedProjectId, state.projects]);
+  }, [createProjectId, effectiveProject, state.projects]);
 
   const latestSessionsByWorktree = useMemo(
     () => getLatestSessionsByWorktree(state.sessions),
@@ -285,6 +667,7 @@ export const App: React.FC = () => {
     return chunk;
   }, []);
 
+
   useEffect(() => {
     if (!bridge) {
       return undefined;
@@ -295,8 +678,9 @@ export const App: React.FC = () => {
         return;
       }
       const normalized = remainder.replace(/\r/g, '');
-      const visible = stripAnsi(normalized).trim();
-      if (!visible) {
+      const plain = stripAnsi(normalized);
+      captureStatusLine(payload.worktreeId, plain);
+      if (!plain.trim()) {
         return;
       }
       const now = Date.now();
@@ -306,7 +690,7 @@ export const App: React.FC = () => {
       setCodexActivity((prev) => ({ ...prev, [payload.worktreeId]: now }));
     });
     return unsubscribe;
-  }, [bridge, consumeEcho]);
+  }, [bridge, captureStatusLine, consumeEcho]);
 
   useEffect(() => {
     const unsubscribe = api.onCodexTerminalOutput((payload) => {
@@ -315,15 +699,16 @@ export const App: React.FC = () => {
         return;
       }
       const normalized = remainder.replace(/\r/g, '');
-      const visible = stripAnsi(normalized).trim();
-      if (!visible) {
+      const plain = stripAnsi(normalized);
+      captureStatusLine(payload.worktreeId, plain);
+      if (!plain.trim()) {
         return;
       }
       const now = Date.now();
       setCodexActivity((prev) => ({ ...prev, [payload.worktreeId]: now }));
     });
     return unsubscribe;
-  }, [api, consumeEcho]);
+  }, [api, captureStatusLine, consumeEcho]);
 
   useEffect(() => {
     if (!bridge) {
@@ -432,13 +817,22 @@ export const App: React.FC = () => {
         (candidate) => !state.projects.some((existing) => existing.id === candidate.id)
       );
       applyState(nextState, newProject?.id ?? undefined);
+      if (!newProject) {
+        const stillHidden = nextState.projects
+          .filter((project) => hiddenProjects.has(project.id))
+          .map((project) => project.id);
+        if (stillHidden.length > 0) {
+          setHiddenProjectIds((prev) => prev.filter((id) => !stillHidden.includes(id)));
+          setCollapsedProjectIds((prev) => prev.filter((id) => !stillHidden.includes(id)));
+        }
+      }
     });
   };
 
   const openCreateModal = (projectId?: string) => {
     setNotification(null);
     setCreateName('');
-    setCreateProjectId(projectId ?? selectedProjectId);
+    setCreateProjectId(projectId ?? effectiveProject?.id ?? null);
     setCreateModalOpen(true);
   };
 
@@ -457,7 +851,7 @@ export const App: React.FC = () => {
       setNotification('Feature name is required');
       return;
     }
-    const targetProjectId = createProjectId ?? selectedProjectId;
+    const targetProjectId = createProjectId ?? effectiveProject?.id ?? null;
     if (!targetProjectId) {
       setNotification('Select a project before creating a worktree');
       return;
@@ -480,6 +874,10 @@ export const App: React.FC = () => {
   };
 
   const handleMergeWorktree = async (worktree: WorktreeDescriptor) => {
+    if (worktree.id.startsWith('project-root:')) {
+      setNotification('Cannot merge the main project worktree into itself.');
+      return;
+    }
     const confirmed = window.confirm(
       `Merge ${worktree.branch} into the main branch? Ensure commits are ready before proceeding.`
     );
@@ -493,6 +891,10 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteWorktree = async (worktree: WorktreeDescriptor) => {
+    if (worktree.id.startsWith('project-root:')) {
+      setNotification('The main project worktree cannot be deleted.');
+      return;
+    }
     const confirmed = window.confirm(
       `Delete worktree ${worktree.featureName}? Changes inside ${worktree.path} will persist on disk.`
     );
@@ -515,6 +917,10 @@ export const App: React.FC = () => {
 
   const handleOpenWorktreeInGitGui = async (worktree: WorktreeDescriptor) => {
     await runAction(() => api.openWorktreeInGitGui(worktree.id));
+  };
+
+  const handleOpenWorktreeInFileManager = async (worktree: WorktreeDescriptor) => {
+    await runAction(() => api.openWorktreeInFileManager(worktree.id));
   };
 
   const handleSidebarPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -614,6 +1020,51 @@ export const App: React.FC = () => {
     [activeTab, api, selectedWorktreeId]
   );
 
+  busyStatesRef.current = busyStates;
+  const busySignature = busySignatureParts.sort().join('|');
+
+  useEffect(() => {
+    const tracker = longRunTrackerRef.current;
+    const timestamp = Date.now();
+    const snapshot = busyStatesRef.current;
+    const validIds = new Set<string>();
+    const idleIds: string[] = [];
+
+    snapshot.forEach(({ id, busy }) => {
+      validIds.add(id);
+      if (!busy) {
+        idleIds.push(id);
+      }
+      if (!tracker.update(id, busy, timestamp)) {
+        return;
+      }
+      notifyLongRunCompletion(id);
+    });
+
+    setCodexStatusLines((prev) => {
+      if (idleIds.length === 0 && prev && Object.keys(prev).every((key) => validIds.has(key))) {
+        return prev;
+      }
+      let changed = false;
+      const next = { ...prev };
+      idleIds.forEach((id) => {
+        if (next[id]) {
+          delete next[id];
+          changed = true;
+        }
+      });
+      Object.keys(next).forEach((key) => {
+        if (!validIds.has(key)) {
+          delete next[key];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+
+    tracker.prune(validIds);
+  }, [busySignature, notifyLongRunCompletion, setCodexStatusLines, setNotification, state.projects, state.worktrees]);
+
   if (state.projects.length === 0) {
     return (
       <main className="empty-state">
@@ -636,82 +1087,159 @@ export const App: React.FC = () => {
           <div className="sidebar-header">
             <div>
               <h2>Projects</h2>
-              {selectedProject ? (
-                <p title={selectedProject.root}>{selectedProject.root}</p>
-              ) : (
-                <p>No project selected</p>
-              )}
             </div>
             <button type="button" onClick={handleAddProject} disabled={busy || !bridge}>
-              Add new project
+              Add project
             </button>
           </div>
           <div className="project-list">
-            {state.projects.map((project) => {
-              const isProjectActive = project.id === selectedProject?.id;
-              const projectWorktrees = worktreesByProject.get(project.id) ?? [];
-              const now = Date.now();
+            {visibleProjects.map((project) => {
+              const worktrees = filteredWorktrees
+                .filter((worktree) => worktree.projectId === project.id)
+                .sort((a, b) => a.featureName.localeCompare(b.featureName));
+              const isCollapsed = collapsedProjects.has(project.id);
+              const isActiveProject = worktrees.some((worktree) => worktree.id === selectedWorktreeId);
+              const rootWorktreeId = `project-root:${project.id}`;
+              const projectBranch = worktrees[0]?.branch ?? 'main';
+              const isRootActive = selectedWorktreeId === rootWorktreeId;
+              const entries = [
+                { kind: 'root' as const, id: rootWorktreeId },
+                ...worktrees.map((worktree) => ({ kind: 'worktree' as const, worktree }))
+              ];
+
               return (
-                <div key={project.id} className={`project-group ${isProjectActive ? 'active' : ''}`}>
-                  <div className="project-group-header">
+                <section
+                  key={project.id}
+                  className={`project-section${isActiveProject || isRootActive ? ' project-section--active' : ''}${isCollapsed ? ' project-section--collapsed' : ''}`}
+                >
+                  <header className="project-section__header">
                     <button
                       type="button"
-                      className={`project-item ${isProjectActive ? 'active' : ''}`}
-                      onClick={() => selectProject(project.id)}
-                      disabled={busy || !bridge}
-                      title={project.root}
+                      className={`project-section__toggle${isCollapsed ? ' project-section__toggle--collapsed' : ''}`}
+                      onClick={() => toggleProjectCollapse(project.id)}
+                      aria-expanded={!isCollapsed}
+                      aria-controls={`project-${project.id}-worktrees`}
+                      aria-label={isCollapsed ? `Expand ${project.name}` : `Collapse ${project.name}`}
                     >
-                      <div className="project-name">{project.name}</div>
-                      <div className="project-path">{project.root}</div>
+                      ▾
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => openCreateModal(project.id)}
-                      disabled={busy || !bridge}
-                      className="project-create"
+                    <div className="project-section__title-group">
+                      <button
+                        type="button"
+                        className="project-section__title"
+                        onClick={() => selectProject(project.id)}
+                        disabled={busy || !bridge}
+                        title={project.root}
+                      >
+                        <span className="project-section__name">{project.name}</span>
+                      </button>
+                    </div>
+                    <div className="project-section__actions">
+                      <button
+                        type="button"
+                        onClick={() => openCreateModal(project.id)}
+                        disabled={busy || !bridge}
+                      >
+                        + Worktree
+                      </button>
+                      <button
+                        type="button"
+                        className="project-section__remove"
+                        onClick={() => handleHideProject(project.id)}
+                        disabled={busy}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </header>
+                  {!isCollapsed ? (
+                    <div
+                      className="project-worktree-list"
+                      role="tablist"
+                      aria-label={`${project.name} worktrees`}
+                      id={`project-${project.id}-worktrees`}
                     >
-                      + New Worktree
-                    </button>
-                  </div>
-                  <div className="worktree-list">
-                    {projectWorktrees.map((worktree) => {
-                      const isActive = worktree.id === selectedWorktreeId;
-                      const session = codexSessions.get(worktree.id);
-                      const lastActivity = codexActivity[worktree.id] ?? 0;
-                      const isCodexBusy =
-                        session?.status === 'running' && now - lastActivity < CODEX_BUSY_WINDOW_MS;
-                      return (
-                        <button
-                          key={worktree.id}
-                          type="button"
-                          className={`worktree-item ${isActive ? 'active' : ''}`}
-                          onClick={() => changeWorktree(worktree.id, project.id)}
-                          disabled={busy || !bridge}
-                        >
-                          <div className="worktree-name">
-                            {isCodexBusy ? (
-                              <span className="worktree-spinner" aria-label="Codex processing" />
-                            ) : (
-                              <span className="worktree-idle-dot" aria-hidden="true" />
-                            )}
-                            {worktree.featureName}
-                          </div>
-                          <div className="worktree-meta">
-                            <span className={`chip status-${worktree.status}`}>{worktree.status}</span>
-                            <span className={`chip codex-${worktree.codexStatus}`}>
-                              Codex {worktree.codexStatus}
+                      {entries.map((entry) => {
+                        if (entry.kind === 'root') {
+                          const isActive = selectedWorktreeId === entry.id;
+                          const lastActivity = codexActivity[entry.id];
+                          const lastUserInput = codexLastInputRef.current[entry.id] ?? 0;
+                          const isBusy = computeBusyFlag({
+                            allowSpinner: isTerminalCodex,
+                            lastActivity,
+                            lastInput: lastUserInput,
+                            now: busyTimestamp
+                          });
+                          registerBusyState(entry.id, isBusy);
+                          return (
+                            <button
+                              key={entry.id}
+                              type="button"
+                              role="tab"
+                              aria-selected={isActive}
+                              className={`project-worktree project-worktree--root${isActive ? ' project-worktree--active' : ''}`}
+                              onClick={() => changeWorktree(entry.id, project.id)}
+                              disabled={busy || !bridge}
+                            >
+                              <span className="project-worktree__status">
+                                {isBusy ? (
+                                  <span className="worktree-spinner" role="img" aria-label="Codex processing" />
+                                ) : (
+                                  <span
+                                    className="project-worktree__status-icon project-worktree__status-icon--root"
+                                    aria-hidden="true"
+                                  />
+                                )}
+                              </span>
+                              <span className="project-worktree__name">main</span>
+                              <span className="project-worktree__branch">{projectBranch}</span>
+                            </button>
+                          );
+                        }
+
+                        const worktree = entry.worktree;
+                        const isActive = worktree.id === selectedWorktreeId;
+                        const session = codexSessions.get(worktree.id);
+                        const lastActivity = codexActivity[worktree.id];
+                        const lastUserInput = codexLastInputRef.current[worktree.id] ?? 0;
+                        const allowSpinner = session?.status === 'running' || isTerminalCodex;
+                        const isCodexBusy = computeBusyFlag({
+                          allowSpinner,
+                          lastActivity,
+                          lastInput: lastUserInput,
+                          now: busyTimestamp
+                        });
+                        registerBusyState(worktree.id, isCodexBusy);
+                        return (
+                          <button
+                            key={worktree.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={isActive}
+                            className={`project-worktree${isActive ? ' project-worktree--active' : ''}`}
+                            onClick={() => changeWorktree(worktree.id, project.id)}
+                            disabled={busy || !bridge}
+                          >
+                            <span className="project-worktree__status">
+                              {isCodexBusy ? (
+                                <span className="worktree-spinner" role="img" aria-label="Codex processing" />
+                              ) : (
+                                <span className="project-worktree__status-icon" aria-hidden="true" />
+                              )}
                             </span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                    {projectWorktrees.length === 0 ? (
-                      <p className="worktree-empty">No worktrees yet. Create one to begin.</p>
-                    ) : null}
-                  </div>
-                </div>
+                            <span className="project-worktree__name">{worktree.featureName}</span>
+                            <span className="project-worktree__branch">{worktree.branch}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </section>
               );
             })}
+            {visibleProjects.length === 0 ? (
+              <p className="project-empty">No projects visible. Add a project to get started.</p>
+            ) : null}
           </div>
         </aside>
         <div
@@ -726,7 +1254,10 @@ export const App: React.FC = () => {
             <div className="worktree-overview">
               <header className="overview-header">
                 <div>
-                  <h1>{selectedWorktree.featureName}</h1>
+                  <h1>{selectedWorktreeTitle}</h1>
+                  {selectedWorktreeStatus ? (
+                    <p className="overview-subtitle">{selectedWorktreeStatus}</p>
+                  ) : null}
                   <p>
                     Branch <code>{selectedWorktree.branch}</code>
                     {' · Path '}
@@ -750,15 +1281,22 @@ export const App: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleMergeWorktree(selectedWorktree)}
+                    onClick={() => handleOpenWorktreeInFileManager(selectedWorktree)}
                     disabled={busy || !bridge}
+                  >
+                    Open Folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleMergeWorktree(selectedWorktree)}
+                    disabled={busy || !bridge || isRootSelection}
                   >
                     Merge
                   </button>
                   <button
                     type="button"
                     onClick={() => handleDeleteWorktree(selectedWorktree)}
-                    disabled={busy || !bridge}
+                    disabled={busy || !bridge || isRootSelection}
                   >
                     Delete
                   </button>
@@ -802,7 +1340,7 @@ export const App: React.FC = () => {
                         aria-hidden={activeTab !== 'codex'}
                       >
                         <div className="codex-pane-collection">
-                          {state.worktrees.map((worktree) =>
+                          {renderableWorktrees.map((worktree) =>
                             renderCodexPane(worktree, codexSessions.get(worktree.id))
                           )}
                         </div>
@@ -815,7 +1353,7 @@ export const App: React.FC = () => {
                         aria-hidden={activeTab !== 'terminal'}
                       >
                         <div className="codex-pane-collection">
-                          {state.worktrees.map((worktree) => renderTerminalPane(worktree))}
+                          {renderableWorktrees.map((worktree) => renderTerminalPane(worktree))}
                         </div>
                       </div>
                     </div>
@@ -824,11 +1362,11 @@ export const App: React.FC = () => {
                 right={
                   <section className="diff-pane">
                     <GitPanel api={api} worktree={selectedWorktree} />
-                  </section>
-                }
-                storageKey={codexColumnsStorageKey}
-              />
-            </div>
+                </section>
+              }
+              storageKey={codexColumnsStorageKey}
+            />
+          </div>
           ) : (
             <div className="worktree-overview">
               <h1>Select a worktree</h1>
@@ -904,6 +1442,10 @@ const createRendererStub = (): RendererApi => {
       void worktreeId;
       return undefined;
     },
+    openWorktreeInFileManager: async (worktreeId: string) => {
+      void worktreeId;
+      return undefined;
+    },
     startCodex: async (worktreeId: string) => {
       void worktreeId;
       throw new Error('Renderer API unavailable: startCodex');
@@ -917,8 +1459,9 @@ const createRendererStub = (): RendererApi => {
       void input;
       return undefined;
     },
-    startCodexTerminal: async (worktreeId: string) => {
+    startCodexTerminal: async (worktreeId: string, options?: { startupCommand?: string }) => {
       void worktreeId;
+      void options;
       throw new Error('Renderer API unavailable: startCodexTerminal');
     },
     stopCodexTerminal: async (worktreeId: string) => {

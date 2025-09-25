@@ -19,6 +19,10 @@ interface TerminalSession {
   process: IPty;
 }
 
+export interface TerminalLaunchOptions {
+  startupCommand?: string;
+}
+
 interface ShellResolution {
   command: string;
   args: string[];
@@ -61,7 +65,7 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     super();
   }
 
-  async ensure(worktreeId: string): Promise<WorktreeTerminalDescriptor> {
+  async ensure(worktreeId: string, options?: TerminalLaunchOptions): Promise<WorktreeTerminalDescriptor> {
     const existing = this.sessions.get(worktreeId);
     if (existing && existing.descriptor.status === 'running') {
       return existing.descriptor;
@@ -72,7 +76,7 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
       return pending;
     }
 
-    const launchPromise = this.launch(worktreeId);
+    const launchPromise = this.launch(worktreeId, options);
     this.pendingStarts.set(worktreeId, launchPromise);
     try {
       return await launchPromise;
@@ -120,7 +124,7 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     session.process.kill();
   }
 
-  private async launch(worktreeId: string): Promise<WorktreeTerminalDescriptor> {
+  private async launch(worktreeId: string, options?: TerminalLaunchOptions): Promise<WorktreeTerminalDescriptor> {
     const cwd = this.getWorktreePath(worktreeId);
     if (!cwd) {
       throw new Error(`Unknown worktree ${worktreeId}`);
@@ -138,7 +142,18 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
       FORCE_COLOR: process.env.FORCE_COLOR ?? '1'
     };
 
-    const child = spawn(shell.command, shell.args, {
+    const args = [...shell.args];
+
+    if (options?.startupCommand) {
+      if (process.platform === 'win32') {
+        args.push('/d', '/s', '/k', options.startupCommand);
+      } else {
+        const interactiveShell = shell.command;
+        args.push('-lc', `${options.startupCommand} && exec ${interactiveShell}`);
+      }
+    }
+
+    const child = spawn(shell.command, args, {
       cwd,
       cols: 120,
       rows: 30,

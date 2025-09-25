@@ -37,7 +37,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const pendingStartRef = useRef<Promise<void> | null>(null);
   const pendingOutputRef = useRef('');
   const errorRef = useRef<string | null>(null);
-  const bootstrapTokenRef = useRef<string | null>(null);
 
   const updateStdinState = useCallback(
     (running: boolean) => {
@@ -79,14 +78,13 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     }
     setStatusWithSideEffects('starting');
     const startPromise = api
-      .startCodexTerminal(worktree.id)
+      .startCodexTerminal(worktree.id, { startupCommand: buildCodexCommand(session) })
       .then((descriptorResult) => {
         setDescriptorPid(descriptorResult.pid);
         setStatusWithSideEffects('running');
         setLastExit(null);
         pendingOutputRef.current = '';
         terminalRef.current?.focus();
-        bootstrapTokenRef.current = descriptorResult.sessionId;
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : 'Failed to start Codex terminal';
@@ -99,7 +97,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [api, onNotification, setStatusWithSideEffects, status, worktree.id]);
+  }, [api, onNotification, session, setStatusWithSideEffects, status, worktree.id]);
 
   useEffect(() => {
     if (!active) {
@@ -124,11 +122,10 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       if (payload.worktreeId !== worktree.id) {
         return;
       }
-      setStatusWithSideEffects('exited');
-      setLastExit({ code: payload.exitCode, signal: payload.signal });
-      pendingStartRef.current = null;
-      bootstrapTokenRef.current = null;
-    });
+    setStatusWithSideEffects('exited');
+    setLastExit({ code: payload.exitCode, signal: payload.signal });
+    pendingStartRef.current = null;
+  });
 
     return () => {
       unsubscribeOutput();
@@ -172,24 +169,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     },
     [api, worktree.id]
   );
-
-  useEffect(() => {
-    if (!bootstrapTokenRef.current || status !== 'running') {
-      return;
-    }
-
-    const command = buildCodexCommand(session);
-    api
-      .sendCodexTerminalInput(worktree.id, `${command}\n`)
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : 'Failed to bootstrap Codex terminal';
-        errorRef.current = message;
-        onNotification(message);
-      })
-      .finally(() => {
-        bootstrapTokenRef.current = null;
-      });
-  }, [api, onNotification, session, status, worktree.id]);
 
   return (
     <section className={`terminal-pane${active ? '' : ' terminal-pane--inactive'}`}>

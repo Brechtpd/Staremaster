@@ -53,6 +53,11 @@ export class WorktreeService extends EventEmitter {
 
   getWorktreePath(worktreeId: string): string | null {
     const state = this.store.getState();
+    if (worktreeId.startsWith('project-root:')) {
+      const projectId = worktreeId.slice('project-root:'.length);
+      const project = state.projects.find((item) => item.id === projectId);
+      return project?.root ?? null;
+    }
     const descriptor = state.worktrees.find((item) => item.id === worktreeId);
     return descriptor?.path ?? null;
   }
@@ -276,6 +281,29 @@ export class WorktreeService extends EventEmitter {
       throw new Error(`Unknown worktree ${worktreeId}`);
     }
     await this.launchExternal('git', ['gui'], worktreePath, 'Git GUI');
+  }
+
+  async openWorktreeInFileManager(worktreeId: string): Promise<void> {
+    const worktreePath = this.getWorktreePath(worktreeId);
+    if (!worktreePath) {
+      throw new Error(`Unknown worktree ${worktreeId}`);
+    }
+
+    let command: string;
+    let args: string[] = [];
+
+    if (process.platform === 'win32') {
+      command = 'explorer.exe';
+      args = [worktreePath];
+    } else if (process.platform === 'darwin') {
+      command = 'open';
+      args = [worktreePath];
+    } else {
+      command = 'xdg-open';
+      args = [worktreePath];
+    }
+
+    await this.launchExternal(command, args, worktreePath, 'file manager');
   }
 
   private async launchExternal(

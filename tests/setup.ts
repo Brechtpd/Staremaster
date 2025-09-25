@@ -9,6 +9,14 @@ const emptyState: AppState = {
   sessions: []
 };
 
+class NotificationStub {
+  static permission: NotificationPermission = 'granted';
+  static requestPermission = vi.fn(async () => NotificationStub.permission);
+  constructor() {
+    // no-op
+  }
+}
+
 beforeEach(() => {
   const api: RendererApi = {
     getState: vi.fn().mockResolvedValue(emptyState),
@@ -27,6 +35,7 @@ beforeEach(() => {
     removeWorktree: vi.fn().mockResolvedValue(emptyState),
     openWorktreeInVSCode: vi.fn().mockResolvedValue(undefined),
     openWorktreeInGitGui: vi.fn().mockResolvedValue(undefined),
+    openWorktreeInFileManager: vi.fn().mockResolvedValue(undefined),
     startCodex: vi.fn().mockResolvedValue({
       id: 'session',
       worktreeId: 'mock',
@@ -77,6 +86,11 @@ beforeEach(() => {
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: api
+  });
+
+  Object.defineProperty(window, 'Notification', {
+    configurable: true,
+    value: NotificationStub
   });
 });
 

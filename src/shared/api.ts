@@ -21,10 +21,11 @@ export interface RendererApi {
   removeWorktree(worktreeId: string, deleteFolder?: boolean): Promise<AppState>;
   openWorktreeInVSCode(worktreeId: string): Promise<void>;
   openWorktreeInGitGui(worktreeId: string): Promise<void>;
+  openWorktreeInFileManager(worktreeId: string): Promise<void>;
   startCodex(worktreeId: string): Promise<CodexSessionDescriptor>;
   stopCodex(worktreeId: string): Promise<CodexSessionDescriptor[]>;
   sendCodexInput(worktreeId: string, input: string): Promise<void>;
-  startCodexTerminal(worktreeId: string): Promise<WorktreeTerminalDescriptor>;
+  startCodexTerminal(worktreeId: string, options?: { startupCommand?: string }): Promise<WorktreeTerminalDescriptor>;
   stopCodexTerminal(worktreeId: string): Promise<void>;
   sendCodexTerminalInput(worktreeId: string, data: string): Promise<void>;
   resizeCodexTerminal(request: TerminalResizeRequest): Promise<void>;

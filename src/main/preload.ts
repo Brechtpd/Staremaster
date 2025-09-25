@@ -9,6 +9,7 @@ const IPCChannels = {
   removeWorktree: 'worktree:remove',
   openWorktreeInVSCode: 'worktree:open-vscode',
   openWorktreeInGitGui: 'worktree:open-git-gui',
+  openWorktreeInFileManager: 'worktree:open-file-manager',
   startCodex: 'codex:start',
   stopCodex: 'codex:stop',
   sendCodexInput: 'codex:input',
@@ -44,10 +45,16 @@ const api: RendererApi = {
     ipcRenderer.invoke(IPCChannels.openWorktreeInVSCode, { worktreeId }),
   openWorktreeInGitGui: (worktreeId) =>
     ipcRenderer.invoke(IPCChannels.openWorktreeInGitGui, { worktreeId }),
+  openWorktreeInFileManager: (worktreeId) =>
+    ipcRenderer.invoke(IPCChannels.openWorktreeInFileManager, { worktreeId }),
   startCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.startCodex, { worktreeId }),
   stopCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.stopCodex, { worktreeId }),
   sendCodexInput: (worktreeId, input) => ipcRenderer.invoke(IPCChannels.sendCodexInput, { worktreeId, input }),
-  startCodexTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexTerminalStart, { worktreeId }),
+  startCodexTerminal: (worktreeId, options) =>
+    ipcRenderer.invoke(IPCChannels.codexTerminalStart, {
+      worktreeId,
+      startupCommand: options?.startupCommand
+    }),
   stopCodexTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexTerminalStop, { worktreeId }),
   sendCodexTerminalInput: (worktreeId, data) =>
     ipcRenderer.invoke(IPCChannels.codexTerminalInput, { worktreeId, data }),

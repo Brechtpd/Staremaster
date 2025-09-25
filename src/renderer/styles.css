@@ -114,6 +114,199 @@ button {
   gap: 8px;
 }
 
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.project-section {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-section--active {
+  background: rgba(148, 163, 184, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.35);
+}
+
+.project-section__header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.project-section__toggle {
+  border: none;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  color: #0f172a;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  transform: rotate(0deg);
+  transition: transform 0.2s ease;
+}
+
+.project-section__toggle--collapsed {
+  transform: rotate(-90deg);
+}
+
+.project-section__title {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.project-section__title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-section__name {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.project-section__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.project-section__actions button {
+  background: rgba(15, 23, 42, 0.08);
+  color: #0f172a;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.project-section__actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.project-section__remove {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.4);
+}
+
+.project-section__remove:hover {
+  background: rgba(220, 38, 38, 0.12);
+}
+
+.project-section__remove:disabled {
+  opacity: 0.5;
+}
+
+.project-section--collapsed {
+  gap: 0;
+}
+
+.project-section--collapsed .project-section__header {
+  margin-bottom: 0;
+}
+
+.project-worktree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 28px;
+}
+
+.project-worktree {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(15, 23, 42, 0.04);
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-worktree--active {
+  background: rgba(14, 165, 233, 0.18);
+  color: #0f172a;
+}
+
+.project-worktree--root {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.project-worktree--root.project-worktree--active {
+  background: rgba(148, 163, 184, 0.26);
+  color: #0f172a;
+}
+
+.project-worktree:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.project-worktree__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.project-worktree__status-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.8);
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.2);
+}
+
+.project-worktree__status-icon--root {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.5), inset 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+
+.project-worktree__status-icon--root::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: rgba(37, 99, 235, 0.9);
+}
+
+.project-worktree__name {
+  font-weight: 600;
+}
+
+.project-worktree__branch {
+  font-size: 12px;
+  color: #475569;
+}
+
+.project-empty {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
 .worktree-list {
   display: flex;
   flex-direction: column;
@@ -168,7 +361,6 @@ button {
 .worktree-spinner {
   width: 12px;
   height: 12px;
-  margin-right: 6px;
   border-radius: 50%;
   border: 2px solid transparent;
   border-top-color: #0ea5e9;
@@ -181,15 +373,6 @@ button {
   to {
     transform: rotate(360deg);
   }
-}
-
-.worktree-idle-dot {
-  width: 10px;
-  height: 10px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: rgba(148, 163, 184, 0.6);
-  display: inline-block;
 }
 
 .chip {
@@ -442,6 +625,12 @@ button {
   margin: 0 0 8px;
 }
 
+.overview-subtitle {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: #475569;
+}
+
 .overview-header p {
   margin: 0;
   color: #475569;
@@ -458,7 +647,8 @@ button {
   flex-direction: column;
   border-radius: 10px;
   background: white;
-  padding: 14px;
+  padding: 10px;
+  margin: 4px;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
   flex: 1 1 0;
   min-height: 0;
@@ -512,7 +702,7 @@ button {
 .git-panel__sidebar {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
   padding: 4px 6px 4px 4px;
   overflow-y: auto;
   max-height: 100%;
@@ -531,7 +721,7 @@ button {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
 }
 
 .git-file {
@@ -539,10 +729,10 @@ button {
   border: 1px solid transparent;
   border-radius: 3px;
   background: transparent;
-  padding: 0 4px;
+  padding: 0 6px;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   text-align: left;
   cursor: pointer;
   transition: border-color 0.2s ease, background 0.2s ease;
@@ -563,7 +753,7 @@ button {
 
 .git-file__path {
   flex: 1;
-  font-size: 13px;
+  font-size: 14px;
   color: #0f172a;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -761,12 +951,13 @@ button {
   background: #0f172a;
   box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.35);
   position: relative;
+  padding: 0 14px 0 16px;
+  box-sizing: border-box;
 }
 
 .codex-terminal__viewport {
   flex: 1;
   height: 100%;
-  padding: 0 14px 0 16px;
   box-sizing: border-box;
 }
 

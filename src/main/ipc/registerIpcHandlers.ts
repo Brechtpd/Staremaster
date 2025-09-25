@@ -82,6 +82,13 @@ export const registerIpcHandlers = (
     await worktreeService.openWorktreeInGitGui(payload.worktreeId);
   });
 
+  ipcMain.handle(
+    IPCChannels.openWorktreeInFileManager,
+    async (_event, payload: { worktreeId: string }) => {
+      await worktreeService.openWorktreeInFileManager(payload.worktreeId);
+    }
+  );
+
   ipcMain.handle(IPCChannels.mergeWorktree, async (_event, payload: { worktreeId: string }) => {
     return worktreeService.mergeWorktree(payload.worktreeId);
   });
@@ -137,8 +144,12 @@ export const registerIpcHandlers = (
     terminalService.resize(payload);
   });
 
-  ipcMain.handle(IPCChannels.codexTerminalStart, async (_event, payload: { worktreeId: string }) => {
-    return codexTerminalService.ensure(payload.worktreeId);
+  ipcMain.handle(
+    IPCChannels.codexTerminalStart,
+    async (_event, payload: { worktreeId: string; startupCommand?: string }) => {
+      return codexTerminalService.ensure(payload.worktreeId, {
+        startupCommand: payload.startupCommand
+      });
   });
 
   ipcMain.handle(IPCChannels.codexTerminalStop, async (_event, payload: { worktreeId: string }) => {
@@ -211,6 +222,7 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.removeWorktree);
     ipcMain.removeHandler(IPCChannels.openWorktreeInVSCode);
     ipcMain.removeHandler(IPCChannels.openWorktreeInGitGui);
+    ipcMain.removeHandler(IPCChannels.openWorktreeInFileManager);
     ipcMain.removeHandler(IPCChannels.startCodex);
     ipcMain.removeHandler(IPCChannels.stopCodex);
     ipcMain.removeHandler(IPCChannels.gitStatus);

@@ -6,6 +6,7 @@ export const IPCChannels = {
   removeWorktree: 'worktree:remove',
   openWorktreeInVSCode: 'worktree:open-vscode',
   openWorktreeInGitGui: 'worktree:open-git-gui',
+  openWorktreeInFileManager: 'worktree:open-file-manager',
   startCodex: 'codex:start',
   stopCodex: 'codex:stop',
   sendCodexInput: 'codex:input',
