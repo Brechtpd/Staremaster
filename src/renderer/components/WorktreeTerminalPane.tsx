@@ -50,6 +50,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   const hydratingRef = useRef(false);
   const scrollPositionRef = useRef(0);
   const visibleRef = useRef(visible);
+  const bootstrappedRef = useRef(false);
 
   useEffect(() => {
     paneIdRef.current = paneId;
@@ -131,10 +132,12 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
     []
   );
 
-  const ensureTerminalStarted = useCallback(async () => {
-    if (status === 'running' || pendingStartRef.current) {
+  const ensureTerminalStarted = useCallback(async (reason: string = 'direct') => {
+    if (pendingStartRef.current) {
+      console.log('[renderer] worktree-terminal start skipped (pending)', { worktreeId: worktree.id, paneId: paneIdRef.current ?? 'default', reason });
       return;
     }
+    console.log('[renderer] worktree-terminal start', { worktreeId: worktree.id, paneId: paneIdRef.current ?? 'default', reason });
     setStatusWithSideEffects('starting');
     const startOptions = paneIdRef.current ? { paneId: paneIdRef.current } : undefined;
     const startPromise = (startOptions
@@ -146,7 +149,6 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
         setLastExit(null);
         pendingOutputRef.current = '';
         syncInputState();
-        onBootstrapped?.();
         if (active && visibleRef.current) {
           terminalRef.current?.focus();
         }
@@ -162,10 +164,13 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [active, api, onBootstrapped, onNotification, setStatusWithSideEffects, status, syncInputState, worktree.id]);
+  }, [active, api, onNotification, setStatusWithSideEffects, syncInputState, worktree.id]);
 
   useEffect(() => {
     if (!visible) {
+      return;
+    }
+    if (bootstrappedRef.current) {
       return;
     }
     if (status === 'running') {
@@ -175,12 +180,24 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
     if (!shouldAutoStart) {
       return;
     }
-    void ensureTerminalStarted();
-  }, [ensureTerminalStarted, shouldAutoStart, status, syncInputState, visible]);
+    console.log('[renderer] worktree-terminal auto-start', { worktreeId: worktree.id, paneId: paneIdRef.current ?? 'default', status, reason: 'visible-effect' });
+    void ensureTerminalStarted('visible-effect');
+  }, [ensureTerminalStarted, shouldAutoStart, status, syncInputState, visible, worktree.id]);
 
   useEffect(() => {
     syncInputState();
   }, [syncInputState]);
+
+  useEffect(() => {
+    if (status === 'running') {
+      if (!bootstrappedRef.current) {
+        bootstrappedRef.current = true;
+        onBootstrapped?.();
+      }
+    } else {
+      bootstrappedRef.current = false;
+    }
+  }, [onBootstrapped, status]);
 
   useEffect(() => {
     const unsubscribeOutput = api.onTerminalOutput((payload: TerminalOutputPayload) => {
@@ -283,7 +300,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
         <div className="terminal-inline-actions">
           <button
             type="button"
-            onClick={() => void ensureTerminalStarted()}
+            onClick={() => void ensureTerminalStarted('button')}
             disabled={status === 'starting'}
           >
             {status === 'starting' ? 'Starting…' : 'Start Terminal'}

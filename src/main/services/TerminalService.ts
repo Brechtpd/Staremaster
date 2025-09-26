@@ -319,7 +319,9 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     });
 
     child.onExit(({ exitCode, signal }) => {
+      console.log('[terminal] exit', { worktreeId, paneId, exitCode, signal, sessionId: descriptor.sessionId });
       descriptor.status = 'exited';
+      console.log('[terminal] exit', { worktreeId, paneId, exitCode, signal, sessionId: descriptor.sessionId });
       descriptor.exitCode = exitCode === undefined ? undefined : exitCode;
       descriptor.signal = signal === undefined ? undefined : String(signal);
       this.sessionsById.delete(descriptor.sessionId);

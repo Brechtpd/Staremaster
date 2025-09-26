@@ -160,27 +160,14 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const cancelledRef = useRef(false);
   const bufferedOutputRef = useRef<string>('');
   const needsInitialRefreshRef = useRef<boolean>(true);
+  const bootstrappedRef = useRef(false);
   const visibleRef = useRef(visible);
   const tryFlushInputsRef = useRef<() => void>(() => {});
   const startSessionRef = useRef<(
     options?: { throttled?: boolean; forceStart?: boolean }
   ) => Promise<void>>(async () => {});
 
-  const bootstrappedRef = useRef(false);
   const status = session?.status ?? 'idle';
-
-  useEffect(() => {
-    if (bootstrappedRef.current) {
-      return;
-    }
-    if (!onBootstrapped) {
-      return;
-    }
-    if (session?.status === 'running') {
-      bootstrappedRef.current = true;
-      onBootstrapped();
-    }
-  }, [onBootstrapped, session?.status]);
   const sessionSignature = session?.signature ?? 'none';
   const derivedError = session?.lastError;
   const hasCodexSessionId = Boolean(session?.codexSessionId);
@@ -237,24 +224,29 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const startSession = useCallback(
     async (options?: { throttled?: boolean; forceStart?: boolean }) => {
       if (!bridge) {
+        console.log('[renderer] codex-pane start skipped (no bridge)', { worktreeId: worktree.id, paneId: paneId ?? 'default' });
         return;
       }
       const currentStatus: CodexUiStatus = session?.status ?? 'idle';
       if (!options?.forceStart) {
         if (!canAutoStart(currentStatus)) {
+          console.log('[renderer] codex-pane start skipped (status)', { worktreeId: worktree.id, paneId: paneId ?? 'default', status: currentStatus, reason: 'canAutoStart=false' });
           return;
         }
         if (pendingStartRef.current) {
+          console.log('[renderer] codex-pane start skipped (pending)', { worktreeId: worktree.id, paneId: paneId ?? 'default' });
           return;
         }
       }
       if (options?.throttled && !options?.forceStart) {
         const lastAttempt = lastStartAttemptRef.current;
         if (Date.now() - lastAttempt < START_THROTTLE_MS) {
+          console.log('[renderer] codex-pane start skipped (throttled)', { worktreeId: worktree.id, paneId: paneId ?? 'default' });
           return;
         }
       }
       lastStartAttemptRef.current = Date.now();
+      console.log('[renderer] codex-pane start', { worktreeId: worktree.id, paneId: paneId ?? 'default', options });
       onNotification(null);
       const startPromise = api.startCodex(worktree.id);
       pendingStartRef.current = startPromise;
@@ -268,7 +260,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         tryFlushInputsRef.current();
       }
     },
-    [api, bridge, onNotification, session?.status, worktree.id]
+    [api, bridge, onNotification, paneId, session?.status, worktree.id]
   );
 
   useEffect(() => {
@@ -318,6 +310,17 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       tryFlushInputsRef.current();
     }
   }, [session?.status]);
+
+  useEffect(() => {
+    if (status === 'running') {
+      if (!bootstrappedRef.current) {
+        bootstrappedRef.current = true;
+        onBootstrapped?.();
+      }
+    } else {
+      bootstrappedRef.current = false;
+    }
+  }, [onBootstrapped, status]);
 
   useEffect(() => {
     if (!bridge) {
@@ -500,9 +503,10 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       return;
     }
     if (canAutoStart(status)) {
+      console.log('[renderer] codex-pane auto-start', { worktreeId: worktree.id, paneId: paneId ?? 'default', status });
       void startSessionRef.current({ throttled: true });
     }
-  }, [shouldAutoStart, status, visible]);
+  }, [paneId, shouldAutoStart, status, visible, worktree.id]);
 
   return (
     <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>

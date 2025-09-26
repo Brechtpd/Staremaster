@@ -222,12 +222,22 @@ const readStoredPaneLayout = (worktreeId: string): PaneLayoutState | null => {
   }
 };
 
+const serializePaneLayout = (layout: PaneLayoutState): PaneLayoutState => ({
+  ...layout,
+  panes: layout.panes.map((pane) => ({
+    id: pane.id,
+    kind: pane.kind,
+    title: pane.title,
+    bootstrapped: pane.bootstrapped ?? false
+  }))
+});
+
 const persistPaneLayout = (worktreeId: string, layout: PaneLayoutState): void => {
   if (typeof window === 'undefined') {
     return;
   }
   try {
-    window.localStorage.setItem(buildPaneStorageKey(worktreeId), JSON.stringify(layout));
+    window.localStorage.setItem(buildPaneStorageKey(worktreeId), JSON.stringify(serializePaneLayout(layout)));
   } catch (error) {
     console.warn('[layout] failed to persist pane layout', error);
   }
@@ -796,7 +806,8 @@ export const App: React.FC = () => {
       const next = { ...prev };
       renderedWorktreeIds.forEach((worktreeId) => {
         if (!next[worktreeId]) {
-          next[worktreeId] = createDefaultPaneLayout(worktreeId);
+          const stored = readStoredPaneLayout(worktreeId);
+          next[worktreeId] = stored ?? createDefaultPaneLayout(worktreeId);
           mutated = true;
         }
       });
@@ -911,8 +922,9 @@ export const App: React.FC = () => {
         if (next === base) {
           return prev;
         }
-        const updated = { ...prev, [worktreeId]: next };
-        persistPaneLayout(worktreeId, next);
+        const serialized = serializePaneLayout(next);
+        const updated = { ...prev, [worktreeId]: serialized };
+        persistPaneLayout(worktreeId, serialized);
         return updated;
       });
     },
@@ -932,6 +944,7 @@ export const App: React.FC = () => {
   );
 
   const markPaneBootstrapped = useCallback((worktreeId: string, paneId: string) => {
+    console.log('[renderer] pane bootstrapped', { worktreeId, paneId });
     updatePaneLayout(worktreeId, (current) => {
       let mutated = false;
       const panes = current.panes.map((pane) => {
