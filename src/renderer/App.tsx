@@ -1422,15 +1422,13 @@ export const App: React.FC = () => {
       worktree,
       session,
       isActive,
-      isVisible,
-      shouldAutoStart
+      isVisible
     }: {
       pane: PaneInstance;
       worktree: WorktreeDescriptor;
       session: DerivedCodexSession | undefined;
       isActive: boolean;
       isVisible: boolean;
-      shouldAutoStart: boolean;
     }) => (
       <div
         key={pane.id}
@@ -1449,7 +1447,6 @@ export const App: React.FC = () => {
             active={isActive}
             visible={isVisible}
             paneId={pane.id}
-            shouldAutoStart={shouldAutoStart}
             onNotification={setNotification}
             onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
             onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
@@ -1463,7 +1460,6 @@ export const App: React.FC = () => {
             session={session}
             active={isActive}
             visible={isVisible}
-            shouldAutoStart={shouldAutoStart}
             paneId={pane.id}
             onNotification={setNotification}
             onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
@@ -1481,9 +1477,8 @@ export const App: React.FC = () => {
       pane,
       worktree,
       isActive,
-      isVisible,
-      shouldAutoStart
-    }: { pane: PaneInstance; worktree: WorktreeDescriptor; isActive: boolean; isVisible: boolean; shouldAutoStart: boolean }) => (
+      isVisible
+    }: { pane: PaneInstance; worktree: WorktreeDescriptor; isActive: boolean; isVisible: boolean }) => (
       <div
         key={pane.id}
         id={`pane-panel-${pane.id}`}
@@ -1499,7 +1494,6 @@ export const App: React.FC = () => {
           active={isActive}
           visible={isVisible}
           paneId={pane.id}
-          shouldAutoStart={shouldAutoStart}
           onNotification={setNotification}
           onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
         />
@@ -1830,8 +1824,6 @@ export const App: React.FC = () => {
                       const paneElements = panes.map((pane) => {
                         const isActivePane = activePaneId === pane.id;
                         const isPaneVisible = isSelectedWorktree && (showAll || isActivePane);
-                        const paneBootstrapped = pane.bootstrapped === true || bootstrappedPaneIdsRef.current.has(pane.id);
-                        const shouldAutoStart = !paneBootstrapped;
                         return pane.kind === 'codex'
                           ? renderCodexPane({
                               pane,
@@ -1839,15 +1831,13 @@ export const App: React.FC = () => {
                               session: codexSessions.get(descriptor.id),
                               isActive: isSelectedWorktree && isActivePane,
                               isVisible: isPaneVisible,
-                              shouldAutoStart,
                               paneId: pane.id
                             })
                           : renderTerminalPane({
                               pane,
                               worktree: descriptor,
                               isActive: isSelectedWorktree && isActivePane,
-                              isVisible: isPaneVisible,
-                              shouldAutoStart
+                              isVisible: isPaneVisible
                             });
                       });
                       return (

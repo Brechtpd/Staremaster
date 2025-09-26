@@ -11,7 +11,6 @@ interface CodexTerminalShellPaneProps {
   active: boolean;
   visible: boolean;
   paneId?: string;
-  shouldAutoStart?: boolean;
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
   onBootstrapped?(): void;
@@ -37,7 +36,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   active,
   visible,
   paneId,
-  shouldAutoStart = true,
   onNotification,
   onUserInput,
   onBootstrapped,
@@ -50,7 +48,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
   const paneIdRef = useRef<string | undefined>(paneId);
   const visibleRef = useRef<boolean>(visible);
-  const shouldAutoStartRef = useRef<boolean>(shouldAutoStart);
   const bootstrappedRef = useRef<boolean>(false);
   const lastEventIdRef = useRef<number>(0);
   const syncPromiseRef = useRef<Promise<void> | null>(null);
@@ -85,10 +82,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
-
-  useEffect(() => {
-    shouldAutoStartRef.current = shouldAutoStart;
-  }, [shouldAutoStart]);
 
   useEffect(() => {
     if (typeof worktree.codexResumeCommand === 'string' && worktree.codexResumeCommand.length > 0) {
@@ -299,7 +292,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         setStatusWithSideEffects('running');
         setLastExit(null);
         bootstrappedRef.current = true;
-        shouldAutoStartRef.current = false;
         syncInputState();
         onBootstrapped?.();
         await syncSnapshot(false);
@@ -329,9 +321,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       void syncDelta();
       return;
     }
-    if (!shouldAutoStartRef.current) {
-      return;
-    }
     void ensureTerminalStarted();
   }, [ensureTerminalStarted, status, syncDelta, syncInputState, visible]);
 
@@ -342,7 +331,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   useEffect(() => {
     if (status === 'running' && !bootstrappedRef.current) {
       bootstrappedRef.current = true;
-      shouldAutoStartRef.current = false;
       onBootstrapped?.();
     }
   }, [onBootstrapped, status]);
@@ -381,7 +369,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       setLastExit({ code: payload.exitCode, signal: payload.signal });
       pendingStartRef.current = null;
       bootstrappedRef.current = false;
-      shouldAutoStartRef.current = true;
       const hadError = (payload.exitCode ?? 0) !== 0 || Boolean(payload.signal);
       if (hadError && lastPersistedCommandRef.current) {
         persistResumeCommand(null);

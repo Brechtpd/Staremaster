@@ -20,6 +20,7 @@ const mockTerminalHandle = {
   refreshLayout: vi.fn<() => void>(),
   forceRender: vi.fn<() => void>(),
   getScrollPosition: vi.fn(() => 0),
+  isScrolledToBottom: vi.fn(() => true),
   scrollToLine: vi.fn<(line: number) => void>(),
   scrollToBottom: vi.fn<() => void>()
 };
@@ -110,6 +111,8 @@ const resetTerminalMocks = () => {
   mockTerminalHandle.forceRender.mockReset();
   mockTerminalHandle.getScrollPosition.mockReset();
   mockTerminalHandle.getScrollPosition.mockReturnValue(0);
+  mockTerminalHandle.isScrolledToBottom.mockReset();
+  mockTerminalHandle.isScrolledToBottom.mockReturnValue(true);
   mockTerminalHandle.scrollToLine.mockReset();
   mockTerminalHandle.scrollToBottom.mockReset();
   mockOnData = null;
@@ -220,6 +223,7 @@ describe('WorktreeTerminalPane', () => {
 
     mockTerminalHandle.write.mockClear();
     mockTerminalHandle.getScrollPosition.mockReturnValue(42);
+    mockTerminalHandle.isScrolledToBottom.mockReturnValue(false);
 
     rerender(
       <WorktreeTerminalPane
@@ -246,7 +250,6 @@ describe('WorktreeTerminalPane', () => {
         worktree={worktree}
         active
         visible
-        shouldAutoStart={false}
         onNotification={() => {}}
       />
     );

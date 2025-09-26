@@ -15,7 +15,6 @@ interface WorktreeTerminalPaneProps {
   active: boolean;
   visible: boolean;
   paneId?: string;
-  shouldAutoStart?: boolean;
   onNotification(message: string | null): void;
   onBootstrapped?(): void;
 }
@@ -35,7 +34,6 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   active,
   visible,
   paneId,
-  shouldAutoStart = true,
   onNotification,
   onBootstrapped
 }) => {
@@ -177,12 +175,9 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       syncInputState();
       return;
     }
-    if (!shouldAutoStart) {
-      return;
-    }
     console.log('[renderer] worktree-terminal auto-start', { worktreeId: worktree.id, paneId: paneIdRef.current ?? 'default', status, reason: 'visible-effect' });
     void ensureTerminalStarted('visible-effect');
-  }, [ensureTerminalStarted, shouldAutoStart, status, syncInputState, visible, worktree.id]);
+  }, [ensureTerminalStarted, status, syncInputState, visible, worktree.id]);
 
   useEffect(() => {
     syncInputState();

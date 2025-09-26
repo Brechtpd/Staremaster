@@ -16,6 +16,7 @@ vi.mock('../../../src/renderer/components/CodexTerminal', () => {
       refreshLayout: () => {},
       forceRender: () => {},
       getScrollPosition: () => 0,
+      isScrolledToBottom: () => true,
       scrollToLine: () => {},
       scrollToBottom: () => {}
     }));
@@ -137,7 +138,6 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-1"
         active
         visible
-        shouldAutoStart
         onNotification={() => {}}
       />
     );
@@ -176,7 +176,6 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-2"
         active
         visible
-        shouldAutoStart
         onNotification={() => {}}
       />
     );
@@ -214,7 +213,6 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-3"
         active
         visible
-        shouldAutoStart
         onNotification={() => {}}
         onUnbootstrapped={() => {}}
       />
@@ -254,7 +252,6 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-clean-exit"
         active
         visible
-        shouldAutoStart
         onNotification={() => {}}
         onUnbootstrapped={onUnbootstrapped}
       />
@@ -299,7 +296,6 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-early"
         active
         visible
-        shouldAutoStart
         onNotification={() => {}}
       />
     );
@@ -336,6 +332,68 @@ describe('CodexTerminalShellPane', () => {
         startedAt: new Date().toISOString(),
         status: 'running'
       });
+    });
+  });
+
+  it('scopes lifecycle calls to the active pane id when multiple terminal panes exist', async () => {
+    const {
+      api,
+      startCodexTerminal,
+      getCodexTerminalSnapshot,
+      getCodexTerminalDelta
+    } = createRendererApi();
+
+    const worktree: WorktreeDescriptor = { ...baseWorktree };
+
+    render(
+      <CodexTerminalShellPane
+        api={api}
+        worktree={worktree}
+        session={undefined}
+        paneId="pane-multi"
+        active
+        visible
+        onNotification={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(startCodexTerminal).toHaveBeenCalledWith(worktree.id, expect.objectContaining({ paneId: 'pane-multi' }));
+    });
+
+    await waitFor(() => {
+      expect(getCodexTerminalSnapshot).toHaveBeenCalledWith(worktree.id, { paneId: 'pane-multi' });
+    });
+
+    const outputHandler = api.onCodexTerminalOutput.mock.calls[0]?.[0];
+    expect(outputHandler).toBeTruthy();
+
+    const initialDeltaCalls = getCodexTerminalDelta.mock.calls.length;
+
+    act(() => {
+      outputHandler!({
+        worktreeId: worktree.id,
+        sessionId: 'codex-term-ignore',
+        paneId: 'other-pane',
+        chunk: 'ignored-output',
+        eventId: 1
+      });
+    });
+
+    expect(getCodexTerminalDelta.mock.calls.length).toBe(initialDeltaCalls);
+
+    act(() => {
+      outputHandler!({
+        worktreeId: worktree.id,
+        sessionId: 'codex-term-1',
+        paneId: 'pane-multi',
+        chunk: 'trigger delta',
+        eventId: 5
+      });
+    });
+
+    await waitFor(() => {
+      expect(getCodexTerminalDelta).toHaveBeenCalledWith(worktree.id, 0, { paneId: 'pane-multi' });
     });
   });
 });

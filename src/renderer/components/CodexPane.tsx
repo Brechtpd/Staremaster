@@ -34,7 +34,6 @@ interface CodexPaneProps {
   session: DerivedCodexSession | undefined;
   active: boolean;
   visible: boolean;
-  shouldAutoStart?: boolean;
   paneId?: string;
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
@@ -144,7 +143,6 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   session,
   active,
   visible,
-  shouldAutoStart = true,
   paneId,
   onNotification,
   onUserInput,
@@ -500,14 +498,11 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     if (!visible) {
       return;
     }
-    if (!shouldAutoStart) {
-      return;
-    }
     if (canAutoStart(status)) {
       console.log('[renderer] codex-pane auto-start', { worktreeId: worktree.id, paneId: paneId ?? 'default', status });
       void startSessionRef.current({ throttled: true });
     }
-  }, [paneId, shouldAutoStart, status, visible, worktree.id]);
+  }, [paneId, status, visible, worktree.id]);
 
   return (
     <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
