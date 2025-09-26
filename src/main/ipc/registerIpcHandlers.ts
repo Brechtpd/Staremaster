@@ -143,18 +143,59 @@ export const registerIpcHandlers = (
     });
   });
 
-  ipcMain.handle(IPCChannels.terminalStart, async (_event, payload: { worktreeId: string }) => {
-    return terminalService.ensure(payload.worktreeId);
-  });
+  ipcMain.handle(
+    IPCChannels.codexSetResume,
+    async (_event, payload: { worktreeId: string; command: string | null }) => {
+      await worktreeService.setCodexResumeCommand(payload.worktreeId, payload.command);
+    }
+  );
 
-  ipcMain.handle(IPCChannels.terminalStop, async (_event, payload: { worktreeId: string }) => {
-    await terminalService.stop(payload.worktreeId);
-  });
+  ipcMain.handle(
+    IPCChannels.codexRefreshResume,
+    async (_event, payload: { worktreeId: string }) => {
+      return worktreeService.getCodexResumeCommand(payload.worktreeId);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.terminalStart,
+    async (
+      _event,
+      payload: {
+        worktreeId: string;
+        paneId?: string;
+        startupCommand?: string;
+        respondToCursorProbe?: boolean;
+      }
+    ) => {
+      return terminalService.ensure(
+        payload.worktreeId,
+        {
+          startupCommand: payload.startupCommand,
+          respondToCursorProbe: payload.respondToCursorProbe
+        },
+        payload.paneId
+      );
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.terminalStop,
+    async (_event, payload: { worktreeId: string; sessionId?: string; paneId?: string }) => {
+      await terminalService.stop(payload.worktreeId, {
+        sessionId: payload.sessionId,
+        paneId: payload.paneId
+      });
+    }
+  );
 
   ipcMain.handle(
     IPCChannels.terminalInput,
-    async (_event, payload: { worktreeId: string; data: string }) => {
-      terminalService.sendInput(payload.worktreeId, payload.data ?? '');
+    async (_event, payload: { worktreeId: string; data: string; sessionId?: string; paneId?: string }) => {
+      terminalService.sendInput(payload.worktreeId, payload.data ?? '', {
+        sessionId: payload.sessionId,
+        paneId: payload.paneId
+      });
     }
   );
 
@@ -164,20 +205,43 @@ export const registerIpcHandlers = (
 
   ipcMain.handle(
     IPCChannels.codexTerminalStart,
-    async (_event, payload: { worktreeId: string; startupCommand?: string }) => {
-      return codexTerminalService.ensure(payload.worktreeId, {
-        startupCommand: payload.startupCommand
-      });
-  });
+    async (
+      _event,
+      payload: {
+        worktreeId: string;
+        startupCommand?: string;
+        paneId?: string;
+        respondToCursorProbe?: boolean;
+      }
+    ) => {
+      return codexTerminalService.ensure(
+        payload.worktreeId,
+        {
+          startupCommand: payload.startupCommand,
+          respondToCursorProbe: payload.respondToCursorProbe
+        },
+        payload.paneId
+      );
+    }
+  );
 
-  ipcMain.handle(IPCChannels.codexTerminalStop, async (_event, payload: { worktreeId: string }) => {
-    await codexTerminalService.stop(payload.worktreeId);
-  });
+  ipcMain.handle(
+    IPCChannels.codexTerminalStop,
+    async (_event, payload: { worktreeId: string; sessionId?: string; paneId?: string }) => {
+      await codexTerminalService.stop(payload.worktreeId, {
+        sessionId: payload.sessionId,
+        paneId: payload.paneId
+      });
+    }
+  );
 
   ipcMain.handle(
     IPCChannels.codexTerminalInput,
-    async (_event, payload: { worktreeId: string; data: string }) => {
-      codexTerminalService.sendInput(payload.worktreeId, payload.data ?? '');
+    async (_event, payload: { worktreeId: string; data: string; sessionId?: string; paneId?: string }) => {
+      codexTerminalService.sendInput(payload.worktreeId, payload.data ?? '', {
+        sessionId: payload.sessionId,
+        paneId: payload.paneId
+      });
     }
   );
 

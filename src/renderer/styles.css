@@ -526,24 +526,44 @@ button {
   cursor: not-allowed;
 }
 
-.worktree-tabs {
+.worktree-panes {
   display: flex;
   flex-direction: column;
   height: 100%;
   gap: 12px;
 }
 
-.worktree-tabs__list {
-  display: inline-flex;
-  background: rgba(248, 250, 252, 0.9);
-  border-radius: 999px;
-  padding: 4px;
-  gap: 4px;
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.25);
-  width: fit-content;
+.pane-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-.worktree-tabs__button {
+.pane-strip__tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.25);
+}
+
+.pane-strip__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 0;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.pane-strip__tab:hover {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.pane-strip__tab-trigger {
   border: none;
   background: transparent;
   color: #0f172a;
@@ -551,30 +571,146 @@ button {
   border-radius: 999px;
   font-size: 13px;
   font-weight: 600;
-  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
-.worktree-tabs__button--active {
-  background: white;
+.pane-strip__tab-trigger:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.28);
+}
+
+.pane-strip__tab--active {
+  background: #ffffff;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+}
+
+.pane-strip__tab--active .pane-strip__tab-trigger {
   color: #0ea5e9;
 }
 
-.worktree-tabs__panels {
+.pane-strip__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pane-strip__add {
+  position: relative;
+}
+
+.pane-strip__add > button {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: #ffffff;
+  color: #0284c7;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.pane-strip__add > button:hover {
+  background: #0ea5e9;
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.pane-strip__add > button:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.3);
+}
+
+.pane-strip__add--open > button {
+  background: #0ea5e9;
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.pane-strip__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 160px;
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 20;
+}
+
+.pane-strip__menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #0f172a;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pane-strip__menu button:hover {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+}
+
+.pane-strip__tab-close {
+  border: none;
+  background: transparent;
+  color: rgba(15, 23, 42, 0.45);
+  font-size: 14px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.pane-strip__tab-close:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: #0f172a;
+}
+
+.pane-strip__tab-close:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.28);
+}
+
+.pane-strip__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #334155;
+  user-select: none;
+}
+
+.pane-strip__toggle input {
+  width: 14px;
+  height: 14px;
+}
+
+.pane-strip__panes {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-.worktree-tabs__panel {
-  display: none;
-  flex: 1;
-  min-height: 0;
-}
-
-.worktree-tabs__panel--active {
-  display: flex;
 }
 
 .modal-backdrop {

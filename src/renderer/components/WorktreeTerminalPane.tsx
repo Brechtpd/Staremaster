@@ -4,7 +4,8 @@ import type {
   WorktreeDescriptor,
   WorktreeTerminalDescriptor,
   TerminalOutputPayload,
-  TerminalExitPayload
+  TerminalExitPayload,
+  TerminalResizeRequest
 } from '@shared/ipc';
 import { CodexTerminal, type CodexTerminalHandle } from './CodexTerminal';
 
@@ -12,6 +13,8 @@ interface WorktreeTerminalPaneProps {
   api: RendererApi;
   worktree: WorktreeDescriptor;
   active: boolean;
+  visible: boolean;
+  paneId?: string;
   onNotification(message: string | null): void;
 }
 
@@ -28,6 +31,8 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   api,
   worktree,
   active,
+  visible,
+  paneId,
   onNotification
 }) => {
   const [descriptor, setDescriptor] = useState<WorktreeTerminalDescriptor | null>(null);
@@ -37,29 +42,80 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   const pendingStartRef = useRef<Promise<void> | null>(null);
   const pendingOutputRef = useRef('');
   const errorRef = useRef<string | null>(null);
+  const paneIdRef = useRef<string | undefined>(paneId);
+  const hydratingRef = useRef(false);
+  const scrollPositionRef = useRef(0);
+  const visibleRef = useRef(visible);
 
-  const updateStdinState = useCallback(
-    (running: boolean) => {
-      terminalRef.current?.setStdinDisabled(!running);
-    },
-    []
-  );
+  useEffect(() => {
+    paneIdRef.current = paneId;
+  }, [paneId]);
 
-  const flushPendingOutput = useCallback(() => {
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
+
+  const syncInputState = useCallback(() => {
+    const shouldEnable = status === 'running' && active && visible;
+    terminalRef.current?.setStdinDisabled(!shouldEnable);
+  }, [active, status, visible]);
+
+  const drainPendingOutput = useCallback(() => {
     if (!terminalRef.current || !pendingOutputRef.current) {
       return;
     }
-    terminalRef.current.write(pendingOutputRef.current);
+    const chunk = pendingOutputRef.current;
     pendingOutputRef.current = '';
+    terminalRef.current.write(chunk);
   }, []);
+
+  const restoreViewport = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    if (scrollPositionRef.current > 0) {
+      terminal.scrollToLine(scrollPositionRef.current);
+    } else {
+      terminal.scrollToBottom();
+    }
+  }, []);
+
+  const hydrateVisibleTerminal = useCallback(() => {
+    if (!visibleRef.current) {
+      return;
+    }
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    hydratingRef.current = true;
+    terminal.refreshLayout();
+    window.requestAnimationFrame(() => {
+      const current = terminalRef.current;
+      if (!current) {
+        hydratingRef.current = false;
+        return;
+      }
+      restoreViewport();
+      drainPendingOutput();
+      current.forceRender?.();
+      hydratingRef.current = false;
+      if (status === 'running' && active && visibleRef.current) {
+        current.focus();
+      }
+    });
+  }, [active, drainPendingOutput, restoreViewport, status]);
 
   const attachTerminalRef = useCallback((instance: CodexTerminalHandle | null) => {
     terminalRef.current = instance;
     if (instance) {
-      updateStdinState(status === 'running');
-      flushPendingOutput();
+      syncInputState();
+      if (visibleRef.current) {
+        hydrateVisibleTerminal();
+      }
     }
-  }, [flushPendingOutput, status, updateStdinState]);
+  }, [hydrateVisibleTerminal, syncInputState]);
 
   const setStatusWithSideEffects = useCallback(
     (next: TerminalLifecycle) => {
@@ -67,9 +123,8 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       if (next === 'running') {
         errorRef.current = null;
       }
-      updateStdinState(next === 'running');
     },
-    [updateStdinState]
+    []
   );
 
   const ensureTerminalStarted = useCallback(async () => {
@@ -77,14 +132,19 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       return;
     }
     setStatusWithSideEffects('starting');
-    const startPromise = api
-      .startWorktreeTerminal(worktree.id)
+    const startOptions = paneIdRef.current ? { paneId: paneIdRef.current } : undefined;
+    const startPromise = (startOptions
+      ? api.startWorktreeTerminal(worktree.id, startOptions)
+      : api.startWorktreeTerminal(worktree.id))
       .then((descriptorResult) => {
         setDescriptor(descriptorResult);
         setStatusWithSideEffects('running');
         setLastExit(null);
         pendingOutputRef.current = '';
-        terminalRef.current?.focus();
+        syncInputState();
+        if (active && visibleRef.current) {
+          terminalRef.current?.focus();
+        }
         terminalRef.current?.clear();
       })
       .catch((error) => {
@@ -98,25 +158,29 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [api, onNotification, setStatusWithSideEffects, status, worktree.id]);
+  }, [active, api, onNotification, setStatusWithSideEffects, status, syncInputState, worktree.id]);
 
   useEffect(() => {
-    if (!active) {
+    if (!visible) {
       return;
     }
     void ensureTerminalStarted();
-  }, [active, ensureTerminalStarted]);
+  }, [ensureTerminalStarted, visible]);
+
+  useEffect(() => {
+    syncInputState();
+  }, [syncInputState]);
 
   useEffect(() => {
     const unsubscribeOutput = api.onTerminalOutput((payload: TerminalOutputPayload) => {
       if (payload.worktreeId !== worktree.id) {
         return;
       }
-      if (terminalRef.current) {
-        terminalRef.current.write(payload.chunk);
-      } else {
+      if (!terminalRef.current || hydratingRef.current || !visibleRef.current) {
         pendingOutputRef.current += payload.chunk;
+        return;
       }
+      terminalRef.current.write(payload.chunk);
     });
 
     const unsubscribeExit = api.onTerminalExit((payload: TerminalExitPayload) => {
@@ -135,19 +199,42 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   }, [api, setStatusWithSideEffects, worktree.id]);
 
   useEffect(() => {
-    if (active && status === 'running') {
+    if (active && visible && status === 'running') {
       terminalRef.current?.focus();
     }
-  }, [active, status]);
+  }, [active, status, visible]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+    if (!visible) {
+      scrollPositionRef.current = terminal.getScrollPosition();
+      return;
+    }
+    hydrateVisibleTerminal();
+  }, [hydrateVisibleTerminal, visible]);
 
   const handleTerminalData = useCallback(
     (data: string) => {
       if (!data) {
         return;
       }
-      if (status !== 'running') {
+      if (status !== 'running' || !active || !visible) {
         return;
       }
+      if (paneIdRef.current) {
+        api
+          .sendTerminalInput(worktree.id, data, { paneId: paneIdRef.current })
+          .catch((error) => {
+            const message = getErrorMessage(error);
+            errorRef.current = message;
+            onNotification(message);
+          });
+        return;
+      }
+
       api
         .sendTerminalInput(worktree.id, data)
         .catch((error) => {
@@ -156,13 +243,22 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
           onNotification(message);
         });
     },
-    [api, onNotification, status, worktree.id]
+    [active, api, onNotification, status, visible, worktree.id]
   );
 
   const handleResize = useCallback(
     ({ cols, rows }: { cols: number; rows: number }) => {
+      const request: TerminalResizeRequest = {
+        worktreeId: worktree.id,
+        cols,
+        rows
+      };
+      if (paneIdRef.current) {
+        request.paneId = paneIdRef.current;
+      }
+
       api
-        .resizeTerminal({ worktreeId: worktree.id, cols, rows })
+        .resizeTerminal(request)
         .catch((error) => {
           console.warn('[terminal] failed to resize pty', error);
         });
@@ -171,7 +267,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   );
 
   return (
-    <section className={`terminal-pane${active ? '' : ' terminal-pane--inactive'}`}>
+    <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
       {status !== 'running' ? (
         <div className="terminal-inline-actions">
           <button

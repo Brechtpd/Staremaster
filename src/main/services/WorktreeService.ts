@@ -101,7 +101,8 @@ export class WorktreeService extends EventEmitter {
         createdAt: current?.createdAt ?? new Date().toISOString(),
         status: 'ready',
         codexStatus: current?.codexStatus ?? 'idle',
-        lastError: current?.lastError
+        lastError: current?.lastError,
+        codexResumeCommand: current?.codexResumeCommand
       };
       await this.store.upsertWorktree(descriptor);
       this.emit('worktree-updated', descriptor);
@@ -164,6 +165,32 @@ export class WorktreeService extends EventEmitter {
 
     await this.refreshProjectWorktrees(projectId);
     return descriptor;
+  }
+
+  async setCodexResumeCommand(worktreeId: string, command: string | null): Promise<void> {
+    if (worktreeId.startsWith('project-root:')) {
+      const projectId = worktreeId.slice('project-root:'.length);
+      await this.store.patchProject(projectId, { codexResumeCommand: command ?? undefined });
+    } else {
+      await this.store.patchWorktree(worktreeId, { codexResumeCommand: command ?? undefined });
+    }
+    const state = this.store.getState();
+    const descriptor = state.worktrees.find((item) => item.id === worktreeId);
+    if (descriptor) {
+      this.emit('worktree-updated', descriptor);
+    }
+    this.emit('state-changed', state);
+  }
+
+  async getCodexResumeCommand(worktreeId: string): Promise<string | null> {
+    const state = this.store.getState();
+    if (worktreeId.startsWith('project-root:')) {
+      const projectId = worktreeId.slice('project-root:'.length);
+      const project = state.projects.find((item) => item.id === projectId);
+      return project?.codexResumeCommand ?? null;
+    }
+    const descriptor = state.worktrees.find((item) => item.id === worktreeId);
+    return descriptor?.codexResumeCommand ?? null;
   }
 
   async removeWorktree(worktreeId: string, options?: { deleteFolder?: boolean }): Promise<void> {

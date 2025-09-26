@@ -18,6 +18,8 @@ const IPCChannels = {
   codexStatus: 'codex:status',
   codexLog: 'codex:log',
   codexSummarize: 'codex:summarize',
+  codexSetResume: 'codex:set-resume',
+  codexRefreshResume: 'codex:refresh-resume',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   terminalStart: 'terminal:start',
@@ -54,11 +56,23 @@ const api: RendererApi = {
   startCodexTerminal: (worktreeId, options) =>
     ipcRenderer.invoke(IPCChannels.codexTerminalStart, {
       worktreeId,
-      startupCommand: options?.startupCommand
+      startupCommand: options?.startupCommand,
+      paneId: options?.paneId,
+      respondToCursorProbe: options?.respondToCursorProbe
     }),
-  stopCodexTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexTerminalStop, { worktreeId }),
-  sendCodexTerminalInput: (worktreeId, data) =>
-    ipcRenderer.invoke(IPCChannels.codexTerminalInput, { worktreeId, data }),
+  stopCodexTerminal: (worktreeId, options) =>
+    ipcRenderer.invoke(IPCChannels.codexTerminalStop, {
+      worktreeId,
+      sessionId: options?.sessionId,
+      paneId: options?.paneId
+    }),
+  sendCodexTerminalInput: (worktreeId, data, options) =>
+    ipcRenderer.invoke(IPCChannels.codexTerminalInput, {
+      worktreeId,
+      data,
+      sessionId: options?.sessionId,
+      paneId: options?.paneId
+    }),
   resizeCodexTerminal: (request) => ipcRenderer.invoke(IPCChannels.codexTerminalResize, request),
   onStateUpdate: (callback) => subscribe(IPCChannels.stateUpdates, callback),
   onCodexOutput: (callback) => subscribe(IPCChannels.codexOutput, callback),
@@ -68,10 +82,30 @@ const api: RendererApi = {
   getCodexLog: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexLog, { worktreeId }),
   summarizeCodexOutput: (worktreeId, text) =>
     ipcRenderer.invoke(IPCChannels.codexSummarize, { worktreeId, text }),
-  startWorktreeTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.terminalStart, { worktreeId }),
-  stopWorktreeTerminal: (worktreeId) => ipcRenderer.invoke(IPCChannels.terminalStop, { worktreeId }),
-  sendTerminalInput: (worktreeId, data) =>
-    ipcRenderer.invoke(IPCChannels.terminalInput, { worktreeId, data }),
+  setCodexResumeCommand: (worktreeId, command) =>
+    ipcRenderer.invoke(IPCChannels.codexSetResume, { worktreeId, command }),
+  refreshCodexResumeCommand: (worktreeId) =>
+    ipcRenderer.invoke(IPCChannels.codexRefreshResume, { worktreeId }),
+  startWorktreeTerminal: (worktreeId, options) =>
+    ipcRenderer.invoke(IPCChannels.terminalStart, {
+      worktreeId,
+      paneId: options?.paneId,
+      startupCommand: options?.startupCommand,
+      respondToCursorProbe: options?.respondToCursorProbe
+    }),
+  stopWorktreeTerminal: (worktreeId, options) =>
+    ipcRenderer.invoke(IPCChannels.terminalStop, {
+      worktreeId,
+      sessionId: options?.sessionId,
+      paneId: options?.paneId
+    }),
+  sendTerminalInput: (worktreeId, data, options) =>
+    ipcRenderer.invoke(IPCChannels.terminalInput, {
+      worktreeId,
+      data,
+      sessionId: options?.sessionId,
+      paneId: options?.paneId
+    }),
   resizeTerminal: (request) => ipcRenderer.invoke(IPCChannels.terminalResize, request),
   onTerminalOutput: (callback) => subscribe(IPCChannels.terminalOutput, callback),
   onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback),

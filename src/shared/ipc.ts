@@ -15,6 +15,8 @@ export const IPCChannels = {
   codexStatus: 'codex:status',
   codexLog: 'codex:log',
   codexSummarize: 'codex:summarize',
+  codexSetResume: 'codex:set-resume',
+  codexRefreshResume: 'codex:refresh-resume',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   terminalStart: 'terminal:start',
@@ -43,6 +45,7 @@ export interface ProjectDescriptor {
   root: string;
   name: string;
   createdAt: string;
+  codexResumeCommand?: string;
 }
 
 export interface WorktreeDescriptor {
@@ -55,6 +58,7 @@ export interface WorktreeDescriptor {
   status: WorktreeStatus;
   codexStatus: CodexStatus;
   lastError?: string;
+  codexResumeCommand?: string;
 }
 
 export interface CodexSessionDescriptor {
@@ -132,6 +136,7 @@ export interface WorktreeTerminalDescriptor {
   pid: number;
   startedAt: string;
   status: 'running' | 'exited';
+  paneId?: string;
   exitCode?: number;
   signal?: string;
   lastError?: string;
@@ -154,4 +159,6 @@ export interface TerminalResizeRequest {
   worktreeId: string;
   cols: number;
   rows: number;
+  sessionId?: string;
+  paneId?: string;
 }

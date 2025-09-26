@@ -33,6 +33,7 @@ interface CodexPaneProps {
   worktree: WorktreeDescriptor;
   session: DerivedCodexSession | undefined;
   active: boolean;
+  visible: boolean;
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
 }
@@ -138,6 +139,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   worktree,
   session,
   active,
+  visible,
   onNotification,
   onUserInput
 }) => {
@@ -152,6 +154,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const cancelledRef = useRef(false);
   const bufferedOutputRef = useRef<string>('');
   const needsInitialRefreshRef = useRef<boolean>(true);
+  const visibleRef = useRef(visible);
   const tryFlushInputsRef = useRef<() => void>(() => {});
   const startSessionRef = useRef<(
     options?: { throttled?: boolean; forceStart?: boolean }
@@ -167,6 +170,10 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     hydratorRef.current?.cancel();
     hydratorRef.current = null;
   }, []);
+
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
 
   const tryFlushInputs = useCallback(() => {
     if (pendingInputsRef.current.length === 0) {
@@ -254,12 +261,12 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       if (!instance) {
         return;
       }
-      const isInteractive = isInteractiveStatus(status);
-      instance.setStdinDisabled(!isInteractive);
-      if (isInteractive && active) {
+      const interactive = isInteractiveStatus(status) && active && visibleRef.current;
+      instance.setStdinDisabled(!interactive);
+      if (interactive) {
         instance.focus();
       }
-      if (bufferedOutputRef.current) {
+      if (bufferedOutputRef.current && visibleRef.current) {
         instance.write(bufferedOutputRef.current);
         bufferedOutputRef.current = '';
       }
@@ -272,6 +279,9 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       if (!data) {
         return;
       }
+      if (!active || !visible) {
+        return;
+      }
       onUserInput?.(data);
       pendingInputsRef.current += data;
       if (session?.status === 'running' && !pendingStartRef.current) {
@@ -280,7 +290,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         void startSessionRef.current({ throttled: true });
       }
     },
-    [onUserInput, session?.status]
+    [active, onUserInput, session?.status, visible]
   );
 
   useEffect(() => {
@@ -298,15 +308,16 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       if (payload.worktreeId !== worktree.id) {
         return;
       }
-      if (!terminalRef.current) {
+      const terminal = terminalRef.current;
+      if (!terminal || hydratorRef.current || !visibleRef.current) {
         bufferedOutputRef.current += payload.chunk;
         return;
       }
       if (needsInitialRefreshRef.current) {
-        terminalRef.current.refreshLayout();
+        terminal.refreshLayout();
         needsInitialRefreshRef.current = false;
       }
-      terminalRef.current.write(payload.chunk);
+      terminal.write(payload.chunk);
     });
 
     const unsubscribeStatus = bridge.onCodexStatus((payload) => {
@@ -328,7 +339,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   }, [bridge, onNotification, worktree.id]);
 
   useEffect(() => {
-    if (!active || !bridge) {
+    if (!visible || !bridge) {
       return;
     }
 
@@ -430,21 +441,19 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       hydratorRef.current?.cancel();
       hydratorRef.current = null;
     };
-  }, [active, bridge, onNotification, session?.status, sessionSignature, worktree.id, hasCodexSessionId]);
+  }, [bridge, onNotification, session?.status, sessionSignature, visible, worktree.id, hasCodexSessionId]);
 
   useEffect(() => {
-    if (!active) {
-      const terminal = terminalRef.current;
-      if (terminal) {
-        scrollPositionRef.current = terminal.getScrollPosition();
-      }
-      return;
-    }
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
     }
-    if (bufferedOutputRef.current) {
+    if (!visible) {
+      scrollPositionRef.current = terminal.getScrollPosition();
+      terminal.setStdinDisabled(true);
+      return;
+    }
+    if (bufferedOutputRef.current && !hydratorRef.current) {
       terminal.write(bufferedOutputRef.current);
       bufferedOutputRef.current = '';
     }
@@ -454,24 +463,25 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     } else {
       terminal.scrollToBottom();
     }
-    if (session?.status === 'running') {
-      terminal.setStdinDisabled(false);
+    const interactive = isInteractiveStatus(status) && active;
+    terminal.setStdinDisabled(!(interactive && visible));
+    if (interactive && visible) {
       terminal.focus();
     }
     terminal.refreshLayout();
-  }, [active, session?.status]);
+  }, [active, status, visible]);
 
   useEffect(() => {
-    if (!active) {
+    if (!visible) {
       return;
     }
     if (canAutoStart(status)) {
       void startSessionRef.current({ throttled: true });
     }
-  }, [active, status]);
+  }, [status, visible]);
 
   return (
-    <section className={`terminal-pane${active ? '' : ' terminal-pane--inactive'}`}>
+    <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
       {derivedError ? <p className="terminal-error">{derivedError}</p> : null}
       <CodexTerminal ref={handleTerminalRef} onData={handleTerminalData} instanceId={worktree.id} />
       {status !== 'running' ? (

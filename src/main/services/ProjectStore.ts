@@ -132,6 +132,15 @@ export class ProjectStore {
     await this.save();
   }
 
+  async patchProject(projectId: string, patch: Partial<ProjectDescriptor>): Promise<void> {
+    const project = this.state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      return;
+    }
+    Object.assign(project, patch);
+    await this.save();
+  }
+
   async upsertSession(session: CodexSessionDescriptor): Promise<void> {
     const index = this.state.sessions.findIndex((item) => item.id === session.id);
     if (index >= 0) {

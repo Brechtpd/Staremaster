@@ -128,6 +128,8 @@ describe('App with project state', () => {
       getGitDiff: vi.fn(),
       getCodexLog: vi.fn(),
       summarizeCodexOutput: vi.fn(async () => ''),
+      setCodexResumeCommand: vi.fn(),
+      refreshCodexResumeCommand: vi.fn(async () => null),
       startWorktreeTerminal: vi.fn(async () => ({
         sessionId: 'terminal-1',
         worktreeId: worktree.id,
@@ -219,6 +221,8 @@ describe('App with project state', () => {
       getGitDiff: vi.fn(),
       getCodexLog: vi.fn(),
       summarizeCodexOutput: vi.fn(async () => ''),
+      setCodexResumeCommand: vi.fn(),
+      refreshCodexResumeCommand: vi.fn(async () => null),
       startWorktreeTerminal: vi.fn(async () => ({
         sessionId: 'terminal-1',
         worktreeId: worktree.id,
@@ -336,6 +340,8 @@ describe('App with project state', () => {
       getGitDiff: vi.fn(),
       getCodexLog: vi.fn(),
       summarizeCodexOutput: vi.fn(async () => ''),
+      setCodexResumeCommand: vi.fn(),
+      refreshCodexResumeCommand: vi.fn(async () => null),
       startWorktreeTerminal: vi.fn(async () => ({
         sessionId: 'terminal-1',
         worktreeId: 'project-root:proj-1',

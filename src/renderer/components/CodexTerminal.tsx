@@ -26,6 +26,7 @@ export interface CodexTerminalHandle {
   focus(): void;
   setStdinDisabled(disabled: boolean): void;
   refreshLayout(): void;
+  forceRender(): void;
   getScrollPosition(): number;
   scrollToLine(line: number): void;
   scrollToBottom(): void;
@@ -430,6 +431,18 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         refreshLayout() {
           safeFit();
           notifyResize();
+        },
+        forceRender() {
+          const terminal = terminalRef.current;
+          if (!terminal) {
+            return;
+          }
+          const totalRows = terminal.rows;
+          if (totalRows > 0) {
+            terminal.refresh(0, totalRows - 1);
+          } else {
+            terminal.refresh(0, 0);
+          }
         },
         getScrollPosition() {
           const buffer = getActiveBuffer();

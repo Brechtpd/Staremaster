@@ -25,9 +25,16 @@ export interface RendererApi {
   startCodex(worktreeId: string): Promise<CodexSessionDescriptor>;
   stopCodex(worktreeId: string): Promise<CodexSessionDescriptor[]>;
   sendCodexInput(worktreeId: string, input: string): Promise<void>;
-  startCodexTerminal(worktreeId: string, options?: { startupCommand?: string }): Promise<WorktreeTerminalDescriptor>;
-  stopCodexTerminal(worktreeId: string): Promise<void>;
-  sendCodexTerminalInput(worktreeId: string, data: string): Promise<void>;
+  startCodexTerminal(
+    worktreeId: string,
+    options?: { startupCommand?: string; paneId?: string; respondToCursorProbe?: boolean }
+  ): Promise<WorktreeTerminalDescriptor>;
+  stopCodexTerminal(worktreeId: string, options?: { sessionId?: string; paneId?: string }): Promise<void>;
+  sendCodexTerminalInput(
+    worktreeId: string,
+    data: string,
+    options?: { sessionId?: string; paneId?: string }
+  ): Promise<void>;
   resizeCodexTerminal(request: TerminalResizeRequest): Promise<void>;
   onStateUpdate(callback: (state: AppState) => void): () => void;
   onCodexOutput(callback: (payload: CodexOutputPayload) => void): () => void;
@@ -36,9 +43,18 @@ export interface RendererApi {
   getGitDiff(request: GitDiffRequest): Promise<GitDiffResponse>;
   getCodexLog(worktreeId: string): Promise<string>;
   summarizeCodexOutput(worktreeId: string, text: string): Promise<string>;
-  startWorktreeTerminal(worktreeId: string): Promise<WorktreeTerminalDescriptor>;
-  stopWorktreeTerminal(worktreeId: string): Promise<void>;
-  sendTerminalInput(worktreeId: string, data: string): Promise<void>;
+  setCodexResumeCommand(worktreeId: string, command: string | null): Promise<void>;
+  refreshCodexResumeCommand(worktreeId: string): Promise<string | null>;
+  startWorktreeTerminal(
+    worktreeId: string,
+    options?: { paneId?: string; startupCommand?: string; respondToCursorProbe?: boolean }
+  ): Promise<WorktreeTerminalDescriptor>;
+  stopWorktreeTerminal(worktreeId: string, options?: { sessionId?: string; paneId?: string }): Promise<void>;
+  sendTerminalInput(
+    worktreeId: string,
+    data: string,
+    options?: { sessionId?: string; paneId?: string }
+  ): Promise<void>;
   resizeTerminal(request: TerminalResizeRequest): Promise<void>;
   onTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
   onTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;

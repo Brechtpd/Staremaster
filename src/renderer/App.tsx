@@ -1062,6 +1062,8 @@ export const App: React.FC = () => {
               worktree={worktree}
               session={session}
               active={isActive}
+              visible={isSelectedWorktree}
+              paneId="codex-default"
               onNotification={setNotification}
               onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
             />
@@ -1072,6 +1074,7 @@ export const App: React.FC = () => {
               worktree={worktree}
               session={session}
               active={isActive}
+              visible={isSelectedWorktree}
               onNotification={setNotification}
               onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
             />
@@ -1096,6 +1099,8 @@ export const App: React.FC = () => {
             api={api}
             worktree={worktree}
             active={isActive}
+            visible={isSelectedWorktree}
+            paneId="terminal-default"
             onNotification={setNotification}
           />
         </div>

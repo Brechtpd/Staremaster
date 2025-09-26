@@ -18,6 +18,7 @@ const mockTerminalHandle = {
   focus: vi.fn<() => void>(),
   setStdinDisabled: vi.fn<(disabled: boolean) => void>(),
   refreshLayout: vi.fn<() => void>(),
+  forceRender: vi.fn<() => void>(),
   getScrollPosition: vi.fn(() => 0),
   scrollToLine: vi.fn<(line: number) => void>(),
   scrollToBottom: vi.fn<() => void>()
@@ -106,6 +107,7 @@ const resetTerminalMocks = () => {
   mockTerminalHandle.focus.mockReset();
   mockTerminalHandle.setStdinDisabled.mockReset();
   mockTerminalHandle.refreshLayout.mockReset();
+  mockTerminalHandle.forceRender.mockReset();
   mockTerminalHandle.getScrollPosition.mockReset();
   mockTerminalHandle.getScrollPosition.mockReturnValue(0);
   mockTerminalHandle.scrollToLine.mockReset();
@@ -121,7 +123,7 @@ describe('WorktreeTerminalPane', () => {
 
   it('starts the terminal session when the pane becomes active', async () => {
     const { api } = createApi();
-    render(<WorktreeTerminalPane api={api} worktree={worktree} active onNotification={() => {}} />);
+    render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => {
       expect(api.startWorktreeTerminal).toHaveBeenCalledWith(worktree.id);
@@ -131,7 +133,7 @@ describe('WorktreeTerminalPane', () => {
 
   it('writes incoming output to the terminal', async () => {
     const { api, outputListeners } = createApi();
-    render(<WorktreeTerminalPane api={api} worktree={worktree} active onNotification={() => {}} />);
+    render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
 
@@ -149,7 +151,7 @@ describe('WorktreeTerminalPane', () => {
 
   it('sends user input to the backend when running', async () => {
     const { api } = createApi();
-    render(<WorktreeTerminalPane api={api} worktree={worktree} active onNotification={() => {}} />);
+    render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
 
@@ -165,7 +167,7 @@ describe('WorktreeTerminalPane', () => {
 
   it('propagates resize events to the backend', async () => {
     const { api } = createApi();
-    render(<WorktreeTerminalPane api={api} worktree={worktree} active onNotification={() => {}} />);
+    render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
 
@@ -179,7 +181,7 @@ describe('WorktreeTerminalPane', () => {
 
   it('sets stdin to disabled after the terminal exits', async () => {
     const { api, exitListeners } = createApi();
-    render(<WorktreeTerminalPane api={api} worktree={worktree} active onNotification={() => {}} />);
+    render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
 

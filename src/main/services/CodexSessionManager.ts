@@ -19,6 +19,56 @@ export interface CodexEvents {
   'codex-status': (payload: CodexStatusPayload) => void;
 }
 
+export interface ResumeDetectionState {
+  buffer: string;
+  resumeCaptured: boolean;
+  resumeTarget: string | null;
+}
+
+export interface ResumeDetectionMatch {
+  codexSessionId: string;
+  command: string;
+  alreadyCaptured: boolean;
+}
+
+const RESUME_COMMAND_REGEX = /codex resume --yolo ([0-9a-fA-F-][0-9a-fA-F-]{7,})/gi;
+const MAX_RESUME_BUFFER = 512;
+
+export const detectResumeCommands = (
+  state: ResumeDetectionState,
+  chunk: string
+): ResumeDetectionMatch[] => {
+  if (!chunk) {
+    return [];
+  }
+
+  state.buffer += chunk;
+
+  const results: ResumeDetectionMatch[] = [];
+  let match: RegExpExecArray | null;
+  let lastConsumedIndex = 0;
+  RESUME_COMMAND_REGEX.lastIndex = 0;
+
+  while ((match = RESUME_COMMAND_REGEX.exec(state.buffer)) !== null) {
+    lastConsumedIndex = Math.max(lastConsumedIndex, RESUME_COMMAND_REGEX.lastIndex);
+    const command = match[0];
+    const codexSessionId = match[1];
+    const alreadyCaptured = state.resumeCaptured && state.resumeTarget === codexSessionId;
+    results.push({ codexSessionId, command, alreadyCaptured });
+    state.resumeTarget = codexSessionId;
+    state.resumeCaptured = true;
+  }
+
+  if (lastConsumedIndex > 0) {
+    state.buffer = state.buffer.slice(lastConsumedIndex);
+  }
+  if (state.buffer.length > MAX_RESUME_BUFFER) {
+    state.buffer = state.buffer.slice(-MAX_RESUME_BUFFER);
+  }
+
+  return results;
+};
+
 type ManagedSession = {
   descriptor: CodexSessionDescriptor;
   process: IPty;
@@ -26,6 +76,7 @@ type ManagedSession = {
   stream: WriteStream;
   dsrBuffer: string;
   resumeTarget?: string | null;
+  resumeDetection: ResumeDetectionState;
 };
 
 const DEFAULT_CODEX_COMMAND = 'codex --yolo';
@@ -121,7 +172,12 @@ export class CodexSessionManager extends EventEmitter {
       logPath,
       stream,
       dsrBuffer: '',
-      resumeTarget: isAutoResume ? resumeTarget : null
+      resumeTarget: isAutoResume ? resumeTarget : null,
+      resumeDetection: {
+        buffer: '',
+        resumeCaptured: Boolean(isAutoResume && resumeTarget),
+        resumeTarget: resumeTarget ?? null
+      }
     };
 
     this.sessions.set(worktree.id, managed);
@@ -158,6 +214,20 @@ export class CodexSessionManager extends EventEmitter {
     child.onData((chunk) => {
       console.log('[codex] chunk', chunk.length);
       promoteRunning();
+
+      const resumeMatches = detectResumeCommands(managed.resumeDetection, chunk);
+      for (const match of resumeMatches) {
+        managed.resumeTarget = match.codexSessionId;
+        managed.descriptor.codexSessionId = match.codexSessionId;
+        void this.store.patchSession(descriptor.id, {
+          codexSessionId: match.codexSessionId
+        });
+        if (!match.alreadyCaptured) {
+          void this.store.patchWorktree(worktree.id, {
+            codexResumeCommand: match.command
+          });
+        }
+      }
       if (chunk.includes('\u001b')) {
         managed.dsrBuffer += chunk;
         let index = managed.dsrBuffer.indexOf('\u001b[6n');
