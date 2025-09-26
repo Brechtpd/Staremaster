@@ -67,19 +67,47 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const [lastExit, setLastExit] = useState<{ code: number | null; signal: string | null } | null>(null);
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
   const pendingStartRef = useRef<Promise<void> | null>(null);
-  const pendingOutputRef = useRef('');
+  const pendingChunksRef = useRef<string[]>([]);
   const errorRef = useRef<string | null>(null);
   const hydratingRef = useRef(false);
   const scrollPositionRef = useRef(0);
   const visibleRef = useRef(visible);
+  const wasAtBottomRef = useRef(true);
   const bootstrappedRef = useRef(false);
   const shouldAutoStartRef = useRef(shouldAutoStart);
   const resumeCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
   const lastPersistedCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
   const paneIdRef = useRef<string | undefined>(paneId);
-  const lastWrittenChunkRef = useRef<string | null>(null);
-  const hydrationBaselineRef = useRef<string | null>(null);
-  const hydrationDuplicateSkippedRef = useRef(false);
+  const lastTailRef = useRef('');
+
+  const trimOverlappingChunk = useCallback((chunk: string): string => {
+    if (!chunk) {
+      return '';
+    }
+    const tail = lastTailRef.current;
+    if (!tail) {
+      return chunk;
+    }
+    const maxOverlap = Math.min(tail.length, chunk.length);
+    for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+      if (tail.slice(-overlap) === chunk.slice(0, overlap)) {
+        if (overlap === chunk.length) {
+          return '';
+        }
+        return chunk.slice(overlap);
+      }
+    }
+    return chunk;
+  }, []);
+
+  const appendTail = useCallback((chunk: string) => {
+    if (!chunk) {
+      return;
+    }
+    const TAIL_WINDOW = 4096;
+    const combined = (lastTailRef.current + chunk).slice(-TAIL_WINDOW);
+    lastTailRef.current = combined;
+  }, []);
 
   useEffect(() => {
     visibleRef.current = visible;
@@ -137,14 +165,25 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   }, [active, status, visible]);
 
   const drainPendingOutput = useCallback(() => {
-    if (!terminalRef.current || !pendingOutputRef.current) {
+    const terminal = terminalRef.current;
+    if (!terminal || pendingChunksRef.current.length === 0) {
       return;
     }
-    const chunk = pendingOutputRef.current;
-    pendingOutputRef.current = '';
-    terminalRef.current.write(chunk);
-    lastWrittenChunkRef.current = chunk;
-  }, []);
+    const chunks = pendingChunksRef.current;
+    pendingChunksRef.current = [];
+    chunks.forEach((chunk) => {
+      const trimmed = trimOverlappingChunk(chunk);
+      if (!trimmed) {
+        return;
+      }
+      terminal.write(trimmed);
+      appendTail(trimmed);
+    });
+    const bottomProbe = terminal as unknown as { isScrolledToBottom?: () => boolean };
+    if (typeof bottomProbe.isScrolledToBottom === 'function') {
+      wasAtBottomRef.current = Boolean(bottomProbe.isScrolledToBottom());
+    }
+  }, [appendTail, trimOverlappingChunk]);
 
   const restoreViewport = useCallback(() => {
     const terminal = terminalRef.current;
@@ -167,23 +206,22 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       return;
     }
     hydratingRef.current = true;
-    hydrationBaselineRef.current = lastWrittenChunkRef.current;
-    hydrationDuplicateSkippedRef.current = false;
     terminal.refreshLayout();
     window.requestAnimationFrame(() => {
       const current = terminalRef.current;
       if (!current) {
         hydratingRef.current = false;
-        hydrationBaselineRef.current = null;
-        hydrationDuplicateSkippedRef.current = false;
         return;
       }
-      restoreViewport();
       drainPendingOutput();
+      if (wasAtBottomRef.current) {
+        current.scrollToBottom();
+      } else {
+        restoreViewport();
+      }
       current.forceRender?.();
       hydratingRef.current = false;
-      hydrationBaselineRef.current = null;
-      hydrationDuplicateSkippedRef.current = false;
+      wasAtBottomRef.current = Boolean((current as unknown as { isScrolledToBottom?: () => boolean }).isScrolledToBottom?.());
       if (status === 'running' && active && visibleRef.current) {
         current.focus();
       }
@@ -226,8 +264,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         setDescriptorPid(descriptorResult.pid);
         setStatusWithSideEffects('running');
         setLastExit(null);
-        pendingOutputRef.current = '';
-        lastWrittenChunkRef.current = null;
+        pendingChunksRef.current = [];
+        lastTailRef.current = '';
         if (startupCommand.startsWith('codex resume --yolo')) {
           resumeCommandRef.current = startupCommand;
         }
@@ -313,18 +351,20 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
           onNotification(message);
         });
       }
-      if (!terminalRef.current || hydratingRef.current) {
-        if (hydratingRef.current && hydrationBaselineRef.current && !hydrationDuplicateSkippedRef.current) {
-          if (hydrationBaselineRef.current === payload.chunk) {
-            hydrationDuplicateSkippedRef.current = true;
-            return;
-          }
-        }
-        pendingOutputRef.current += payload.chunk;
+      if (!terminalRef.current || hydratingRef.current || !visibleRef.current) {
+        pendingChunksRef.current.push(payload.chunk);
         return;
       }
-      terminalRef.current.write(payload.chunk);
-      lastWrittenChunkRef.current = payload.chunk;
+      const trimmed = trimOverlappingChunk(payload.chunk);
+      if (!trimmed) {
+        return;
+      }
+      terminalRef.current.write(trimmed);
+      appendTail(trimmed);
+      const bottomProbe = terminalRef.current as unknown as { isScrolledToBottom?: () => boolean };
+      if (typeof bottomProbe.isScrolledToBottom === 'function') {
+        wasAtBottomRef.current = Boolean(bottomProbe.isScrolledToBottom());
+      }
     });
 
     const unsubscribeExit = api.onCodexTerminalExit((payload) => {
@@ -374,7 +414,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       unsubscribeOutput();
       unsubscribeExit();
     };
-  }, [api, ensureTerminalStarted, onNotification, onUnbootstrapped, setStatusWithSideEffects, worktree.id]);
+  }, [appendTail, api, ensureTerminalStarted, onNotification, onUnbootstrapped, setStatusWithSideEffects, trimOverlappingChunk, worktree.id]);
 
   useEffect(() => {
     if (active && visible && status === 'running') {
@@ -389,6 +429,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     }
     if (!visible) {
       scrollPositionRef.current = terminal.getScrollPosition();
+      wasAtBottomRef.current = Boolean((terminal as unknown as { isScrolledToBottom?: () => boolean }).isScrolledToBottom?.());
       return;
     }
     hydrateVisibleTerminal();
