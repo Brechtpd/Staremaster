@@ -1446,6 +1446,8 @@ export const App: React.FC = () => {
           })()
         : worktree.id;
 
+      const effectiveSession = session ?? codexSessions.get(sessionWorktreeId);
+
       return (
         <div
           key={pane.id}
@@ -1460,7 +1462,7 @@ export const App: React.FC = () => {
             <CodexTerminalShellPane
               api={api}
               worktree={worktree}
-              session={session}
+              session={effectiveSession}
               active={isActive}
               visible={isVisible}
               paneId={pane.id}
@@ -1479,7 +1481,7 @@ export const App: React.FC = () => {
               api={api}
               bridge={bridge}
               worktree={worktree}
-              session={session}
+              session={effectiveSession}
               active={isActive}
               visible={isVisible}
               paneId={pane.id}
