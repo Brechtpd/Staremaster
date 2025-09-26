@@ -15,6 +15,7 @@ interface WorktreeTerminalPaneProps {
   active: boolean;
   visible: boolean;
   paneId?: string;
+  shouldAutoStart?: boolean;
   onNotification(message: string | null): void;
 }
 
@@ -33,6 +34,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   active,
   visible,
   paneId,
+  shouldAutoStart = true,
   onNotification
 }) => {
   const [descriptor, setDescriptor] = useState<WorktreeTerminalDescriptor | null>(null);
@@ -145,7 +147,6 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
         if (active && visibleRef.current) {
           terminalRef.current?.focus();
         }
-        terminalRef.current?.clear();
       })
       .catch((error) => {
         const message = getErrorMessage(error);
@@ -164,8 +165,15 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
     if (!visible) {
       return;
     }
+    if (status === 'running') {
+      syncInputState();
+      return;
+    }
+    if (!shouldAutoStart) {
+      return;
+    }
     void ensureTerminalStarted();
-  }, [ensureTerminalStarted, visible]);
+  }, [ensureTerminalStarted, shouldAutoStart, status, syncInputState, visible]);
 
   useEffect(() => {
     syncInputState();
@@ -288,7 +296,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       <CodexTerminal
         ref={attachTerminalRef}
         onData={handleTerminalData}
-        instanceId={`${worktree.id}-terminal`}
+        instanceId={paneId ? `${worktree.id}-terminal-${paneId}` : `${worktree.id}-terminal`}
         onResize={handleResize}
       />
       {descriptor ? (

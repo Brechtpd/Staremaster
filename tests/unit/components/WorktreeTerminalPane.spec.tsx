@@ -117,8 +117,20 @@ const resetTerminalMocks = () => {
 };
 
 describe('WorktreeTerminalPane', () => {
+  let rafSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     resetTerminalMocks();
+    rafSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback): number => {
+        callback(0);
+        return 1;
+      });
+  });
+
+  afterEach(() => {
+    rafSpy.mockRestore();
   });
 
   it('starts the terminal session when the pane becomes active', async () => {
@@ -127,7 +139,6 @@ describe('WorktreeTerminalPane', () => {
 
     await waitFor(() => {
       expect(api.startWorktreeTerminal).toHaveBeenCalledWith(worktree.id);
-      expect(mockTerminalHandle.clear).toHaveBeenCalled();
     });
   });
 
@@ -199,4 +210,53 @@ describe('WorktreeTerminalPane', () => {
       expect(mockTerminalHandle.setStdinDisabled).toHaveBeenLastCalledWith(true);
     });
   });
+  it('preserves buffered output and running session when toggling visibility', async () => {
+    const { api, outputListeners } = createApi();
+    const { rerender } = render(
+      <WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />
+    );
+
+    await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalledTimes(1));
+
+    mockTerminalHandle.write.mockClear();
+    mockTerminalHandle.getScrollPosition.mockReturnValue(42);
+
+    rerender(
+      <WorktreeTerminalPane
+        api={api}
+        worktree={worktree}
+        active={false}
+        visible={false}
+        onNotification={() => {}}
+      />
+    );
+
+    const payload: TerminalOutputPayload = {
+      sessionId: descriptor.sessionId,
+      worktreeId: worktree.id,
+      chunk: 'buffered output\n'
+    };
+    outputListeners.forEach((listener) => listener(payload));
+
+    expect(mockTerminalHandle.write).not.toHaveBeenCalled();
+
+    rerender(
+      <WorktreeTerminalPane
+        api={api}
+        worktree={worktree}
+        active
+        visible
+        shouldAutoStart={false}
+        onNotification={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(api.startWorktreeTerminal).toHaveBeenCalledTimes(1);
+      expect(mockTerminalHandle.refreshLayout).toHaveBeenCalled();
+      expect(mockTerminalHandle.scrollToLine).toHaveBeenCalledWith(42);
+      expect(mockTerminalHandle.write).toHaveBeenCalledWith('buffered output\n');
+    });
+  });
+
 });

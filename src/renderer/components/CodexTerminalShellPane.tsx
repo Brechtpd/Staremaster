@@ -235,11 +235,15 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     if (!visible) {
       return;
     }
+    if (status === 'running') {
+      syncInputState();
+      return;
+    }
     if (!shouldAutoStart) {
       return;
     }
     void ensureTerminalStarted();
-  }, [ensureTerminalStarted, shouldAutoStart, visible]);
+  }, [ensureTerminalStarted, shouldAutoStart, status, syncInputState, visible]);
 
   useEffect(() => {
     syncInputState();
@@ -394,7 +398,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       <CodexTerminal
         ref={attachTerminalRef}
         onData={handleTerminalData}
-        instanceId={`${worktree.id}-codex-terminal`}
+        instanceId={paneId ? `${worktree.id}-codex-terminal-${paneId}` : `${worktree.id}-codex-terminal`}
         onResize={handleResize}
       />
       {descriptorPid ? (

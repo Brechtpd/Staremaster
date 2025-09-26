@@ -16,6 +16,7 @@ interface TerminalEntry {
   dataDisposable: IDisposable | null;
   refCount: number;
   stdinDisabled: boolean;
+  disposeTimer: number | null;
 }
 
 const terminalRegistry = new Map<string, TerminalEntry>();
@@ -306,9 +307,15 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
           fitAddon,
           dataDisposable: null,
           refCount: 0,
-          stdinDisabled: false
+          stdinDisabled: false,
+          disposeTimer: null
         };
         terminalRegistry.set(instanceId, entry);
+      }
+
+      if (entry.disposeTimer !== null) {
+        window.clearTimeout(entry.disposeTimer);
+        entry.disposeTimer = null;
       }
 
       entry.refCount += 1;
@@ -371,8 +378,14 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         if (entry) {
           entry.refCount = Math.max(0, entry.refCount - 1);
           if (entry.refCount === 0) {
-            entry.terminal.dispose();
-            terminalRegistry.delete(instanceId);
+            if (entry.disposeTimer !== null) {
+              window.clearTimeout(entry.disposeTimer);
+            }
+            entry.disposeTimer = window.setTimeout(() => {
+              entry.terminal.dispose();
+              terminalRegistry.delete(instanceId);
+              entry.disposeTimer = null;
+            }, 30000);
           }
         }
         terminalRef.current = null;

@@ -281,7 +281,9 @@ export const App: React.FC = () => {
   );
   const codexColumnsStorageKey = useMemo(() => `layout/${projectKey}/codex-columns`, [projectKey]);
   const [paneLayouts, setPaneLayouts] = useState<Record<string, PaneLayoutState>>({});
-  const [isPaneMenuOpen, setPaneMenuOpen] = useState(false);
+  const [renderedWorktreeIds, setRenderedWorktreeIds] = useState<string[]>([]);
+  const [enabledPaneIds, setEnabledPaneIds] = useState<Record<string, string[]>>({});
+  const [openPaneMenuFor, setOpenPaneMenuFor] = useState<string | null>(null);
   const [codexActivity, setCodexActivity] = useState<Record<string, number>>({});
   const [codexStatusLines, setCodexStatusLines] = useState<Record<string, string>>({});
   const codexLastInputRef = useRef<Record<string, number>>({});
@@ -781,6 +783,30 @@ export const App: React.FC = () => {
     if (!selectedWorktree) {
       return;
     }
+    setRenderedWorktreeIds((prev) => (prev.includes(selectedWorktree.id) ? prev : [...prev, selectedWorktree.id]));
+  }, [selectedWorktree]);
+
+  useEffect(() => {
+    if (renderedWorktreeIds.length === 0) {
+      return;
+    }
+    setPaneLayouts((prev) => {
+      let mutated = false;
+      const next = { ...prev };
+      renderedWorktreeIds.forEach((worktreeId) => {
+        if (!next[worktreeId]) {
+          next[worktreeId] = createDefaultPaneLayout(worktreeId);
+          mutated = true;
+        }
+      });
+      return mutated ? next : prev;
+    });
+  }, [renderedWorktreeIds]);
+
+  useEffect(() => {
+    if (!selectedWorktree) {
+      return;
+    }
     const worktreeId = selectedWorktree.id;
     setPaneLayouts((prev) => {
       if (prev[worktreeId]) {
@@ -811,7 +837,23 @@ export const App: React.FC = () => {
       });
       return mutated ? next : prev;
     });
-  }, [state.projects, state.worktrees]);
+    setEnabledPaneIds((prev) => {
+      let mutated = false;
+      const next: Record<string, string[]> = {};
+      Object.entries(prev).forEach(([id, paneIds]) => {
+        if (validIds.has(id)) {
+          next[id] = paneIds;
+        } else {
+          mutated = true;
+        }
+      });
+      return mutated ? next : prev;
+    });
+    setRenderedWorktreeIds((prev) => prev.filter((id) => validIds.has(id)));
+    if (openPaneMenuFor && !validIds.has(openPaneMenuFor)) {
+      setOpenPaneMenuFor(null);
+    }
+  }, [openPaneMenuFor, state.projects, state.worktrees]);
 
   const isRootSelection = Boolean(rootWorktree);
 
@@ -838,30 +880,77 @@ export const App: React.FC = () => {
     return state.projects.find((project) => project.id === targetId) ?? null;
   }, [createProjectId, effectiveProject, state.projects]);
 
-  const latestSessionsByWorktree = useMemo(
-    () => getLatestSessionsByWorktree(state.sessions),
-    [state.sessions]
+  const resolveWorktreeDescriptor = useCallback(
+    (worktreeId: string): WorktreeDescriptor | null => {
+      if (worktreeId.startsWith('project-root:')) {
+        const projectId = worktreeId.slice('project-root:'.length);
+        const project = state.projects.find((item) => item.id === projectId);
+        if (!project) {
+          return null;
+        }
+        const representative = state.worktrees.find((item) => item.projectId === projectId);
+        const branch = representative?.branch ?? 'main';
+        return {
+          id: worktreeId,
+          projectId,
+          featureName: 'main',
+          branch,
+          path: project.root,
+          createdAt: project.createdAt,
+          status: 'ready',
+          codexStatus: 'idle'
+        };
+      }
+      return state.worktrees.find((item) => item.id === worktreeId) ?? null;
+    },
+    [state.projects, state.worktrees]
   );
-  const codexSessions = useMemo(
-    () => buildCodexSessions(state.worktrees, latestSessionsByWorktree),
-    [state.worktrees, latestSessionsByWorktree]
-  );
 
-  const selectedWorktreeKey = selectedWorktree?.id ?? null;
-
-  const fallbackPaneLayout = useMemo(() => {
-    if (!selectedWorktreeKey) {
-      return null;
+  const visitedWorktreeIds = useMemo(() => {
+    const ids = new Set(renderedWorktreeIds);
+    if (selectedWorktree) {
+      ids.add(selectedWorktree.id);
     }
-    return createDefaultPaneLayout(selectedWorktreeKey);
-  }, [selectedWorktreeKey]);
+    return Array.from(ids);
+  }, [renderedWorktreeIds, selectedWorktree]);
 
-  const resolvedPaneLayout = useMemo(() => {
-    if (!selectedWorktreeKey) {
-      return null;
+  const selectedPaneLayout = selectedWorktree
+    ? paneLayouts[selectedWorktree.id] ?? createDefaultPaneLayout(selectedWorktree.id)
+    : null;
+
+  const visiblePaneIdsForSelected = useMemo(() => {
+    if (!selectedWorktree || !selectedPaneLayout) {
+      return [];
     }
-    return paneLayouts[selectedWorktreeKey] ?? fallbackPaneLayout ?? null;
-  }, [fallbackPaneLayout, paneLayouts, selectedWorktreeKey]);
+    if (selectedPaneLayout.showAll) {
+      return selectedPaneLayout.panes.map((pane) => pane.id);
+    }
+    const activePane = selectedPaneLayout.panes.find((pane) => pane.id === selectedPaneLayout.activePaneId);
+    return activePane ? [activePane.id] : [];
+  }, [selectedPaneLayout, selectedWorktree]);
+
+  useEffect(() => {
+    if (!selectedWorktree) {
+      return;
+    }
+    if (visiblePaneIdsForSelected.length === 0) {
+      return;
+    }
+    setEnabledPaneIds((prev) => {
+      const current = new Set(prev[selectedWorktree.id] ?? []);
+      let mutated = false;
+      visiblePaneIdsForSelected.forEach((paneId) => {
+        if (!current.has(paneId)) {
+          current.add(paneId);
+          mutated = true;
+        }
+      });
+      if (!mutated) {
+        return prev;
+      }
+      return { ...prev, [selectedWorktree.id]: Array.from(current) };
+    });
+  }, [selectedWorktree, visiblePaneIdsForSelected]);
 
   const updatePaneLayout = useCallback(
     (worktreeId: string, updater: (current: PaneLayoutState) => PaneLayoutState) => {
@@ -880,52 +969,43 @@ export const App: React.FC = () => {
   );
 
   const handleActivatePane = useCallback(
-    (paneId: string) => {
-      if (!selectedWorktreeKey) {
-        return;
-      }
-      updatePaneLayout(selectedWorktreeKey, (current) => {
+    (worktreeId: string, paneId: string) => {
+      updatePaneLayout(worktreeId, (current) => {
         if (current.activePaneId === paneId) {
           return current;
         }
         return { ...current, activePaneId: paneId };
       });
     },
-    [selectedWorktreeKey, updatePaneLayout]
+    [updatePaneLayout]
   );
 
   const handleAddPane = useCallback(
-    (kind: PaneKind) => {
-      if (!selectedWorktreeKey) {
-        return;
-      }
-      const layout = paneLayouts[selectedWorktreeKey] ?? createDefaultPaneLayout(selectedWorktreeKey);
+    (worktreeId: string, kind: PaneKind) => {
+      const layout = paneLayouts[worktreeId] ?? createDefaultPaneLayout(worktreeId);
       const sameKindCount = layout.panes.filter((pane) => pane.kind === kind).length;
       const newPane: PaneInstance = {
-        id: createPaneId(selectedWorktreeKey, kind),
+        id: createPaneId(worktreeId, kind),
         kind,
         title: createPaneTitle(kind, sameKindCount)
       };
-      updatePaneLayout(selectedWorktreeKey, (current) => ({
+      updatePaneLayout(worktreeId, (current) => ({
         ...current,
         panes: [...current.panes, newPane],
         activePaneId: newPane.id
       }));
-      setPaneMenuOpen(false);
+      setOpenPaneMenuFor(null);
     },
-    [paneLayouts, selectedWorktreeKey, updatePaneLayout]
+    [paneLayouts, updatePaneLayout]
   );
 
   const handleRemovePane = useCallback(
-    (pane: PaneInstance) => {
-      if (!selectedWorktreeKey) {
-        return;
-      }
-      const layout = paneLayouts[selectedWorktreeKey] ?? createDefaultPaneLayout(selectedWorktreeKey);
+    (worktreeId: string, pane: PaneInstance) => {
+      const layout = paneLayouts[worktreeId] ?? createDefaultPaneLayout(worktreeId);
       if (layout.panes.length <= 1 || !layout.panes.some((item) => item.id === pane.id)) {
         return;
       }
-      updatePaneLayout(selectedWorktreeKey, (current) => {
+      updatePaneLayout(worktreeId, (current) => {
         const panes = current.panes.filter((item) => item.id !== pane.id);
         const nextActiveId =
           current.activePaneId === pane.id ? panes[panes.length - 1]?.id ?? panes[0]?.id ?? '' : current.activePaneId;
@@ -935,43 +1015,69 @@ export const App: React.FC = () => {
           activePaneId: nextActiveId || (panes[0]?.id ?? '')
         };
       });
+      setEnabledPaneIds((prev) => {
+        const existing = prev[worktreeId];
+        if (!existing || existing.length === 0) {
+          return prev;
+        }
+        if (!existing.includes(pane.id)) {
+          return prev;
+        }
+        const nextList = existing.filter((value) => value !== pane.id);
+        const next = { ...prev };
+        if (nextList.length === 0) {
+          delete next[worktreeId];
+        } else {
+          next[worktreeId] = nextList;
+        }
+        return next;
+      });
       if (pane.kind === 'codex') {
-        void api.stopCodexTerminal(selectedWorktreeKey, { paneId: pane.id }).catch((error) => {
+        void api.stopCodexTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
           console.warn('[pane] failed to stop Codex terminal', error);
         });
       } else {
-        void api.stopWorktreeTerminal(selectedWorktreeKey, { paneId: pane.id }).catch((error) => {
+        void api.stopWorktreeTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
           console.warn('[pane] failed to stop worktree terminal', error);
         });
       }
     },
-    [api, paneLayouts, selectedWorktreeKey, updatePaneLayout]
+    [api, paneLayouts, updatePaneLayout]
   );
 
-  const handleToggleShowAll = useCallback(() => {
-    if (!selectedWorktreeKey) {
-      return;
-    }
-    updatePaneLayout(selectedWorktreeKey, (current) => ({ ...current, showAll: !current.showAll }));
-  }, [selectedWorktreeKey, updatePaneLayout]);
+  const handleToggleShowAll = useCallback(
+    (worktreeId: string) => {
+      updatePaneLayout(worktreeId, (current) => ({ ...current, showAll: !current.showAll }));
+    },
+    [updatePaneLayout]
+  );
+
+  const handlePaneMenuToggle = useCallback((worktreeId: string) => {
+    setOpenPaneMenuFor((prev) => (prev === worktreeId ? null : worktreeId));
+  }, []);
+
+  const latestSessionsByWorktree = useMemo(
+    () => getLatestSessionsByWorktree(state.sessions),
+    [state.sessions]
+  );
+  const codexSessions = useMemo(
+    () => buildCodexSessions(state.worktrees, latestSessionsByWorktree),
+    [state.worktrees, latestSessionsByWorktree]
+  );
 
   useEffect(() => {
-    setPaneMenuOpen(false);
-  }, [selectedWorktreeKey]);
-
-  useEffect(() => {
-    if (!isPaneMenuOpen) {
+    if (!openPaneMenuFor) {
       return;
     }
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target || !target.closest('.pane-strip__add')) {
-        setPaneMenuOpen(false);
+        setOpenPaneMenuFor(null);
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setPaneMenuOpen(false);
+        setOpenPaneMenuFor(null);
       }
     };
     window.addEventListener('pointerdown', handlePointerDown);
@@ -980,7 +1086,11 @@ export const App: React.FC = () => {
       window.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isPaneMenuOpen]);
+  }, [openPaneMenuFor]);
+
+  useEffect(() => {
+    setOpenPaneMenuFor(null);
+  }, [selectedWorktree]);
 
   const consumeEcho = useCallback((worktreeId: string, chunk: string): string => {
     const buffer = codexEchoBufferRef.current[worktreeId];
@@ -1305,13 +1415,15 @@ export const App: React.FC = () => {
       worktree,
       session,
       isActive,
-      isVisible
+      isVisible,
+      shouldAutoStart
     }: {
       pane: PaneInstance;
       worktree: WorktreeDescriptor;
       session: DerivedCodexSession | undefined;
       isActive: boolean;
       isVisible: boolean;
+      shouldAutoStart: boolean;
     }) => (
       <div
         key={pane.id}
@@ -1330,6 +1442,7 @@ export const App: React.FC = () => {
             active={isActive}
             visible={isVisible}
             paneId={pane.id}
+            shouldAutoStart={shouldAutoStart}
             onNotification={setNotification}
             onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
           />
@@ -1341,6 +1454,7 @@ export const App: React.FC = () => {
             session={session}
             active={isActive}
             visible={isVisible}
+            shouldAutoStart={shouldAutoStart}
             onNotification={setNotification}
             onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
           />
@@ -1355,8 +1469,9 @@ export const App: React.FC = () => {
       pane,
       worktree,
       isActive,
-      isVisible
-    }: { pane: PaneInstance; worktree: WorktreeDescriptor; isActive: boolean; isVisible: boolean }) => (
+      isVisible,
+      shouldAutoStart
+    }: { pane: PaneInstance; worktree: WorktreeDescriptor; isActive: boolean; isVisible: boolean; shouldAutoStart: boolean }) => (
       <div
         key={pane.id}
         id={`pane-panel-${pane.id}`}
@@ -1372,16 +1487,13 @@ export const App: React.FC = () => {
           active={isActive}
           visible={isVisible}
           paneId={pane.id}
+          shouldAutoStart={shouldAutoStart}
           onNotification={setNotification}
         />
       </div>
     ),
     [api, setNotification]
   );
-
-  const paneList = resolvedPaneLayout?.panes ?? [];
-  const activePaneId = resolvedPaneLayout?.activePaneId ?? (paneList[0]?.id ?? null);
-  const showAllPanes = resolvedPaneLayout?.showAll ?? false;
 
   busyStatesRef.current = busyStates;
   const busySignature = busySignatureParts.sort().join('|');
@@ -1691,101 +1803,122 @@ export const App: React.FC = () => {
               </header>
               <ResizableColumns
                 left={
-                  <div className="worktree-panes">
-                    <div className="pane-strip">
-                      <div className="pane-strip__tabs" role="tablist" aria-label="Worktree panes">
-                        {paneList.map((pane) => {
-                          const isActivePane = activePaneId === pane.id;
-                          const tabSelected = showAllPanes ? true : isActivePane;
-                          const tabId = `pane-tab-${pane.id}`;
-                          return (
-                            <div
-                              key={pane.id}
-                              className={`pane-strip__tab${tabSelected ? ' pane-strip__tab--active' : ''}`}
-                            >
-                              <button
-                                type="button"
-                                id={tabId}
-                                role="tab"
-                                aria-selected={tabSelected}
-                                aria-controls={`pane-panel-${pane.id}`}
-                                className="pane-strip__tab-trigger"
-                                onClick={() => handleActivatePane(pane.id)}
-                              >
-                                {pane.title}
-                              </button>
-                              {paneList.length > 1 ? (
+                  <div className="worktree-pane-host">
+                    {visitedWorktreeIds.map((worktreeId) => {
+                      const descriptor = resolveWorktreeDescriptor(worktreeId);
+                      if (!descriptor) {
+                        return null;
+                      }
+                      const layout = paneLayouts[worktreeId] ?? createDefaultPaneLayout(worktreeId);
+                      const { panes, activePaneId, showAll } = layout;
+                      const isSelectedWorktree = selectedWorktree?.id === worktreeId;
+                      const enabledIds = new Set(enabledPaneIds[worktreeId] ?? []);
+                      const isMenuOpen = isSelectedWorktree && openPaneMenuFor === worktreeId;
+                      const paneElements = panes.map((pane) => {
+                        const isActivePane = activePaneId === pane.id;
+                        const isPaneVisible = isSelectedWorktree && (showAll || isActivePane);
+                        const shouldAutoStart = !enabledIds.has(pane.id);
+                        return pane.kind === 'codex'
+                          ? renderCodexPane({
+                              pane,
+                              worktree: descriptor,
+                              session: codexSessions.get(descriptor.id),
+                              isActive: isSelectedWorktree && isActivePane,
+                              isVisible: isPaneVisible,
+                              shouldAutoStart
+                            })
+                          : renderTerminalPane({
+                              pane,
+                              worktree: descriptor,
+                              isActive: isSelectedWorktree && isActivePane,
+                              isVisible: isPaneVisible,
+                              shouldAutoStart
+                            });
+                      });
+                      return (
+                        <div
+                          key={worktreeId}
+                          className="worktree-panes"
+                          style={{ display: isSelectedWorktree ? 'flex' : 'none' }}
+                        >
+                          <div className="pane-strip">
+                            <div className="pane-strip__tabs" role="tablist" aria-label="Worktree panes">
+                              {panes.map((pane) => {
+                                const isActivePane = activePaneId === pane.id;
+                                const tabSelected = showAll || isActivePane;
+                                const tabId = `pane-tab-${pane.id}`;
+                                return (
+                                  <div
+                                    key={pane.id}
+                                    className={`pane-strip__tab${tabSelected ? ' pane-strip__tab--active' : ''}`}
+                                  >
+                                    <button
+                                      type="button"
+                                      id={tabId}
+                                      role="tab"
+                                      aria-selected={tabSelected}
+                                      aria-controls={`pane-panel-${pane.id}`}
+                                      className="pane-strip__tab-trigger"
+                                      onClick={() => handleActivatePane(worktreeId, pane.id)}
+                                    >
+                                      {pane.title}
+                                    </button>
+                                    {panes.length > 1 ? (
+                                      <button
+                                        type="button"
+                                        className="pane-strip__tab-close"
+                                        aria-label={`Close ${pane.title} pane`}
+                                        onClick={() => handleRemovePane(worktreeId, pane)}
+                                      >
+                                        ×
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div className="pane-strip__actions">
+                              <label className="pane-strip__toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={showAll}
+                                  onChange={() => handleToggleShowAll(worktreeId)}
+                                  disabled={panes.length <= 1}
+                                />
+                                Show all
+                              </label>
+                              <div className={`pane-strip__add${isMenuOpen ? ' pane-strip__add--open' : ''}`}>
                                 <button
                                   type="button"
-                                  className="pane-strip__tab-close"
-                                  aria-label={`Close ${pane.title} pane`}
-                                  onClick={() => handleRemovePane(pane)}
+                                  aria-haspopup="menu"
+                                  aria-expanded={isMenuOpen}
+                                  aria-label="Add pane"
+                                  onClick={() => handlePaneMenuToggle(worktreeId)}
+                                  disabled={!isSelectedWorktree}
                                 >
-                                  ×
+                                  +
                                 </button>
-                              ) : null}
+                                {isMenuOpen ? (
+                                  <div className="pane-strip__menu" role="menu">
+                                    <button type="button" role="menuitem" onClick={() => handleAddPane(worktreeId, 'codex')}>
+                                      New Codex
+                                    </button>
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() => handleAddPane(worktreeId, 'terminal')}
+                                    >
+                                      New Terminal
+                                    </button>
+                                  </div>
+                                ) : null}
+                              </div>
                             </div>
-                          );
-                        })}
-                      </div>
-                      <div className="pane-strip__actions">
-                        <label className="pane-strip__toggle">
-                          <input
-                            type="checkbox"
-                            checked={showAllPanes}
-                            onChange={handleToggleShowAll}
-                            disabled={paneList.length <= 1}
-                          />
-                          Show all
-                        </label>
-                        <div className={`pane-strip__add${isPaneMenuOpen ? ' pane-strip__add--open' : ''}`}>
-                          <button
-                            type="button"
-                            aria-haspopup="menu"
-                            aria-expanded={isPaneMenuOpen}
-                            aria-label="Add pane"
-                            onClick={() => setPaneMenuOpen((prev) => !prev)}
-                            disabled={!selectedWorktree}
-                          >
-                            +
-                          </button>
-                          {isPaneMenuOpen ? (
-                            <div className="pane-strip__menu" role="menu">
-                              <button type="button" role="menuitem" onClick={() => handleAddPane('codex')}>
-                                New Codex
-                              </button>
-                              <button type="button" role="menuitem" onClick={() => handleAddPane('terminal')}>
-                                New Terminal
-                              </button>
-                            </div>
-                          ) : null}
+                          </div>
+                          <div className="pane-strip__panes">{paneElements}</div>
                         </div>
-                      </div>
-                    </div>
-                    <div className="pane-strip__panes">
-                      {paneList.map((pane) => {
-                        if (!selectedWorktree) {
-                          return null;
-                        }
-                        const isActivePane = activePaneId === pane.id;
-                        const isVisiblePane = showAllPanes || isActivePane;
-                        if (pane.kind === 'codex') {
-                          return renderCodexPane({
-                            pane,
-                            worktree: selectedWorktree,
-                            session: codexSessions.get(selectedWorktree.id),
-                            isActive: isActivePane,
-                            isVisible: isVisiblePane
-                          });
-                        }
-                        return renderTerminalPane({
-                          pane,
-                          worktree: selectedWorktree,
-                          isActive: isActivePane,
-                          isVisible: isVisiblePane
-                        });
-                      })}
-                    </div>
+                      );
+                    })}
                   </div>
                 }
                 right={
