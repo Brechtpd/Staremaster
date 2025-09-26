@@ -15,6 +15,7 @@ interface CodexTerminalShellPaneProps {
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
   onBootstrapped?(): void;
+  onUnbootstrapped?(): void;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -58,7 +59,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   shouldAutoStart = true,
   onNotification,
   onUserInput,
-  onBootstrapped
+  onBootstrapped,
+  onUnbootstrapped
 }) => {
   const [descriptorPid, setDescriptorPid] = useState<number | null>(null);
   const [status, setStatus] = useState<TerminalLifecycle>('idle');
@@ -81,7 +83,9 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   }, [visible]);
 
   useEffect(() => {
-    shouldAutoStartRef.current = shouldAutoStart && !bootstrappedRef.current;
+    if (shouldAutoStart) {
+      shouldAutoStartRef.current = true;
+    }
   }, [shouldAutoStart]);
 
   useEffect(() => {
@@ -245,8 +249,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       syncInputState();
       return;
     }
-    if (!shouldAutoStart) {
-      shouldAutoStartRef.current = false;
+    if (!shouldAutoStart && !shouldAutoStartRef.current) {
       return;
     }
     if (!shouldAutoStartRef.current) {
@@ -299,7 +302,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
           onNotification(message);
         });
       }
-      if (!terminalRef.current || hydratingRef.current || !visibleRef.current) {
+      if (!terminalRef.current || hydratingRef.current) {
         pendingOutputRef.current += payload.chunk;
         return;
       }
@@ -311,13 +314,18 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         return;
       }
       setStatusWithSideEffects('exited');
+      setDescriptorPid(null);
       setLastExit({ code: payload.exitCode, signal: payload.signal });
       pendingStartRef.current = null;
       const exitCode = payload.exitCode ?? 0;
       const hadError = exitCode !== 0 || Boolean(payload.signal);
+      const wasBootstrapped = bootstrappedRef.current;
+      bootstrappedRef.current = false;
+      shouldAutoStartRef.current = true;
+      if (wasBootstrapped) {
+        onUnbootstrapped?.();
+      }
       if (hadError && lastPersistedCommandRef.current) {
-        bootstrappedRef.current = false;
-        shouldAutoStartRef.current = true;
         resumeCommandRef.current = null;
         lastPersistedCommandRef.current = null;
         void api
@@ -337,6 +345,10 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
               }
             });
           });
+        return;
+      }
+      if (visibleRef.current && shouldAutoStartRef.current) {
+        void ensureTerminalStarted();
       }
     });
 
@@ -344,7 +356,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       unsubscribeOutput();
       unsubscribeExit();
     };
-  }, [api, ensureTerminalStarted, onNotification, setStatusWithSideEffects, worktree.id]);
+  }, [api, ensureTerminalStarted, onNotification, onUnbootstrapped, setStatusWithSideEffects, worktree.id]);
 
   useEffect(() => {
     if (active && visible && status === 'running') {
@@ -359,6 +371,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     }
     if (!visible) {
       scrollPositionRef.current = terminal.getScrollPosition();
+      pendingOutputRef.current = '';
       return;
     }
     hydrateVisibleTerminal();

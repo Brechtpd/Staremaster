@@ -189,6 +189,7 @@ describe('CodexTerminalShellPane', () => {
         visible
         shouldAutoStart
         onNotification={() => {}}
+        onUnbootstrapped={() => {}}
       />
     );
 
@@ -210,6 +211,43 @@ describe('CodexTerminalShellPane', () => {
     await waitFor(() => expect(startCodexTerminal).toHaveBeenCalledTimes(2));
     const fallbackCall = startCodexTerminal.mock.calls[1];
     expect(fallbackCall[1]?.startupCommand).toBe('codex --yolo');
+  });
+
+  it('marks the pane as unbootstrapped and restarts on a clean exit when visible', async () => {
+    const { api, startCodexTerminal, getLastExitHandler } = createRendererApi();
+    const worktree: WorktreeDescriptor = { ...baseWorktree };
+    const onUnbootstrapped = vi.fn();
+
+    render(
+      <CodexTerminalShellPane
+        api={api}
+        worktree={worktree}
+        session={undefined}
+        paneId="pane-clean-exit"
+        active
+        visible
+        shouldAutoStart
+        onNotification={() => {}}
+        onUnbootstrapped={onUnbootstrapped}
+      />
+    );
+
+    await waitFor(() => expect(startCodexTerminal).toHaveBeenCalledTimes(1));
+
+    const exitHandler = getLastExitHandler();
+    expect(exitHandler).toBeTruthy();
+
+    await act(async () => {
+      exitHandler!({
+        worktreeId: worktree.id,
+        sessionId: 'codex-term-1',
+        exitCode: 0,
+        signal: null
+      });
+    });
+
+    expect(onUnbootstrapped).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(startCodexTerminal).toHaveBeenCalledTimes(2));
   });
 
   it('captures resume command emitted before the terminal start resolves, including hyperlink formatting', async () => {

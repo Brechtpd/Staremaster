@@ -295,6 +295,8 @@ export const App: React.FC = () => {
   const [paneLayouts, setPaneLayouts] = useState<Record<string, PaneLayoutState>>({});
   const [renderedWorktreeIds, setRenderedWorktreeIds] = useState<string[]>([]);
   const [openPaneMenuFor, setOpenPaneMenuFor] = useState<string | null>(null);
+  const bootstrappedPaneIdsRef = useRef<Set<string>>(new Set());
+  const worktreeCacheRef = useRef<Record<string, WorktreeDescriptor>>({});
   const [codexActivity, setCodexActivity] = useState<Record<string, number>>({});
   const [codexStatusLines, setCodexStatusLines] = useState<Record<string, string>>({});
   const codexLastInputRef = useRef<Record<string, number>>({});
@@ -816,6 +818,18 @@ export const App: React.FC = () => {
   }, [renderedWorktreeIds]);
 
   useEffect(() => {
+    const next = new Set(bootstrappedPaneIdsRef.current);
+    Object.values(paneLayouts).forEach((layout) => {
+      layout.panes.forEach((pane) => {
+        if (pane.bootstrapped) {
+          next.add(pane.id);
+        }
+      });
+    });
+    bootstrappedPaneIdsRef.current = next;
+  }, [paneLayouts]);
+
+  useEffect(() => {
     if (!selectedWorktree) {
       return;
     }
@@ -837,19 +851,6 @@ export const App: React.FC = () => {
     const validIds = new Set<string>();
     state.worktrees.forEach((worktree) => validIds.add(worktree.id));
     state.projects.forEach((project) => validIds.add(`project-root:${project.id}`));
-    setPaneLayouts((prev) => {
-      let mutated = false;
-      const next = { ...prev };
-      Object.keys(prev).forEach((id) => {
-        if (!validIds.has(id)) {
-          mutated = true;
-          delete next[id];
-          removeStoredPaneLayout(id);
-        }
-      });
-      return mutated ? next : prev;
-    });
-    setRenderedWorktreeIds((prev) => prev.filter((id) => validIds.has(id)));
     if (openPaneMenuFor && !validIds.has(openPaneMenuFor)) {
       setOpenPaneMenuFor(null);
     }
@@ -886,11 +887,11 @@ export const App: React.FC = () => {
         const projectId = worktreeId.slice('project-root:'.length);
         const project = state.projects.find((item) => item.id === projectId);
         if (!project) {
-          return null;
+          return worktreeCacheRef.current[worktreeId] ?? null;
         }
         const representative = state.worktrees.find((item) => item.projectId === projectId);
         const branch = representative?.branch ?? 'main';
-        return {
+        const descriptor: WorktreeDescriptor = {
           id: worktreeId,
           projectId,
           featureName: 'main',
@@ -900,8 +901,17 @@ export const App: React.FC = () => {
           status: 'ready',
           codexStatus: 'idle'
         };
+        worktreeCacheRef.current[worktreeId] = descriptor;
+        return descriptor;
       }
-      return state.worktrees.find((item) => item.id === worktreeId) ?? null;
+
+      const fromState = state.worktrees.find((item) => item.id === worktreeId);
+      if (fromState) {
+        worktreeCacheRef.current[worktreeId] = fromState;
+        return fromState;
+      }
+
+      return worktreeCacheRef.current[worktreeId] ?? null;
     },
     [state.projects, state.worktrees]
   );
@@ -945,6 +955,7 @@ export const App: React.FC = () => {
 
   const markPaneBootstrapped = useCallback((worktreeId: string, paneId: string) => {
     console.log('[renderer] pane bootstrapped', { worktreeId, paneId });
+    bootstrappedPaneIdsRef.current.add(paneId);
     updatePaneLayout(worktreeId, (current) => {
       let mutated = false;
       const panes = current.panes.map((pane) => {
@@ -956,6 +967,22 @@ export const App: React.FC = () => {
       });
       return mutated ? { ...current, panes } : current;
     });
+    bootstrappedPaneIdsRef.current.add(paneId);
+  }, [updatePaneLayout]);
+
+  const markPaneUnbootstrapped = useCallback((worktreeId: string, paneId: string) => {
+    updatePaneLayout(worktreeId, (current) => {
+      let mutated = false;
+      const panes = current.panes.map((pane) => {
+        if (pane.id === paneId && pane.bootstrapped === true) {
+          mutated = true;
+          return { ...pane, bootstrapped: false };
+        }
+        return pane;
+      });
+      return mutated ? { ...current, panes } : current;
+    });
+    bootstrappedPaneIdsRef.current.delete(paneId);
   }, [updatePaneLayout]);
 
   const handleAddPane = useCallback(
@@ -968,6 +995,7 @@ export const App: React.FC = () => {
         title: createPaneTitle(kind, sameKindCount),
         bootstrapped: false
       };
+      bootstrappedPaneIdsRef.current.delete(newPane.id);
       updatePaneLayout(worktreeId, (current) => ({
         ...current,
         panes: [...current.panes, newPane],
@@ -994,6 +1022,7 @@ export const App: React.FC = () => {
           activePaneId: nextActiveId || (panes[0]?.id ?? '')
         };
       });
+      bootstrappedPaneIdsRef.current.delete(pane.id);
       if (pane.kind === 'codex') {
         void api.stopCodexTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
           console.warn('[pane] failed to stop Codex terminal', error);
@@ -1317,6 +1346,22 @@ export const App: React.FC = () => {
     const nextState = await runAction(() => api.removeWorktree(worktree.id, deleteFolder));
     if (nextState) {
       applyState(nextState, worktree.projectId);
+      const existingLayout = paneLayouts[worktree.id];
+      if (existingLayout) {
+        existingLayout.panes.forEach((pane) => {
+          bootstrappedPaneIdsRef.current.delete(pane.id);
+        });
+      }
+      setPaneLayouts((prev) => {
+        if (!prev[worktree.id]) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[worktree.id];
+        return next;
+      });
+      removeStoredPaneLayout(worktree.id);
+      setRenderedWorktreeIds((prev) => prev.filter((id) => id !== worktree.id));
     }
   };
 
@@ -1408,6 +1453,7 @@ export const App: React.FC = () => {
             onNotification={setNotification}
             onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
             onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
+            onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
           />
         ) : (
           <CodexPane
@@ -1422,11 +1468,12 @@ export const App: React.FC = () => {
             onNotification={setNotification}
             onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
             onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
+            onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
           />
         )}
       </div>
     ),
-    [api, bridge, handleCodexUserInput, isTerminalCodex, markPaneBootstrapped, setNotification]
+    [api, bridge, handleCodexUserInput, isTerminalCodex, markPaneBootstrapped, markPaneUnbootstrapped, setNotification]
   );
 
   const renderTerminalPane = useCallback(
@@ -1775,14 +1822,16 @@ export const App: React.FC = () => {
                       if (!descriptor) {
                         return null;
                       }
-                      const layout = paneLayouts[worktreeId] ?? createDefaultPaneLayout(worktreeId);
+                      const layout =
+                        paneLayouts[worktreeId] ?? readStoredPaneLayout(worktreeId) ?? createDefaultPaneLayout(worktreeId);
                       const { panes, activePaneId, showAll } = layout;
                       const isSelectedWorktree = selectedWorktree?.id === worktreeId;
                       const isMenuOpen = isSelectedWorktree && openPaneMenuFor === worktreeId;
                       const paneElements = panes.map((pane) => {
                         const isActivePane = activePaneId === pane.id;
                         const isPaneVisible = isSelectedWorktree && (showAll || isActivePane);
-                        const shouldAutoStart = pane.bootstrapped !== true;
+                        const paneBootstrapped = pane.bootstrapped === true || bootstrappedPaneIdsRef.current.has(pane.id);
+                        const shouldAutoStart = !paneBootstrapped;
                         return pane.kind === 'codex'
                           ? renderCodexPane({
                               pane,

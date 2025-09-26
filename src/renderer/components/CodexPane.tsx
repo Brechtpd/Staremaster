@@ -39,6 +39,7 @@ interface CodexPaneProps {
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
   onBootstrapped?(): void;
+  onUnbootstrapped?(): void;
 }
 
 const stripCodexLogAnnotations = (log: string): string => {
