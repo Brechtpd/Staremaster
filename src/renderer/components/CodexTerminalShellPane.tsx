@@ -20,34 +20,15 @@ interface CodexTerminalShellPaneProps {
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
 
-const CODEX_RESUME_REGEX = /codex resume --yolo [0-9a-fA-F-]+/i;
-const ANSI_ESCAPE = '\u001b';
-const ANSI_CSI_REGEX = new RegExp(`${ANSI_ESCAPE}\x5b[0-9;]*[A-Za-z]`, 'g');
-const ANSI_OSC_LINK_REGEX = new RegExp(`${ANSI_ESCAPE}\x5d8;;.*?\u0007`, 'g');
-const ANSI_OSC_TERMINATOR_REGEX = new RegExp(`${ANSI_ESCAPE}\\\\`, 'g');
-
-const stripAnsiSequences = (input: string): string => {
-  return input
-    .replace(ANSI_OSC_LINK_REGEX, '')
-    .replace(ANSI_OSC_TERMINATOR_REGEX, '')
-    .replace(ANSI_CSI_REGEX, '');
-};
-
-const extractResumeCommand = (chunk: string): string | null => {
-  const cleaned = stripAnsiSequences(chunk);
-  const match = cleaned.match(CODEX_RESUME_REGEX);
-  return match ? match[0] : null;
-};
-
-const buildCodexCommand = (session: DerivedCodexSession | undefined, fallback: string | null): string => {
-  if (session?.codexSessionId) {
-    return `codex resume --yolo ${session.codexSessionId}`;
+const isScrolledToBottom = (terminal: CodexTerminalHandle | null): boolean => {
+  if (!terminal) {
+    return true;
   }
-  if (fallback) {
-    return fallback;
-  }
-  return 'codex --yolo';
+  const probe = terminal as unknown as { isScrolledToBottom?: () => boolean };
+  return Boolean(probe.isScrolledToBottom?.());
 };
+
+const buildSnapshotOptions = (paneId?: string) => (paneId ? { paneId } : undefined);
 
 export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   api,
@@ -65,63 +46,49 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const [descriptorPid, setDescriptorPid] = useState<number | null>(null);
   const [status, setStatus] = useState<TerminalLifecycle>('idle');
   const [lastExit, setLastExit] = useState<{ code: number | null; signal: string | null } | null>(null);
+
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
-  const pendingStartRef = useRef<Promise<void> | null>(null);
-  const pendingChunksRef = useRef<string[]>([]);
+  const paneIdRef = useRef<string | undefined>(paneId);
+  const visibleRef = useRef<boolean>(visible);
+  const shouldAutoStartRef = useRef<boolean>(shouldAutoStart);
+  const bootstrappedRef = useRef<boolean>(false);
+  const lastEventIdRef = useRef<number>(0);
+  const syncPromiseRef = useRef<Promise<void> | null>(null);
+  const scrollPositionRef = useRef<number>(0);
+  const wasAtBottomRef = useRef<boolean>(true);
   const errorRef = useRef<string | null>(null);
-  const hydratingRef = useRef(false);
-  const scrollPositionRef = useRef(0);
-  const visibleRef = useRef(visible);
-  const wasAtBottomRef = useRef(true);
-  const bootstrappedRef = useRef(false);
-  const shouldAutoStartRef = useRef(shouldAutoStart);
+  const pendingStartRef = useRef<Promise<void> | null>(null);
   const resumeCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
   const lastPersistedCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
-  const paneIdRef = useRef<string | undefined>(paneId);
-  const lastTailRef = useRef('');
 
-  const trimOverlappingChunk = useCallback((chunk: string): string => {
-    if (!chunk) {
-      return '';
-    }
-    const tail = lastTailRef.current;
-    if (!tail) {
-      return chunk;
-    }
-    const maxOverlap = Math.min(tail.length, chunk.length);
-    for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
-      if (tail.slice(-overlap) === chunk.slice(0, overlap)) {
-        if (overlap === chunk.length) {
-          return '';
-        }
-        return chunk.slice(overlap);
+  const persistResumeCommand = useCallback(
+    (command: string | null) => {
+      if (lastPersistedCommandRef.current === command) {
+        return;
       }
-    }
-    return chunk;
-  }, []);
+      lastPersistedCommandRef.current = command;
+      resumeCommandRef.current = command;
+      void api
+        .setCodexResumeCommand(worktree.id, command)
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : 'Failed to persist Codex resume command';
+          onNotification(message);
+        });
+    },
+    [api, onNotification, worktree.id]
+  );
 
-  const appendTail = useCallback((chunk: string) => {
-    if (!chunk) {
-      return;
-    }
-    const TAIL_WINDOW = 4096;
-    const combined = (lastTailRef.current + chunk).slice(-TAIL_WINDOW);
-    lastTailRef.current = combined;
-  }, []);
+  useEffect(() => {
+    paneIdRef.current = paneId;
+  }, [paneId]);
 
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
 
   useEffect(() => {
-    if (shouldAutoStart) {
-      shouldAutoStartRef.current = true;
-    }
+    shouldAutoStartRef.current = shouldAutoStart;
   }, [shouldAutoStart]);
-
-  useEffect(() => {
-    paneIdRef.current = paneId;
-  }, [paneId]);
 
   useEffect(() => {
     if (typeof worktree.codexResumeCommand === 'string' && worktree.codexResumeCommand.length > 0) {
@@ -148,9 +115,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       })
       .catch((error) => {
         if (!cancelled) {
-          const message = error instanceof Error
-            ? error.message
-            : 'Failed to refresh Codex resume command';
+          const message = error instanceof Error ? error.message : 'Failed to refresh Codex resume command';
           onNotification(message);
         }
       });
@@ -159,84 +124,148 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     };
   }, [api, onNotification, worktree.codexResumeCommand, worktree.id]);
 
-  const syncInputState = useCallback(() => {
-    const shouldEnable = status === 'running' && active && visible;
-    terminalRef.current?.setStdinDisabled(!shouldEnable);
-  }, [active, status, visible]);
-
-  const drainPendingOutput = useCallback(() => {
-    const terminal = terminalRef.current;
-    if (!terminal || pendingChunksRef.current.length === 0) {
+  useEffect(() => {
+    const codexSessionId = session?.codexSessionId;
+    if (!codexSessionId) {
       return;
     }
-    const chunks = pendingChunksRef.current;
-    pendingChunksRef.current = [];
-    chunks.forEach((chunk) => {
-      const trimmed = trimOverlappingChunk(chunk);
-      if (!trimmed) {
-        return;
-      }
-      terminal.write(trimmed);
-      appendTail(trimmed);
-    });
-    const bottomProbe = terminal as unknown as { isScrolledToBottom?: () => boolean };
-    if (typeof bottomProbe.isScrolledToBottom === 'function') {
-      wasAtBottomRef.current = Boolean(bottomProbe.isScrolledToBottom());
+    const command = `codex resume --yolo ${codexSessionId}`;
+    persistResumeCommand(command);
+  }, [persistResumeCommand, session?.codexSessionId]);
+
+  const updateScrollTracking = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
     }
-  }, [appendTail, trimOverlappingChunk]);
+    wasAtBottomRef.current = isScrolledToBottom(terminal);
+    scrollPositionRef.current = terminal.getScrollPosition();
+  }, []);
 
   const restoreViewport = useCallback(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
     }
-    if (scrollPositionRef.current > 0) {
-      terminal.scrollToLine(scrollPositionRef.current);
-    } else {
+    if (wasAtBottomRef.current) {
       terminal.scrollToBottom();
+    } else {
+      terminal.scrollToLine(scrollPositionRef.current);
     }
-  }, []);
+    terminal.forceRender?.();
+    updateScrollTracking();
+  }, [updateScrollTracking]);
 
-  const hydrateVisibleTerminal = useCallback(() => {
-    if (!visibleRef.current) {
-      return;
-    }
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return;
-    }
-    hydratingRef.current = true;
-    terminal.refreshLayout();
-    window.requestAnimationFrame(() => {
-      const current = terminalRef.current;
-      if (!current) {
-        hydratingRef.current = false;
+  const writeChunk = useCallback(
+    (data: string) => {
+      if (!data) {
         return;
       }
-      drainPendingOutput();
-      if (wasAtBottomRef.current) {
-        current.scrollToBottom();
-      } else {
-        restoreViewport();
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        return;
       }
-      current.forceRender?.();
-      hydratingRef.current = false;
-      wasAtBottomRef.current = Boolean((current as unknown as { isScrolledToBottom?: () => boolean }).isScrolledToBottom?.());
-      if (status === 'running' && active && visibleRef.current) {
-        current.focus();
+      const anchoredToBottom = wasAtBottomRef.current || isScrolledToBottom(terminal);
+      terminal.write(data);
+      if (anchoredToBottom) {
+        terminal.scrollToBottom();
+        wasAtBottomRef.current = true;
       }
-    });
-  }, [active, drainPendingOutput, restoreViewport, status]);
+      terminal.forceRender?.();
+      updateScrollTracking();
+    },
+    [updateScrollTracking]
+  );
 
-  const attachTerminalRef = useCallback((instance: CodexTerminalHandle | null) => {
-    terminalRef.current = instance;
-    if (instance) {
-      syncInputState();
-      if (visibleRef.current) {
-        hydrateVisibleTerminal();
+  const syncSnapshot = useCallback(
+    async (preserveViewport: boolean) => {
+      if (!terminalRef.current) {
+        return;
       }
+      try {
+        const snapshot = await api.getCodexTerminalSnapshot(worktree.id, buildSnapshotOptions(paneIdRef.current));
+        const terminal = terminalRef.current;
+        if (!terminal) {
+          return;
+        }
+        terminal.clear();
+        if (snapshot.content) {
+          terminal.write(snapshot.content);
+        }
+        lastEventIdRef.current = snapshot.lastEventId;
+        if (!preserveViewport) {
+          wasAtBottomRef.current = true;
+          scrollPositionRef.current = terminal.getScrollPosition();
+        }
+        restoreViewport();
+      } catch (error) {
+        console.warn('[codex-terminal] failed to load snapshot', error);
+      }
+    },
+    [api, restoreViewport, worktree.id]
+  );
+
+  const syncDelta = useCallback(async () => {
+    if (!terminalRef.current) {
+      return;
     }
-  }, [hydrateVisibleTerminal, syncInputState]);
+    const execute = async () => {
+      try {
+        const response = await api.getCodexTerminalDelta(
+          worktree.id,
+          lastEventIdRef.current,
+          buildSnapshotOptions(paneIdRef.current)
+        );
+        const terminal = terminalRef.current;
+        if (!terminal) {
+          return;
+        }
+        if (response.snapshot !== undefined) {
+          terminal.clear();
+          if (response.snapshot) {
+            terminal.write(response.snapshot);
+          }
+          lastEventIdRef.current = response.lastEventId;
+          restoreViewport();
+        }
+        for (const chunk of response.chunks) {
+          if (chunk.id <= lastEventIdRef.current) {
+            continue;
+          }
+          writeChunk(chunk.data);
+          lastEventIdRef.current = chunk.id;
+        }
+        if (response.snapshot !== undefined || response.chunks.length > 0) {
+          updateScrollTracking();
+        }
+        if (response.lastEventId > lastEventIdRef.current) {
+          lastEventIdRef.current = response.lastEventId;
+        }
+      } catch (error) {
+        console.warn('[codex-terminal] failed to synchronise delta', error);
+      }
+    };
+
+    if (syncPromiseRef.current) {
+      syncPromiseRef.current = syncPromiseRef.current.then(() => execute());
+      return syncPromiseRef.current;
+    }
+
+    const promise = execute().finally(() => {
+      syncPromiseRef.current = null;
+    });
+    syncPromiseRef.current = promise;
+    return promise;
+  }, [api, restoreViewport, updateScrollTracking, worktree.id, writeChunk]);
+
+  const syncInputState = useCallback(() => {
+    const shouldEnable = status === 'running' && active && visible;
+    terminalRef.current?.setStdinDisabled(!shouldEnable);
+  }, [active, status, visible]);
+
+  useEffect(() => {
+    void syncSnapshot(false);
+  }, [syncSnapshot]);
 
   const setStatusWithSideEffects = useCallback(
     (next: TerminalLifecycle) => {
@@ -253,26 +282,27 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       return;
     }
     setStatusWithSideEffects('starting');
-    const startupCommand = buildCodexCommand(session, resumeCommandRef.current);
+    const startupCommand = session?.codexSessionId
+      ? `codex resume --yolo ${session.codexSessionId}`
+      : resumeCommandRef.current ?? 'codex --yolo';
+    if (startupCommand.startsWith('codex resume --yolo')) {
+      persistResumeCommand(startupCommand);
+    }
     const startPromise = api
       .startCodexTerminal(worktree.id, {
         startupCommand,
         paneId: paneIdRef.current,
         respondToCursorProbe: true
       })
-      .then((descriptorResult) => {
-        setDescriptorPid(descriptorResult.pid);
+      .then(async (descriptor) => {
+        setDescriptorPid(descriptor.pid);
         setStatusWithSideEffects('running');
         setLastExit(null);
-        pendingChunksRef.current = [];
-        lastTailRef.current = '';
-        if (startupCommand.startsWith('codex resume --yolo')) {
-          resumeCommandRef.current = startupCommand;
-        }
         bootstrappedRef.current = true;
         shouldAutoStartRef.current = false;
         syncInputState();
         onBootstrapped?.();
+        await syncSnapshot(false);
         if (active && visibleRef.current) {
           terminalRef.current?.focus();
         }
@@ -288,7 +318,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [active, api, onBootstrapped, onNotification, session, setStatusWithSideEffects, status, syncInputState, worktree.id]);
+  }, [active, api, onBootstrapped, onNotification, persistResumeCommand, session?.codexSessionId, setStatusWithSideEffects, status, syncInputState, syncSnapshot, worktree.id]);
 
   useEffect(() => {
     if (!visible) {
@@ -296,16 +326,14 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     }
     if (status === 'running') {
       syncInputState();
-      return;
-    }
-    if (!shouldAutoStart && !shouldAutoStartRef.current) {
+      void syncDelta();
       return;
     }
     if (!shouldAutoStartRef.current) {
       return;
     }
     void ensureTerminalStarted();
-  }, [ensureTerminalStarted, shouldAutoStart, status, syncInputState, visible]);
+  }, [ensureTerminalStarted, status, syncDelta, syncInputState, visible]);
 
   useEffect(() => {
     syncInputState();
@@ -320,51 +348,28 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   }, [onBootstrapped, status]);
 
   useEffect(() => {
-    const codexSessionId = session?.codexSessionId;
-    if (!codexSessionId) {
-      return;
-    }
-    const command = `codex resume --yolo ${codexSessionId}`;
-    if (lastPersistedCommandRef.current === command) {
-      resumeCommandRef.current = command;
-      return;
-    }
-    resumeCommandRef.current = command;
-    lastPersistedCommandRef.current = command;
-    void api.setCodexResumeCommand(worktree.id, command).catch((error) => {
-      const message = error instanceof Error ? error.message : 'Failed to persist Codex resume command';
-      onNotification(message);
-    });
-  }, [api, onNotification, session?.codexSessionId, worktree.id]);
-
-  useEffect(() => {
     const unsubscribeOutput = api.onCodexTerminalOutput((payload) => {
       if (payload.worktreeId !== worktree.id) {
         return;
       }
-      const command = extractResumeCommand(payload.chunk);
-      if (command && command !== lastPersistedCommandRef.current) {
-        resumeCommandRef.current = command;
-        lastPersistedCommandRef.current = command;
-        void api.setCodexResumeCommand(worktree.id, command).catch((error) => {
-          const message = error instanceof Error ? error.message : 'Failed to persist Codex resume command';
-          onNotification(message);
-        });
-      }
-      if (!terminalRef.current || hydratingRef.current || !visibleRef.current) {
-        pendingChunksRef.current.push(payload.chunk);
+      if (paneIdRef.current && payload.paneId && payload.paneId !== paneIdRef.current) {
         return;
       }
-      const trimmed = trimOverlappingChunk(payload.chunk);
-      if (!trimmed) {
-        return;
+      const candidate = extractResumeCommand(payload.chunk);
+      if (candidate && candidate !== lastPersistedCommandRef.current) {
+        persistResumeCommand(candidate);
       }
-      terminalRef.current.write(trimmed);
-      appendTail(trimmed);
-      const bottomProbe = terminalRef.current as unknown as { isScrolledToBottom?: () => boolean };
-      if (typeof bottomProbe.isScrolledToBottom === 'function') {
-        wasAtBottomRef.current = Boolean(bottomProbe.isScrolledToBottom());
+      if (payload.eventId != null) {
+        if (payload.eventId <= lastEventIdRef.current) {
+          return;
+        }
+        if (payload.eventId > lastEventIdRef.current + 1) {
+          void syncDelta();
+          return;
+        }
+        lastEventIdRef.current = payload.eventId;
       }
+      writeChunk(payload.chunk);
     });
 
     const unsubscribeExit = api.onCodexTerminalExit((payload) => {
@@ -375,46 +380,31 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       setDescriptorPid(null);
       setLastExit({ code: payload.exitCode, signal: payload.signal });
       pendingStartRef.current = null;
-      const exitCode = payload.exitCode ?? 0;
-      const hadError = exitCode !== 0 || Boolean(payload.signal);
-      const wasBootstrapped = bootstrappedRef.current;
       bootstrappedRef.current = false;
       shouldAutoStartRef.current = true;
-      if (wasBootstrapped) {
-        onUnbootstrapped?.();
-      }
+      const hadError = (payload.exitCode ?? 0) !== 0 || Boolean(payload.signal);
       if (hadError && lastPersistedCommandRef.current) {
-        resumeCommandRef.current = null;
-        lastPersistedCommandRef.current = null;
-        void api
-          .setCodexResumeCommand(worktree.id, null)
-          .catch((error) => {
-            const message = error instanceof Error ? error.message : 'Failed to clear Codex resume command';
-            onNotification(message);
+        persistResumeCommand(null);
+        api
+          .refreshCodexResumeCommand(worktree.id)
+          .then((command) => {
+            if (command) {
+              persistResumeCommand(command);
+            }
           })
-          .finally(() => {
-            void api.refreshCodexResumeCommand(worktree.id).then((refreshed) => {
-              if (refreshed) {
-                resumeCommandRef.current = refreshed;
-                lastPersistedCommandRef.current = refreshed;
-              }
-              if (visibleRef.current && shouldAutoStartRef.current) {
-                void ensureTerminalStarted();
-              }
-            });
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : 'Failed to refresh Codex resume command';
+            onNotification(message);
           });
-        return;
       }
-      if (visibleRef.current && shouldAutoStartRef.current) {
-        void ensureTerminalStarted();
-      }
+      onUnbootstrapped?.();
     });
 
     return () => {
       unsubscribeOutput();
       unsubscribeExit();
     };
-  }, [appendTail, api, ensureTerminalStarted, onNotification, onUnbootstrapped, setStatusWithSideEffects, trimOverlappingChunk, worktree.id]);
+  }, [api, onNotification, onUnbootstrapped, persistResumeCommand, setStatusWithSideEffects, syncDelta, worktree.id, writeChunk]);
 
   useEffect(() => {
     if (active && visible && status === 'running') {
@@ -429,18 +419,15 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     }
     if (!visible) {
       scrollPositionRef.current = terminal.getScrollPosition();
-      wasAtBottomRef.current = Boolean((terminal as unknown as { isScrolledToBottom?: () => boolean }).isScrolledToBottom?.());
+      wasAtBottomRef.current = isScrolledToBottom(terminal);
       return;
     }
-    hydrateVisibleTerminal();
-  }, [hydrateVisibleTerminal, visible]);
+    restoreViewport();
+  }, [restoreViewport, visible]);
 
   const handleTerminalData = useCallback(
     (data: string) => {
-      if (!data) {
-        return;
-      }
-      if (status !== 'running' || !active || !visible) {
+      if (!data || status !== 'running' || !active || !visible) {
         return;
       }
       onUserInput?.(data);
@@ -464,6 +451,17 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         });
     },
     [api, worktree.id]
+  );
+
+  const attachTerminalRef = useCallback(
+    (instance: CodexTerminalHandle | null) => {
+      terminalRef.current = instance;
+      if (instance) {
+        syncInputState();
+        updateScrollTracking();
+      }
+    },
+    [syncInputState, updateScrollTracking]
   );
 
   return (
@@ -499,4 +497,21 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       ) : null}
     </section>
   );
+};
+const CODEX_RESUME_REGEX = /codex resume --yolo [0-9a-fA-F-]+/i;
+const ANSI_ESCAPE = '\u001b';
+const ANSI_CSI_REGEX = new RegExp(`${ANSI_ESCAPE}\x5b[0-9;]*[A-Za-z]`, 'g');
+const ANSI_OSC_LINK_REGEX = new RegExp(`${ANSI_ESCAPE}\x5d8;;.*?\u0007`, 'g');
+const ANSI_OSC_TERMINATOR_REGEX = new RegExp(`${ANSI_ESCAPE}\\\\`, 'g');
+
+const stripAnsiSequences = (input: string): string =>
+  input
+    .replace(ANSI_OSC_LINK_REGEX, '')
+    .replace(ANSI_OSC_TERMINATOR_REGEX, '')
+    .replace(ANSI_CSI_REGEX, '');
+
+const extractResumeCommand = (chunk: string): string | null => {
+  const cleaned = stripAnsiSequences(chunk);
+  const match = cleaned.match(CODEX_RESUME_REGEX);
+  return match ? match[0] : null;
 };

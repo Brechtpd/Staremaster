@@ -249,6 +249,23 @@ export const registerIpcHandlers = (
     codexTerminalService.resize(payload);
   });
 
+  ipcMain.handle(
+    IPCChannels.codexTerminalSnapshot,
+    async (_event, payload: { worktreeId: string; paneId?: string }) => {
+      return codexTerminalService.getSnapshot(payload.worktreeId, payload.paneId);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.codexTerminalDelta,
+    async (
+      _event,
+      payload: { worktreeId: string; afterEventId: number; paneId?: string }
+    ) => {
+      return codexTerminalService.getDelta(payload.worktreeId, payload.afterEventId, payload.paneId);
+    }
+  );
+
   worktreeService.on('state-changed', sendState);
   worktreeService.on('worktree-updated', () => sendState(worktreeService.getState()));
   worktreeService.on('worktree-removed', (worktreeId) => {
@@ -320,6 +337,8 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.codexTerminalStop);
     ipcMain.removeHandler(IPCChannels.codexTerminalInput);
     ipcMain.removeHandler(IPCChannels.codexTerminalResize);
+    ipcMain.removeHandler(IPCChannels.codexTerminalSnapshot);
+    ipcMain.removeHandler(IPCChannels.codexTerminalDelta);
     worktreeService.removeAllListeners();
     codexManager.removeAllListeners();
     terminalService.off('terminal-output', forwardTerminalOutput);

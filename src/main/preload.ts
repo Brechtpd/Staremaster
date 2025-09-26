@@ -33,7 +33,9 @@ const IPCChannels = {
   codexTerminalInput: 'codex-terminal:input',
   codexTerminalResize: 'codex-terminal:resize',
   codexTerminalOutput: 'codex-terminal:output',
-  codexTerminalExit: 'codex-terminal:exit'
+  codexTerminalExit: 'codex-terminal:exit',
+  codexTerminalSnapshot: 'codex-terminal:snapshot',
+  codexTerminalDelta: 'codex-terminal:delta'
 } as const;
 
 const api: RendererApi = {
@@ -74,6 +76,17 @@ const api: RendererApi = {
       paneId: options?.paneId
     }),
   resizeCodexTerminal: (request) => ipcRenderer.invoke(IPCChannels.codexTerminalResize, request),
+  getCodexTerminalSnapshot: (worktreeId, options) =>
+    ipcRenderer.invoke(IPCChannels.codexTerminalSnapshot, {
+      worktreeId,
+      paneId: options?.paneId
+    }),
+  getCodexTerminalDelta: (worktreeId, afterEventId, options) =>
+    ipcRenderer.invoke(IPCChannels.codexTerminalDelta, {
+      worktreeId,
+      afterEventId,
+      paneId: options?.paneId
+    }),
   onStateUpdate: (callback) => subscribe(IPCChannels.stateUpdates, callback),
   onCodexOutput: (callback) => subscribe(IPCChannels.codexOutput, callback),
   onCodexStatus: (callback) => subscribe(IPCChannels.codexStatus, callback),

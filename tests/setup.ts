@@ -55,6 +55,8 @@ beforeEach(() => {
     stopCodexTerminal: vi.fn().mockResolvedValue(undefined),
     sendCodexTerminalInput: vi.fn().mockResolvedValue(undefined),
     resizeCodexTerminal: vi.fn().mockResolvedValue(undefined),
+    getCodexTerminalSnapshot: vi.fn().mockResolvedValue({ content: '', lastEventId: 0 }),
+    getCodexTerminalDelta: vi.fn().mockResolvedValue({ chunks: [], lastEventId: 0 }),
     onStateUpdate: vi.fn().mockReturnValue(() => {}),
     onCodexOutput: vi.fn().mockReturnValue(() => {}),
     onCodexStatus: vi.fn().mockReturnValue(() => {}),

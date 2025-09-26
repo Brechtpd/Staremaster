@@ -2054,6 +2054,17 @@ const createRendererStub = (): RendererApi => {
       void request;
       return undefined;
     },
+    getCodexTerminalSnapshot: async (worktreeId: string, options?: { paneId?: string }) => {
+      void worktreeId;
+      void options;
+      return { content: '', lastEventId: 0 };
+    },
+    getCodexTerminalDelta: async (worktreeId: string, afterEventId: number, options?: { paneId?: string }) => {
+      void worktreeId;
+      void afterEventId;
+      void options;
+      return { chunks: [], lastEventId: 0 };
+    },
     onStateUpdate: (callback) => {
       void callback;
       return noop;

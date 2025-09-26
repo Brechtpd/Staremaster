@@ -48,6 +48,8 @@ const createRendererApi = () => {
   }));
   const setCodexResumeCommand = vi.fn(async () => {});
   const refreshCodexResumeCommand = vi.fn(async () => null);
+  const getCodexTerminalSnapshot = vi.fn(async () => ({ content: '', lastEventId: 0 }));
+  const getCodexTerminalDelta = vi.fn(async () => ({ chunks: [], lastEventId: 0 }));
   let lastCodexTerminalExitHandler: ((payload: {
     worktreeId: string;
     sessionId: string;
@@ -60,6 +62,8 @@ const createRendererApi = () => {
     stopCodexTerminal: vi.fn(async () => {}),
     sendCodexTerminalInput: vi.fn(async () => {}),
     resizeCodexTerminal: vi.fn(async () => {}),
+    getCodexTerminalSnapshot,
+    getCodexTerminalDelta,
     onCodexTerminalOutput: vi.fn(() => () => {}),
     onCodexTerminalExit: vi.fn((handler: (payload: { worktreeId: string; sessionId: string; exitCode: number | null; signal: string | null }) => void) => {
       lastCodexTerminalExitHandler = handler;
@@ -99,13 +103,21 @@ const createRendererApi = () => {
     startCodexTerminal,
     setCodexResumeCommand,
     refreshCodexResumeCommand,
+    getCodexTerminalSnapshot,
+    getCodexTerminalDelta,
     getLastExitHandler: () => lastCodexTerminalExitHandler
   };
 };
 
 describe('CodexTerminalShellPane', () => {
   it('does not persist resume command when only an internal session id is present', async () => {
-    const { api, startCodexTerminal, setCodexResumeCommand, refreshCodexResumeCommand } = createRendererApi();
+    const {
+      api,
+      startCodexTerminal,
+      setCodexResumeCommand,
+      refreshCodexResumeCommand,
+      getCodexTerminalSnapshot
+    } = createRendererApi();
     const worktree: WorktreeDescriptor = {
       ...baseWorktree,
       codexResumeCommand: 'codex resume --yolo cached-id'
@@ -130,6 +142,7 @@ describe('CodexTerminalShellPane', () => {
       />
     );
 
+    await waitFor(() => expect(getCodexTerminalSnapshot).toHaveBeenCalled());
     await waitFor(() => expect(startCodexTerminal).toHaveBeenCalled());
 
     const call = startCodexTerminal.mock.calls[0];
@@ -139,7 +152,13 @@ describe('CodexTerminalShellPane', () => {
   });
 
   it('persists resume command when a real Codex session id is available', async () => {
-    const { api, startCodexTerminal, setCodexResumeCommand, refreshCodexResumeCommand } = createRendererApi();
+    const {
+      api,
+      startCodexTerminal,
+      setCodexResumeCommand,
+      refreshCodexResumeCommand,
+      getCodexTerminalSnapshot
+    } = createRendererApi();
     const worktree: WorktreeDescriptor = { ...baseWorktree };
 
     const session: DerivedCodexSession = {
@@ -162,6 +181,7 @@ describe('CodexTerminalShellPane', () => {
       />
     );
 
+    await waitFor(() => expect(getCodexTerminalSnapshot).toHaveBeenCalled());
     await waitFor(() => expect(startCodexTerminal).toHaveBeenCalled());
 
     await waitFor(() => expect(setCodexResumeCommand).toHaveBeenCalledTimes(1));
@@ -173,7 +193,14 @@ describe('CodexTerminalShellPane', () => {
   });
 
   it('clears a stale resume command and falls back to a fresh session when the resume exits with error', async () => {
-    const { api, startCodexTerminal, setCodexResumeCommand, refreshCodexResumeCommand, getLastExitHandler } = createRendererApi();
+    const {
+      api,
+      startCodexTerminal,
+      setCodexResumeCommand,
+      refreshCodexResumeCommand,
+      getCodexTerminalSnapshot,
+      getLastExitHandler
+    } = createRendererApi();
     const worktree: WorktreeDescriptor = {
       ...baseWorktree,
       codexResumeCommand: 'codex resume --yolo stale-id'
@@ -193,6 +220,7 @@ describe('CodexTerminalShellPane', () => {
       />
     );
 
+    await waitFor(() => expect(getCodexTerminalSnapshot).toHaveBeenCalled());
     await waitFor(() => expect(startCodexTerminal).toHaveBeenCalledTimes(1));
 
     const exitHandler = getLastExitHandler();
@@ -214,7 +242,7 @@ describe('CodexTerminalShellPane', () => {
   });
 
   it('marks the pane as unbootstrapped and restarts on a clean exit when visible', async () => {
-    const { api, startCodexTerminal, getLastExitHandler } = createRendererApi();
+    const { api, startCodexTerminal, getCodexTerminalSnapshot, getLastExitHandler } = createRendererApi();
     const worktree: WorktreeDescriptor = { ...baseWorktree };
     const onUnbootstrapped = vi.fn();
 
@@ -232,6 +260,7 @@ describe('CodexTerminalShellPane', () => {
       />
     );
 
+    await waitFor(() => expect(getCodexTerminalSnapshot).toHaveBeenCalled());
     await waitFor(() => expect(startCodexTerminal).toHaveBeenCalledTimes(1));
 
     const exitHandler = getLastExitHandler();
@@ -251,7 +280,7 @@ describe('CodexTerminalShellPane', () => {
   });
 
   it('captures resume command emitted before the terminal start resolves, including hyperlink formatting', async () => {
-    const { api, startCodexTerminal, setCodexResumeCommand } = createRendererApi();
+    const { api, startCodexTerminal, setCodexResumeCommand, getCodexTerminalSnapshot } = createRendererApi();
 
     let resolveStart: (descriptor: WorktreeTerminalDescriptor) => void;
     startCodexTerminal.mockImplementation(async () => {
@@ -275,6 +304,7 @@ describe('CodexTerminalShellPane', () => {
       />
     );
 
+    await waitFor(() => expect(getCodexTerminalSnapshot).toHaveBeenCalled());
     const outputHandler = api.onCodexTerminalOutput.mock.calls[0]?.[0];
     expect(outputHandler).toBeTruthy();
 
@@ -284,13 +314,17 @@ describe('CodexTerminalShellPane', () => {
       outputHandler!({
         worktreeId: worktree.id,
         sessionId: 'pending-session',
-        chunk: hyperlinkChunk
+        chunk: hyperlinkChunk,
+        paneId: 'pane-early',
+        eventId: 1
       });
     });
 
-    expect(setCodexResumeCommand).toHaveBeenCalledWith(
-      worktree.id,
-      'codex resume --yolo deadbeef-dead-beef-dead-beefdeadbeef'
+    await waitFor(() =>
+      expect(setCodexResumeCommand).toHaveBeenCalledWith(
+        worktree.id,
+        'codex resume --yolo deadbeef-dead-beef-dead-beefdeadbeef'
+      )
     );
 
     await act(async () => {

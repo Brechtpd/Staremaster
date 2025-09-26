@@ -30,7 +30,9 @@ export const IPCChannels = {
   codexTerminalInput: 'codex-terminal:input',
   codexTerminalResize: 'codex-terminal:resize',
   codexTerminalOutput: 'codex-terminal:output',
-  codexTerminalExit: 'codex-terminal:exit'
+  codexTerminalExit: 'codex-terminal:exit',
+  codexTerminalSnapshot: 'codex-terminal:snapshot',
+  codexTerminalDelta: 'codex-terminal:delta'
 } as const;
 
 type ValueOf<T> = T[keyof T];
@@ -146,6 +148,8 @@ export interface TerminalOutputPayload {
   sessionId: string;
   worktreeId: string;
   chunk: string;
+  paneId?: string;
+  eventId?: number;
 }
 
 export interface TerminalExitPayload {
@@ -161,4 +165,20 @@ export interface TerminalResizeRequest {
   rows: number;
   sessionId?: string;
   paneId?: string;
+}
+
+export interface TerminalChunk {
+  id: number;
+  data: string;
+}
+
+export interface TerminalSnapshot {
+  content: string;
+  lastEventId: number;
+}
+
+export interface TerminalDelta {
+  chunks: TerminalChunk[];
+  lastEventId: number;
+  snapshot?: string;
 }

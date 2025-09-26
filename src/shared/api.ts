@@ -10,7 +10,9 @@ import {
   WorktreeTerminalDescriptor,
   TerminalOutputPayload,
   TerminalExitPayload,
-  TerminalResizeRequest
+  TerminalResizeRequest,
+  TerminalSnapshot,
+  TerminalDelta
 } from './ipc';
 
 export interface RendererApi {
@@ -36,6 +38,12 @@ export interface RendererApi {
     options?: { sessionId?: string; paneId?: string }
   ): Promise<void>;
   resizeCodexTerminal(request: TerminalResizeRequest): Promise<void>;
+  getCodexTerminalSnapshot(worktreeId: string, options?: { paneId?: string }): Promise<TerminalSnapshot>;
+  getCodexTerminalDelta(
+    worktreeId: string,
+    afterEventId: number,
+    options?: { paneId?: string }
+  ): Promise<TerminalDelta>;
   onStateUpdate(callback: (state: AppState) => void): () => void;
   onCodexOutput(callback: (payload: CodexOutputPayload) => void): () => void;
   onCodexStatus(callback: (payload: CodexStatusPayload) => void): () => void;

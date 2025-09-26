@@ -5,7 +5,10 @@ import type {
   WorktreeTerminalDescriptor,
   TerminalOutputPayload,
   TerminalExitPayload,
-  TerminalResizeRequest
+  TerminalResizeRequest,
+  TerminalChunk,
+  TerminalSnapshot,
+  TerminalDelta
 } from '../../shared/ipc';
 
 type TerminalEvents = {
@@ -58,6 +61,25 @@ interface TerminalSession {
   paneId?: string;
 }
 
+interface HistoryEvent {
+  id: number;
+  data: string;
+}
+
+interface HistoryRecord {
+  events: HistoryEvent[];
+  lastEventId: number;
+  firstEventId: number;
+  totalLength: number;
+}
+
+interface TerminalServiceOptions {
+  history?: {
+    enabled: boolean;
+    limit?: number;
+  };
+}
+
 export class TerminalService extends EventEmitter<TerminalEvents> {
   private readonly sessionsById = new Map<string, TerminalSession>();
 
@@ -67,6 +89,12 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
 
   private readonly paneSessionMap = new Map<string, string>();
 
+  private readonly historyEnabled: boolean;
+
+  private readonly historyLimit: number;
+
+  private readonly historyByKey = new Map<string, HistoryRecord>();
+
   private getPaneKey(worktreeId: string, paneId?: string | null): string | null {
     if (!paneId) {
       return null;
@@ -74,8 +102,13 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     return `${worktreeId}:${paneId}`;
   }
 
-  constructor(private readonly getWorktreePath: (worktreeId: string) => string | null) {
+  constructor(
+    private readonly getWorktreePath: (worktreeId: string) => string | null,
+    options?: TerminalServiceOptions
+  ) {
     super();
+    this.historyEnabled = options?.history?.enabled ?? false;
+    this.historyLimit = options?.history?.limit ?? 500_000;
   }
 
   async start(
@@ -226,6 +259,17 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
       }
     });
     pendingKeys.forEach((key) => this.pendingStarts.delete(key));
+
+    if (this.historyEnabled) {
+      const historyKeys: string[] = [];
+      this.historyByKey.forEach((_value, key) => {
+        if (key.startsWith(`${worktreeId}:`)) {
+          historyKeys.push(key);
+        }
+      });
+      historyKeys.forEach((key) => this.historyByKey.delete(key));
+      this.historyByKey.delete(this.historyKey(worktreeId));
+    }
   }
 
   private async launch(
@@ -310,10 +354,13 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
           dsrBuffer = dsrBuffer.slice(-32);
         }
       }
+      const eventId = this.recordHistoryEvent(worktreeId, paneId, chunk);
       const payload: TerminalOutputPayload = {
         sessionId: descriptor.sessionId,
         worktreeId,
-        chunk
+        chunk,
+        paneId,
+        eventId
       };
       this.emit('terminal-output', payload);
     });
@@ -365,5 +412,84 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
       last = id;
     });
     return last;
+  }
+
+  private historyKey(worktreeId: string, paneId?: string | null): string {
+    return paneId ? `${worktreeId}:${paneId}` : `${worktreeId}::default`;
+  }
+
+  private recordHistoryEvent(worktreeId: string, paneId: string | undefined, chunk: string): number | undefined {
+    if (!this.historyEnabled) {
+      return undefined;
+    }
+    const key = this.historyKey(worktreeId, paneId);
+    let record = this.historyByKey.get(key);
+    if (!record) {
+      record = {
+        events: [],
+        lastEventId: 0,
+        firstEventId: 1,
+        totalLength: 0
+      };
+      this.historyByKey.set(key, record);
+    }
+    const nextId = record.lastEventId + 1;
+    record.events.push({ id: nextId, data: chunk });
+    record.lastEventId = nextId;
+    if (record.events.length === 1) {
+      record.firstEventId = nextId;
+    }
+    record.totalLength += chunk.length;
+    while (record.totalLength > this.historyLimit && record.events.length > 1) {
+      const removed = record.events.shift()!;
+      record.totalLength -= removed.data.length;
+      record.firstEventId = record.events[0]?.id ?? record.lastEventId + 1;
+    }
+    return nextId;
+  }
+
+  getSnapshot(worktreeId: string, paneId?: string): TerminalSnapshot {
+    if (!this.historyEnabled) {
+      throw new Error('Terminal history not enabled');
+    }
+    const key = this.historyKey(worktreeId, paneId);
+    const record = this.historyByKey.get(key);
+    if (!record) {
+      return { content: '', lastEventId: 0 };
+    }
+    const content = record.events.map((event) => event.data).join('');
+    return {
+      content,
+      lastEventId: record.lastEventId
+    };
+  }
+
+  getDelta(worktreeId: string, afterEventId: number, paneId?: string): TerminalDelta {
+    if (!this.historyEnabled) {
+      throw new Error('Terminal history not enabled');
+    }
+    const key = this.historyKey(worktreeId, paneId);
+    const record = this.historyByKey.get(key);
+    if (!record) {
+      return { chunks: [], lastEventId: 0 };
+    }
+
+    if (afterEventId < record.firstEventId) {
+      const snapshot = this.getSnapshot(worktreeId, paneId);
+      return {
+        chunks: [],
+        lastEventId: snapshot.lastEventId,
+        snapshot: snapshot.content
+      };
+    }
+
+    const chunks: TerminalChunk[] = record.events
+      .filter((event) => event.id > afterEventId)
+      .map((event) => ({ id: event.id, data: event.data }));
+
+    return {
+      chunks,
+      lastEventId: record.lastEventId
+    };
   }
 }
