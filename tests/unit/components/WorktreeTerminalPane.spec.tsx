@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, waitFor, act } from '@testing-library/react';
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import type { RendererApi } from '../../../src/shared/api';
 import type {
   TerminalOutputPayload,

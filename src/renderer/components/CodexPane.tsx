@@ -35,8 +35,10 @@ interface CodexPaneProps {
   active: boolean;
   visible: boolean;
   shouldAutoStart?: boolean;
+  paneId?: string;
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
+  onBootstrapped?(): void;
 }
 
 const stripCodexLogAnnotations = (log: string): string => {
@@ -142,8 +144,10 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   active,
   visible,
   shouldAutoStart = true,
+  paneId,
   onNotification,
-  onUserInput
+  onUserInput,
+  onBootstrapped
 }) => {
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
   const hydratorRef = useRef<Hydrator | null>(null);
@@ -162,7 +166,21 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     options?: { throttled?: boolean; forceStart?: boolean }
   ) => Promise<void>>(async () => {});
 
+  const bootstrappedRef = useRef(false);
   const status = session?.status ?? 'idle';
+
+  useEffect(() => {
+    if (bootstrappedRef.current) {
+      return;
+    }
+    if (!onBootstrapped) {
+      return;
+    }
+    if (session?.status === 'running') {
+      bootstrappedRef.current = true;
+      onBootstrapped();
+    }
+  }, [onBootstrapped, session?.status]);
   const sessionSignature = session?.signature ?? 'none';
   const derivedError = session?.lastError;
   const hasCodexSessionId = Boolean(session?.codexSessionId);
@@ -359,6 +377,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
           terminal.write(bufferedOutputRef.current);
           bufferedOutputRef.current = '';
         }
+        needsInitialRefreshRef.current = false;
         terminal.refreshLayout();
         if (session?.status === 'running') {
           tryFlushInputsRef.current();
@@ -366,7 +385,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         return;
       }
 
-      const shouldHydrateFromLog = signatureChanged && !hasCodexSessionId;
+      const shouldHydrateFromLog = !hasCodexSessionId;
       if (!shouldHydrateFromLog) {
         terminal.clear();
         hydratedSignatureRef.current = sessionSignature;
@@ -488,7 +507,11 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   return (
     <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
       {derivedError ? <p className="terminal-error">{derivedError}</p> : null}
-      <CodexTerminal ref={handleTerminalRef} onData={handleTerminalData} instanceId={worktree.id} />
+      <CodexTerminal
+        ref={handleTerminalRef}
+        onData={handleTerminalData}
+        instanceId={paneId ? `${worktree.id}-codex-${paneId}` : `${worktree.id}-codex`}
+      />
       {status !== 'running' ? (
         <p className="terminal-hint">
           {status === 'error'

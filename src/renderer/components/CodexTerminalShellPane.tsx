@@ -14,6 +14,7 @@ interface CodexTerminalShellPaneProps {
   shouldAutoStart?: boolean;
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
+  onBootstrapped?(): void;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -56,7 +57,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   paneId,
   shouldAutoStart = true,
   onNotification,
-  onUserInput
+  onUserInput,
+  onBootstrapped
 }) => {
   const [descriptorPid, setDescriptorPid] = useState<number | null>(null);
   const [status, setStatus] = useState<TerminalLifecycle>('idle');
@@ -214,6 +216,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
           resumeCommandRef.current = startupCommand;
         }
         syncInputState();
+        onBootstrapped?.();
         if (active && visibleRef.current) {
           terminalRef.current?.focus();
         }
@@ -229,7 +232,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [active, api, onNotification, session, setStatusWithSideEffects, status, syncInputState, worktree.id]);
+  }, [active, api, onBootstrapped, onNotification, session, setStatusWithSideEffects, status, syncInputState, worktree.id]);
 
   useEffect(() => {
     if (!visible) {

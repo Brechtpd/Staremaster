@@ -17,6 +17,7 @@ interface WorktreeTerminalPaneProps {
   paneId?: string;
   shouldAutoStart?: boolean;
   onNotification(message: string | null): void;
+  onBootstrapped?(): void;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -35,7 +36,8 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   visible,
   paneId,
   shouldAutoStart = true,
-  onNotification
+  onNotification,
+  onBootstrapped
 }) => {
   const [descriptor, setDescriptor] = useState<WorktreeTerminalDescriptor | null>(null);
   const [status, setStatus] = useState<TerminalLifecycle>('idle');
@@ -144,6 +146,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
         setLastExit(null);
         pendingOutputRef.current = '';
         syncInputState();
+        onBootstrapped?.();
         if (active && visibleRef.current) {
           terminalRef.current?.focus();
         }
@@ -159,7 +162,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [active, api, onNotification, setStatusWithSideEffects, status, syncInputState, worktree.id]);
+  }, [active, api, onBootstrapped, onNotification, setStatusWithSideEffects, status, syncInputState, worktree.id]);
 
   useEffect(() => {
     if (!visible) {
