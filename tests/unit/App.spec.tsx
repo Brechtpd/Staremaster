@@ -164,6 +164,93 @@ describe('App with project state', () => {
     expect(openFolderMock).toHaveBeenCalledWith(worktree.id);
   });
 
+  it('allows adding an extra terminal pane from the add menu', async () => {
+    const worktree: WorktreeDescriptor = {
+      id: 'wt-1',
+      projectId: 'proj-1',
+      featureName: 'feature-1',
+      branch: 'feature-1',
+      path: '/tmp/feature-1',
+      createdAt: new Date().toISOString(),
+      status: 'ready',
+      codexStatus: 'idle'
+    };
+
+    const project = { id: 'proj-1', root: '/tmp/repo', name: 'Project', createdAt: new Date().toISOString() };
+
+    const state: AppState = {
+      projects: [project],
+      worktrees: [worktree],
+      sessions: []
+    };
+
+    const api = {
+      getState: vi.fn(async () => state),
+      addProject: vi.fn(async () => state),
+      createWorktree: vi.fn(),
+      mergeWorktree: vi.fn(),
+      removeWorktree: vi.fn(),
+      openWorktreeInVSCode: vi.fn(),
+      openWorktreeInGitGui: vi.fn(),
+      openWorktreeInFileManager: vi.fn(),
+      startCodex: vi.fn(),
+      stopCodex: vi.fn(),
+      sendCodexInput: vi.fn(),
+      startCodexTerminal: vi.fn(async () => ({
+        sessionId: 'codex-terminal',
+        worktreeId: 'project-root:proj-1',
+        shell: '/bin/bash',
+        pid: 456,
+        startedAt: new Date().toISOString(),
+        status: 'running'
+      })),
+      stopCodexTerminal: vi.fn(),
+      sendCodexTerminalInput: vi.fn(),
+      resizeCodexTerminal: vi.fn(),
+      onStateUpdate: vi.fn(() => () => {}),
+      onCodexOutput: vi.fn(() => () => {}),
+      onCodexStatus: vi.fn(() => () => {}),
+      onCodexTerminalOutput: vi.fn(() => () => {}),
+      onCodexTerminalExit: vi.fn(() => () => {}),
+      getGitStatus: vi.fn(),
+      getGitDiff: vi.fn(),
+      getCodexLog: vi.fn(),
+      summarizeCodexOutput: vi.fn(async () => ''),
+      setCodexResumeCommand: vi.fn(),
+      refreshCodexResumeCommand: vi.fn(async () => null),
+      startWorktreeTerminal: vi.fn(async () => ({
+        sessionId: 'terminal-1',
+        worktreeId: 'project-root:proj-1',
+        shell: '/bin/bash',
+        pid: 789,
+        startedAt: new Date().toISOString(),
+        status: 'running'
+      })),
+      stopWorktreeTerminal: vi.fn(),
+      sendTerminalInput: vi.fn(),
+      resizeTerminal: vi.fn(),
+      onTerminalOutput: vi.fn(() => () => {}),
+      onTerminalExit: vi.fn(() => () => {})
+    } as unknown as RendererApi;
+
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: api
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(api.getState).toHaveBeenCalled());
+
+    const addPaneButton = await screen.findByRole('button', { name: 'Add pane' });
+    fireEvent.click(addPaneButton);
+
+    const newTerminalOption = await screen.findByRole('menuitem', { name: /new terminal/i });
+    fireEvent.click(newTerminalOption);
+
+    expect(await screen.findByRole('tab', { name: 'Terminal 2' })).toBeInTheDocument();
+  });
+
   it('displays the latest codex status line beneath the header', async () => {
     const worktree: WorktreeDescriptor = {
       id: 'wt-1',

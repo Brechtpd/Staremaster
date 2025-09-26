@@ -20,8 +20,8 @@ type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
 
 const CODEX_RESUME_REGEX = /codex resume --yolo [0-9a-fA-F-]+/i;
 const ANSI_ESCAPE = '\u001b';
-const ANSI_CSI_REGEX = new RegExp(`${ANSI_ESCAPE}\[[0-9;]*[A-Za-z]`, 'g');
-const ANSI_OSC_LINK_REGEX = new RegExp(`${ANSI_ESCAPE}]8;;.*?\u0007`, 'g');
+const ANSI_CSI_REGEX = new RegExp(`${ANSI_ESCAPE}\x5b[0-9;]*[A-Za-z]`, 'g');
+const ANSI_OSC_LINK_REGEX = new RegExp(`${ANSI_ESCAPE}\x5d8;;.*?\u0007`, 'g');
 const ANSI_OSC_TERMINATOR_REGEX = new RegExp(`${ANSI_ESCAPE}\\\\`, 'g');
 
 const stripAnsiSequences = (input: string): string => {
