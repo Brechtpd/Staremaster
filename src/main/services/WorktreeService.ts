@@ -108,6 +108,12 @@ export class WorktreeService extends EventEmitter {
       this.emit('worktree-updated', descriptor);
     }
 
+    const latestState = this.store.getState();
+    const defaultWorktreeId = latestState.worktrees.find((item) => item.projectId === projectId)?.id ?? null;
+    await this.store.patchProject(projectId, {
+      defaultWorktreeId: defaultWorktreeId ?? undefined
+    });
+
     for (const item of existingForProject) {
       if (!seen.has(item.id)) {
         await this.store.removeWorktree(item.id);

@@ -1436,10 +1436,14 @@ export const App: React.FC = () => {
       isVisible: boolean;
     }) => {
       const sessionWorktreeId = worktree.id.startsWith('project-root:')
-        ? state.worktrees.find(
-            (candidate) =>
-              candidate.projectId === worktree.projectId && candidate.path === worktree.path
-          )?.id ?? worktree.id
+        ? (() => {
+            const project = state.projects.find((item) => item.id === worktree.projectId);
+            if (project?.defaultWorktreeId) {
+              return project.defaultWorktreeId;
+            }
+            const primary = state.worktrees.find((candidate) => candidate.projectId === worktree.projectId);
+            return primary?.id ?? worktree.id;
+          })()
         : worktree.id;
 
       return (
@@ -1496,6 +1500,7 @@ export const App: React.FC = () => {
       markPaneBootstrapped,
       markPaneUnbootstrapped,
       setNotification,
+      state.projects,
       state.worktrees
     ]
   );

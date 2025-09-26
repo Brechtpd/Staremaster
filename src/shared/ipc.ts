@@ -50,6 +50,7 @@ export interface ProjectDescriptor {
   name: string;
   createdAt: string;
   codexResumeCommand?: string;
+  defaultWorktreeId?: string;
 }
 
 export interface WorktreeDescriptor {
