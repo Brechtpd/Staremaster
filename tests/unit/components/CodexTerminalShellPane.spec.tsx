@@ -140,6 +140,7 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-1"
         active
         visible
+        sessionWorktreeId={worktree.id}
         onNotification={() => {}}
       />
     );
@@ -178,6 +179,7 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-2"
         active
         visible
+        sessionWorktreeId={worktree.id}
         onNotification={() => {}}
       />
     );
@@ -215,6 +217,7 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-3"
         active
         visible
+        sessionWorktreeId={worktree.id}
         onNotification={() => {}}
         onUnbootstrapped={() => {}}
       />
@@ -254,6 +257,7 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-clean-exit"
         active
         visible
+        sessionWorktreeId={worktree.id}
         onNotification={() => {}}
         onUnbootstrapped={onUnbootstrapped}
       />
@@ -298,6 +302,7 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-early"
         active
         visible
+        sessionWorktreeId={worktree.id}
         onNotification={() => {}}
       />
     );
@@ -355,6 +360,7 @@ describe('CodexTerminalShellPane', () => {
         paneId="pane-multi"
         active
         visible
+        sessionWorktreeId={worktree.id}
         onNotification={() => {}}
       />
     );

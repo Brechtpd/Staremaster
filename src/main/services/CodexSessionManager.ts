@@ -77,6 +77,7 @@ type ManagedSession = {
   dsrBuffer: string;
   resumeTarget?: string | null;
   resumeDetection: ResumeDetectionState;
+  projectId: string;
 };
 
 const DEFAULT_CODEX_COMMAND = 'codex --yolo';
@@ -177,14 +178,15 @@ export class CodexSessionManager extends EventEmitter {
         buffer: '',
         resumeCaptured: Boolean(isAutoResume && resumeTarget),
         resumeTarget: resumeTarget ?? null
-      }
+      },
+      projectId: worktree.projectId
     };
 
     this.sessions.set(worktree.id, managed);
     await this.store.upsertSession(descriptor);
 
     if (!resumeTarget) {
-      void this.captureCodexSessionId(worktree.path, descriptor, managed, startTimestamp).catch((error) => {
+      void this.captureCodexSessionId(worktree.path, descriptor, managed, startTimestamp, worktree.id).catch((error) => {
         console.warn('[codex] failed to capture session id', error);
       });
     }
@@ -223,9 +225,8 @@ export class CodexSessionManager extends EventEmitter {
           codexSessionId: match.codexSessionId
         });
         if (!match.alreadyCaptured) {
-          void this.store.patchWorktree(worktree.id, {
-            codexResumeCommand: match.command
-          });
+          void this.store.updateCodexResumeCommand(worktree.id, match.command);
+          void this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, match.command);
         }
       }
       if (chunk.includes('\u001b')) {
@@ -264,6 +265,7 @@ export class CodexSessionManager extends EventEmitter {
         managed.descriptor.lastError = `Codex process exited with code ${exitCode}`;
         if (managed.resumeTarget) {
           managed.descriptor.codexSessionId = undefined;
+          managed.resumeTarget = null;
         }
       }
       managed.stream.write(`\n[${new Date().toISOString()}] Session exited with code ${exitCode}\n`);
@@ -280,6 +282,15 @@ export class CodexSessionManager extends EventEmitter {
         lastError: managed.descriptor.lastError,
         codexSessionId: managed.descriptor.codexSessionId
       });
+      const resumeCommand = managed.descriptor.codexSessionId
+        ? `${CODEX_RESUME_TEMPLATE} ${managed.descriptor.codexSessionId}`
+        : null;
+      await this.store.patchWorktree(worktree.id, {
+        codexStatus: managed.descriptor.status,
+        lastError: managed.descriptor.lastError
+      });
+      await this.store.updateCodexResumeCommand(worktree.id, resumeCommand);
+      await this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, resumeCommand);
 
       const shouldRetryFresh = exitCode !== 0 && isAutoResume;
       if (shouldRetryFresh) {
@@ -360,7 +371,8 @@ export class CodexSessionManager extends EventEmitter {
     cwd: string,
     descriptor: CodexSessionDescriptor,
     managed: ManagedSession,
-    sessionStartMs: number
+    sessionStartMs: number,
+    worktreeId: string
   ): Promise<void> {
     const sessionId = await this.locateCodexSessionId(cwd, sessionStartMs, managed.resumeTarget);
     if (!sessionId) {
@@ -368,10 +380,14 @@ export class CodexSessionManager extends EventEmitter {
       return;
     }
     managed.descriptor.codexSessionId = sessionId;
+    managed.resumeTarget = sessionId;
     descriptor.codexSessionId = sessionId;
     await this.store.patchSession(descriptor.id, {
       codexSessionId: sessionId
     });
+    const command = `${CODEX_RESUME_TEMPLATE} ${sessionId}`;
+    await this.store.updateCodexResumeCommand(worktreeId, command);
+    await this.store.updateCodexResumeCommand(`project-root:${managed.projectId}`, command);
     console.log('[codex] captured session id', sessionId, 'for', cwd);
   }
 

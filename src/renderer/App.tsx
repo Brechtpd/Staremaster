@@ -780,7 +780,8 @@ export const App: React.FC = () => {
       path: project.root,
       createdAt: project.createdAt,
       status: 'ready',
-      codexStatus: 'idle'
+      codexStatus: 'idle',
+      codexResumeCommand: project.codexResumeCommand
     };
   }, [selectedWorktreeId, state.projects, state.worktrees]);
 
@@ -1433,51 +1434,70 @@ export const App: React.FC = () => {
       session: DerivedCodexSession | undefined;
       isActive: boolean;
       isVisible: boolean;
-    }) => (
-      <div
-        key={pane.id}
-        id={`pane-panel-${pane.id}`}
-        className="codex-pane-wrapper"
-        role="tabpanel"
-        aria-labelledby={`pane-tab-${pane.id}`}
-        aria-hidden={!isVisible}
-        style={{ display: isVisible ? 'flex' : 'none' }}
-      >
-        {isTerminalCodex ? (
-          <CodexTerminalShellPane
-            api={api}
-            worktree={worktree}
-            session={session}
-            active={isActive}
-            visible={isVisible}
-            paneId={pane.id}
-            onNotification={setNotification}
-            onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
-            onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
-            onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
-            initialScrollState={codexScrollStateRef.current[pane.id]}
-            onScrollStateChange={(state) => {
-              codexScrollStateRef.current[pane.id] = state;
-            }}
-          />
-        ) : (
-          <CodexPane
-            api={api}
-            bridge={bridge}
-            worktree={worktree}
-            session={session}
-            active={isActive}
-            visible={isVisible}
-            paneId={pane.id}
-            onNotification={setNotification}
-            onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
-            onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
-            onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
-          />
-        )}
-      </div>
-    ),
-    [api, bridge, handleCodexUserInput, isTerminalCodex, markPaneBootstrapped, markPaneUnbootstrapped, setNotification]
+    }) => {
+      const sessionWorktreeId = worktree.id.startsWith('project-root:')
+        ? state.worktrees.find(
+            (candidate) =>
+              candidate.projectId === worktree.projectId && candidate.path === worktree.path
+          )?.id ?? worktree.id
+        : worktree.id;
+
+      return (
+        <div
+          key={pane.id}
+          id={`pane-panel-${pane.id}`}
+          className="codex-pane-wrapper"
+          role="tabpanel"
+          aria-labelledby={`pane-tab-${pane.id}`}
+          aria-hidden={!isVisible}
+          style={{ display: isVisible ? 'flex' : 'none' }}
+        >
+          {isTerminalCodex ? (
+            <CodexTerminalShellPane
+              api={api}
+              worktree={worktree}
+              session={session}
+              active={isActive}
+              visible={isVisible}
+              paneId={pane.id}
+              sessionWorktreeId={sessionWorktreeId}
+              onNotification={setNotification}
+              onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
+              onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
+              onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
+              initialScrollState={codexScrollStateRef.current[pane.id]}
+              onScrollStateChange={(state) => {
+                codexScrollStateRef.current[pane.id] = state;
+              }}
+            />
+          ) : (
+            <CodexPane
+              api={api}
+              bridge={bridge}
+              worktree={worktree}
+              session={session}
+              active={isActive}
+              visible={isVisible}
+              paneId={pane.id}
+              onNotification={setNotification}
+              onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
+              onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
+              onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
+            />
+          )}
+        </div>
+      );
+    },
+    [
+      api,
+      bridge,
+      handleCodexUserInput,
+      isTerminalCodex,
+      markPaneBootstrapped,
+      markPaneUnbootstrapped,
+      setNotification,
+      state.worktrees
+    ]
   );
 
   const renderTerminalPane = useCallback(
