@@ -77,6 +77,9 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const resumeCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
   const lastPersistedCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
   const paneIdRef = useRef<string | undefined>(paneId);
+  const lastWrittenChunkRef = useRef<string | null>(null);
+  const hydrationBaselineRef = useRef<string | null>(null);
+  const hydrationDuplicateSkippedRef = useRef(false);
 
   useEffect(() => {
     visibleRef.current = visible;
@@ -140,6 +143,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     const chunk = pendingOutputRef.current;
     pendingOutputRef.current = '';
     terminalRef.current.write(chunk);
+    lastWrittenChunkRef.current = chunk;
   }, []);
 
   const restoreViewport = useCallback(() => {
@@ -163,17 +167,23 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       return;
     }
     hydratingRef.current = true;
+    hydrationBaselineRef.current = lastWrittenChunkRef.current;
+    hydrationDuplicateSkippedRef.current = false;
     terminal.refreshLayout();
     window.requestAnimationFrame(() => {
       const current = terminalRef.current;
       if (!current) {
         hydratingRef.current = false;
+        hydrationBaselineRef.current = null;
+        hydrationDuplicateSkippedRef.current = false;
         return;
       }
       restoreViewport();
       drainPendingOutput();
       current.forceRender?.();
       hydratingRef.current = false;
+      hydrationBaselineRef.current = null;
+      hydrationDuplicateSkippedRef.current = false;
       if (status === 'running' && active && visibleRef.current) {
         current.focus();
       }
@@ -217,6 +227,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         setStatusWithSideEffects('running');
         setLastExit(null);
         pendingOutputRef.current = '';
+        lastWrittenChunkRef.current = null;
         if (startupCommand.startsWith('codex resume --yolo')) {
           resumeCommandRef.current = startupCommand;
         }
@@ -303,10 +314,17 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         });
       }
       if (!terminalRef.current || hydratingRef.current) {
+        if (hydratingRef.current && hydrationBaselineRef.current && !hydrationDuplicateSkippedRef.current) {
+          if (hydrationBaselineRef.current === payload.chunk) {
+            hydrationDuplicateSkippedRef.current = true;
+            return;
+          }
+        }
         pendingOutputRef.current += payload.chunk;
         return;
       }
       terminalRef.current.write(payload.chunk);
+      lastWrittenChunkRef.current = payload.chunk;
     });
 
     const unsubscribeExit = api.onCodexTerminalExit((payload) => {
@@ -371,7 +389,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     }
     if (!visible) {
       scrollPositionRef.current = terminal.getScrollPosition();
-      pendingOutputRef.current = '';
       return;
     }
     hydrateVisibleTerminal();
