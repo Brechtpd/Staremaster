@@ -84,6 +84,8 @@ beforeEach(() => {
     stopWorktreeTerminal: vi.fn().mockResolvedValue(undefined),
     sendTerminalInput: vi.fn().mockResolvedValue(undefined),
     resizeTerminal: vi.fn().mockResolvedValue(undefined),
+    getTerminalSnapshot: vi.fn().mockResolvedValue({ content: '', lastEventId: 0 }),
+    getTerminalDelta: vi.fn().mockResolvedValue({ chunks: [], lastEventId: 0 }),
     onTerminalOutput: vi.fn().mockReturnValue(() => {}),
     onTerminalExit: vi.fn().mockReturnValue(() => {})
   };

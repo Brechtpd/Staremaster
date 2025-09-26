@@ -75,6 +75,8 @@ const createApi = () => {
     startWorktreeTerminal: vi.fn(async () => descriptor),
     sendTerminalInput: vi.fn(async () => undefined),
     resizeTerminal: vi.fn(async () => undefined),
+    getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+    getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
     onTerminalOutput: vi.fn((callback: Listener<TerminalOutputPayload>) => {
       outputListeners.push(callback);
       return () => {
@@ -143,6 +145,9 @@ describe('WorktreeTerminalPane', () => {
     await waitFor(() => {
       expect(api.startWorktreeTerminal).toHaveBeenCalledWith(worktree.id);
     });
+    await waitFor(() => {
+      expect(api.getTerminalSnapshot).toHaveBeenCalledWith(worktree.id, undefined);
+    });
   });
 
   it('writes incoming output to the terminal', async () => {
@@ -150,6 +155,7 @@ describe('WorktreeTerminalPane', () => {
     render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
+    await waitFor(() => expect(api.getTerminalSnapshot).toHaveBeenCalled());
 
     const payload: TerminalOutputPayload = {
       sessionId: descriptor.sessionId,
@@ -168,6 +174,7 @@ describe('WorktreeTerminalPane', () => {
     render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
+    await waitFor(() => expect(api.getTerminalSnapshot).toHaveBeenCalled());
 
     expect(mockOnData).not.toBeNull();
     await act(async () => {
@@ -184,6 +191,7 @@ describe('WorktreeTerminalPane', () => {
     render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
+    await waitFor(() => expect(api.getTerminalSnapshot).toHaveBeenCalled());
 
     expect(mockOnResize).not.toBeNull();
     mockOnResize?.({ cols: 132, rows: 38 });
@@ -198,6 +206,7 @@ describe('WorktreeTerminalPane', () => {
     render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
+    await waitFor(() => expect(api.getTerminalSnapshot).toHaveBeenCalled());
 
     mockTerminalHandle.setStdinDisabled.mockClear();
 
@@ -207,10 +216,12 @@ describe('WorktreeTerminalPane', () => {
       exitCode: 0,
       signal: null
     };
-    exitListeners.forEach((listener) => listener(payload));
+    await act(async () => {
+      exitListeners.forEach((listener) => listener(payload));
+    });
 
     await waitFor(() => {
-      expect(mockTerminalHandle.setStdinDisabled).toHaveBeenLastCalledWith(true);
+      expect(mockTerminalHandle.setStdinDisabled).toHaveBeenCalledWith(true);
     });
   });
   it('preserves buffered output and running session when toggling visibility', async () => {
@@ -220,6 +231,7 @@ describe('WorktreeTerminalPane', () => {
     );
 
     await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.getTerminalSnapshot).toHaveBeenCalled());
 
     mockTerminalHandle.write.mockClear();
     mockTerminalHandle.getScrollPosition.mockReturnValue(42);

@@ -64,6 +64,8 @@ export interface RendererApi {
     options?: { sessionId?: string; paneId?: string }
   ): Promise<void>;
   resizeTerminal(request: TerminalResizeRequest): Promise<void>;
+  getTerminalSnapshot(worktreeId: string, options?: { paneId?: string }): Promise<TerminalSnapshot>;
+  getTerminalDelta(worktreeId: string, afterEventId: number, options?: { paneId?: string }): Promise<TerminalDelta>;
   onTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
   onTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
   onCodexTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;

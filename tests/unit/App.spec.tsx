@@ -141,6 +141,8 @@ describe('App with project state', () => {
       stopWorktreeTerminal: vi.fn(),
       sendTerminalInput: vi.fn(),
       resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
       onTerminalExit: vi.fn(() => () => {})
     } as unknown as RendererApi;
@@ -229,6 +231,8 @@ describe('App with project state', () => {
       stopWorktreeTerminal: vi.fn(),
       sendTerminalInput: vi.fn(),
       resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
       onTerminalExit: vi.fn(() => () => {})
     } as unknown as RendererApi;
@@ -321,6 +325,8 @@ describe('App with project state', () => {
       stopWorktreeTerminal: vi.fn(),
       sendTerminalInput: vi.fn(),
       resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
       onTerminalExit: vi.fn(() => () => {})
     } as unknown as RendererApi;
@@ -440,6 +446,8 @@ describe('App with project state', () => {
       stopWorktreeTerminal: vi.fn(),
       sendTerminalInput: vi.fn(),
       resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
       onTerminalExit: vi.fn(() => () => {})
     } as unknown as RendererApi;

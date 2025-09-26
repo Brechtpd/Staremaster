@@ -28,6 +28,8 @@ const IPCChannels = {
   terminalResize: 'terminal:resize',
   terminalOutput: 'terminal:output',
   terminalExit: 'terminal:exit',
+  terminalSnapshot: 'terminal:snapshot',
+  terminalDelta: 'terminal:delta',
   codexTerminalStart: 'codex-terminal:start',
   codexTerminalStop: 'codex-terminal:stop',
   codexTerminalInput: 'codex-terminal:input',
@@ -120,6 +122,17 @@ const api: RendererApi = {
       paneId: options?.paneId
     }),
   resizeTerminal: (request) => ipcRenderer.invoke(IPCChannels.terminalResize, request),
+  getTerminalSnapshot: (worktreeId, options) =>
+    ipcRenderer.invoke(IPCChannels.terminalSnapshot, {
+      worktreeId,
+      paneId: options?.paneId
+    }),
+  getTerminalDelta: (worktreeId, afterEventId, options) =>
+    ipcRenderer.invoke(IPCChannels.terminalDelta, {
+      worktreeId,
+      afterEventId,
+      paneId: options?.paneId
+    }),
   onTerminalOutput: (callback) => subscribe(IPCChannels.terminalOutput, callback),
   onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback),
   onCodexTerminalOutput: (callback) => subscribe(IPCChannels.codexTerminalOutput, callback),

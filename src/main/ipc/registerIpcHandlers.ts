@@ -204,6 +204,20 @@ export const registerIpcHandlers = (
   });
 
   ipcMain.handle(
+    IPCChannels.terminalSnapshot,
+    async (_event, payload: { worktreeId: string; paneId?: string }) => {
+      return terminalService.getSnapshot(payload.worktreeId, payload.paneId);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.terminalDelta,
+    async (_event, payload: { worktreeId: string; afterEventId: number; paneId?: string }) => {
+      return terminalService.getDelta(payload.worktreeId, payload.afterEventId, payload.paneId);
+    }
+  );
+
+  ipcMain.handle(
     IPCChannels.codexTerminalStart,
     async (
       _event,
@@ -333,6 +347,8 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.terminalStop);
     ipcMain.removeHandler(IPCChannels.terminalInput);
     ipcMain.removeHandler(IPCChannels.terminalResize);
+    ipcMain.removeHandler(IPCChannels.terminalSnapshot);
+    ipcMain.removeHandler(IPCChannels.terminalDelta);
     ipcMain.removeHandler(IPCChannels.codexTerminalStart);
     ipcMain.removeHandler(IPCChannels.codexTerminalStop);
     ipcMain.removeHandler(IPCChannels.codexTerminalInput);

@@ -25,6 +25,8 @@ export const IPCChannels = {
   terminalResize: 'terminal:resize',
   terminalOutput: 'terminal:output',
   terminalExit: 'terminal:exit',
+  terminalSnapshot: 'terminal:snapshot',
+  terminalDelta: 'terminal:delta',
   codexTerminalStart: 'codex-terminal:start',
   codexTerminalStop: 'codex-terminal:stop',
   codexTerminalInput: 'codex-terminal:input',

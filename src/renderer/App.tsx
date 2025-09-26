@@ -296,6 +296,8 @@ export const App: React.FC = () => {
   const [renderedWorktreeIds, setRenderedWorktreeIds] = useState<string[]>([]);
   const [openPaneMenuFor, setOpenPaneMenuFor] = useState<string | null>(null);
   const bootstrappedPaneIdsRef = useRef<Set<string>>(new Set());
+  const codexScrollStateRef = useRef<Record<string, { position: number; atBottom: boolean }>>({});
+  const terminalScrollStateRef = useRef<Record<string, { position: number; atBottom: boolean }>>({});
   const worktreeCacheRef = useRef<Record<string, WorktreeDescriptor>>({});
   const [codexActivity, setCodexActivity] = useState<Record<string, number>>({});
   const [codexStatusLines, setCodexStatusLines] = useState<Record<string, string>>({});
@@ -1023,6 +1025,8 @@ export const App: React.FC = () => {
         };
       });
       bootstrappedPaneIdsRef.current.delete(pane.id);
+      delete codexScrollStateRef.current[pane.id];
+      delete terminalScrollStateRef.current[pane.id];
       if (pane.kind === 'codex') {
         void api.stopCodexTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
           console.warn('[pane] failed to stop Codex terminal', error);
@@ -1451,6 +1455,10 @@ export const App: React.FC = () => {
             onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
             onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
             onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
+            initialScrollState={codexScrollStateRef.current[pane.id]}
+            onScrollStateChange={(state) => {
+              codexScrollStateRef.current[pane.id] = state;
+            }}
           />
         ) : (
           <CodexPane
@@ -1496,6 +1504,10 @@ export const App: React.FC = () => {
           paneId={pane.id}
           onNotification={setNotification}
           onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
+          initialScrollState={terminalScrollStateRef.current[pane.id]}
+          onScrollStateChange={(state) => {
+            terminalScrollStateRef.current[pane.id] = state;
+          }}
         />
       </div>
     ),
@@ -2103,6 +2115,8 @@ const createRendererStub = (): RendererApi => {
       void request;
       return undefined;
     },
+    getTerminalSnapshot: async () => ({ content: '', lastEventId: 0 }),
+    getTerminalDelta: async () => ({ chunks: [], lastEventId: 0 }),
     onTerminalOutput: () => noop,
     onTerminalExit: () => noop,
     onCodexTerminalOutput: () => noop,

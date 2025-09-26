@@ -29,6 +29,7 @@ export interface CodexTerminalHandle {
   refreshLayout(): void;
   forceRender(): void;
   getScrollPosition(): number;
+  isScrolledToBottom(): boolean;
   scrollToLine(line: number): void;
   scrollToBottom(): void;
 }
@@ -120,13 +121,14 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
       if (!terminal) {
         return null;
       }
-      return (terminal as unknown as {
-        buffer?: {
-          active?: {
-            ydisp: number;
-          };
+      const bufferNamespace = terminal.buffer as unknown as {
+        active?: {
+          ydisp: number;
+          baseY?: number;
+          length?: number;
         };
-      }).buffer?.active ?? null;
+      };
+      return bufferNamespace.active ?? null;
     }, []);
 
     const flushPending = useCallback(() => {
@@ -252,18 +254,6 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         return;
       }
       try {
-        const core = (terminal as unknown as {
-          _core?: {
-            _renderService?: {
-              dimensions?: unknown;
-            };
-          };
-        })._core;
-        if (!core || !core._renderService || !core._renderService.dimensions) {
-          clearRetry();
-          retryTokenRef.current = window.setTimeout(safeFit, 32);
-          return;
-        }
         fitAddon.fit();
         clearRetry();
         if (!readyRef.current) {
@@ -460,6 +450,16 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         getScrollPosition() {
           const buffer = getActiveBuffer();
           return buffer?.ydisp ?? 0;
+        },
+        isScrolledToBottom() {
+          const buffer = getActiveBuffer();
+          if (!buffer) {
+            return true;
+          }
+          const base = typeof (buffer as { baseY?: number }).baseY === 'number' ? (buffer as { baseY: number }).baseY : 0;
+          const current = buffer.ydisp ?? 0;
+          const length = typeof (buffer as { length?: number }).length === 'number' ? (buffer as { length: number }).length : base + current;
+          return base + current >= length - 1;
         },
         scrollToLine(line: number) {
           if (!terminalRef.current) {

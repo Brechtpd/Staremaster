@@ -137,7 +137,12 @@ const bootstrap = async () => {
   worktreeService = new WorktreeService(store);
   gitService = new GitService((id) => worktreeService.getWorktreePath(id));
   codexManager = new CodexSessionManager(store);
-  terminalService = new TerminalService((id) => worktreeService.getWorktreePath(id));
+  terminalService = new TerminalService((id) => worktreeService.getWorktreePath(id), {
+    history: {
+      enabled: true,
+      limit: 500_000
+    }
+  });
   codexTerminalService = new TerminalService((id) => worktreeService.getWorktreePath(id), {
     history: {
       enabled: true,

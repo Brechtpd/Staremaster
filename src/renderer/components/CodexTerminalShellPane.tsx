@@ -15,6 +15,8 @@ interface CodexTerminalShellPaneProps {
   onUserInput?(data: string): void;
   onBootstrapped?(): void;
   onUnbootstrapped?(): void;
+  initialScrollState?: { position: number; atBottom: boolean };
+  onScrollStateChange?(state: { position: number; atBottom: boolean }): void;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -23,8 +25,7 @@ const isScrolledToBottom = (terminal: CodexTerminalHandle | null): boolean => {
   if (!terminal) {
     return true;
   }
-  const probe = terminal as unknown as { isScrolledToBottom?: () => boolean };
-  return Boolean(probe.isScrolledToBottom?.());
+  return terminal.isScrolledToBottom();
 };
 
 const buildSnapshotOptions = (paneId?: string) => (paneId ? { paneId } : undefined);
@@ -39,7 +40,9 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   onNotification,
   onUserInput,
   onBootstrapped,
-  onUnbootstrapped
+  onUnbootstrapped,
+  initialScrollState,
+  onScrollStateChange
 }) => {
   const [descriptorPid, setDescriptorPid] = useState<number | null>(null);
   const [status, setStatus] = useState<TerminalLifecycle>('idle');
@@ -57,6 +60,13 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const pendingStartRef = useRef<Promise<void> | null>(null);
   const resumeCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
   const lastPersistedCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
+  const initialScrollRestoredRef = useRef<boolean>(false);
+  const scrollChangeCallbackRef = useRef<typeof onScrollStateChange>(onScrollStateChange);
+  const needsSnapshotRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    scrollChangeCallbackRef.current = onScrollStateChange;
+  }, [onScrollStateChange]);
 
   const persistResumeCommand = useCallback(
     (command: string | null) => {
@@ -82,6 +92,17 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
+
+  useEffect(() => {
+    if (initialScrollRestoredRef.current) {
+      return;
+    }
+    if (initialScrollState) {
+      scrollPositionRef.current = initialScrollState.position;
+      wasAtBottomRef.current = initialScrollState.atBottom;
+      initialScrollRestoredRef.current = true;
+    }
+  }, [initialScrollState]);
 
   useEffect(() => {
     if (typeof worktree.codexResumeCommand === 'string' && worktree.codexResumeCommand.length > 0) {
@@ -133,6 +154,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     }
     wasAtBottomRef.current = isScrolledToBottom(terminal);
     scrollPositionRef.current = terminal.getScrollPosition();
+    scrollChangeCallbackRef.current?.({ position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
   }, []);
 
   const restoreViewport = useCallback(() => {
@@ -191,6 +213,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
           scrollPositionRef.current = terminal.getScrollPosition();
         }
         restoreViewport();
+        needsSnapshotRef.current = false;
       } catch (error) {
         console.warn('[codex-terminal] failed to load snapshot', error);
       }
@@ -314,15 +337,23 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
 
   useEffect(() => {
     if (!visible) {
+      needsSnapshotRef.current = true;
       return;
     }
     if (status === 'running') {
       syncInputState();
-      void syncDelta();
+      const synchronise = async () => {
+        if (needsSnapshotRef.current) {
+          await syncSnapshot(true);
+          needsSnapshotRef.current = false;
+        }
+        await syncDelta();
+      };
+      void synchronise();
       return;
     }
     void ensureTerminalStarted();
-  }, [ensureTerminalStarted, status, syncDelta, syncInputState, visible]);
+  }, [ensureTerminalStarted, status, syncDelta, syncInputState, syncSnapshot, visible]);
 
   useEffect(() => {
     syncInputState();
@@ -407,6 +438,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     if (!visible) {
       scrollPositionRef.current = terminal.getScrollPosition();
       wasAtBottomRef.current = isScrolledToBottom(terminal);
+      needsSnapshotRef.current = true;
+      scrollChangeCallbackRef.current?.({ position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
       return;
     }
     restoreViewport();
@@ -444,11 +477,16 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     (instance: CodexTerminalHandle | null) => {
       terminalRef.current = instance;
       if (instance) {
+        if (!initialScrollRestoredRef.current && initialScrollState) {
+          scrollPositionRef.current = initialScrollState.position;
+          wasAtBottomRef.current = initialScrollState.atBottom;
+          initialScrollRestoredRef.current = true;
+        }
         syncInputState();
         updateScrollTracking();
       }
     },
-    [syncInputState, updateScrollTracking]
+    [initialScrollState, syncInputState, updateScrollTracking]
   );
 
   return (
