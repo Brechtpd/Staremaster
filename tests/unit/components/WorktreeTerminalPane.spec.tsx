@@ -22,22 +22,30 @@ const mockTerminalHandle = {
   getScrollPosition: vi.fn(() => 0),
   isScrolledToBottom: vi.fn(() => true),
   scrollToLine: vi.fn<(line: number) => void>(),
-  scrollToBottom: vi.fn<() => void>()
+  scrollToBottom: vi.fn<() => void>(),
+  scrollLines: vi.fn<(offset: number) => void>()
 };
 
 let mockOnData: ((data: string) => void) | null = null;
 let mockOnResize: ((size: { cols: number; rows: number }) => void) | null = null;
+let mockOnScroll: ((state: { position: number; atBottom: boolean }) => void) | null = null;
 
 vi.mock('../../../src/renderer/components/CodexTerminal', async () => {
   const actualReact = await import('react');
 
   const MockTerminal = actualReact.forwardRef(
     (
-      props: { onData: (data: string) => void; instanceId: string; onResize?: (size: { cols: number; rows: number }) => void },
+      props: {
+        onData: (data: string) => void;
+        instanceId: string;
+        onResize?: (size: { cols: number; rows: number }) => void;
+        onScroll?: (state: { position: number; atBottom: boolean }) => void;
+      },
       ref: React.Ref<typeof mockTerminalHandle>
     ) => {
       mockOnData = props.onData;
       mockOnResize = props.onResize ?? null;
+      mockOnScroll = props.onScroll ?? null;
       actualReact.useImperativeHandle(ref, () => mockTerminalHandle);
       return actualReact.createElement('div', { 'data-testid': 'mock-terminal' });
     }
@@ -118,8 +126,10 @@ const resetTerminalMocks = () => {
   mockTerminalHandle.isScrolledToBottom.mockReturnValue(true);
   mockTerminalHandle.scrollToLine.mockReset();
   mockTerminalHandle.scrollToBottom.mockReset();
+  mockTerminalHandle.scrollLines.mockReset();
   mockOnData = null;
   mockOnResize = null;
+  mockOnScroll = null;
 };
 
 describe('WorktreeTerminalPane', () => {
@@ -202,6 +212,30 @@ describe('WorktreeTerminalPane', () => {
     });
   });
 
+  it('records scroll state changes emitted by the terminal', async () => {
+    const { api } = createApi();
+    const onScrollStateChange = vi.fn();
+    render(
+      <WorktreeTerminalPane
+        api={api}
+        worktree={worktree}
+        active
+        visible
+        onNotification={() => {}}
+        onScrollStateChange={onScrollStateChange}
+      />
+    );
+
+    await waitFor(() => expect(api.startWorktreeTerminal).toHaveBeenCalled());
+    await waitFor(() => expect(mockOnScroll).not.toBeNull());
+
+    act(() => {
+      mockOnScroll?.({ position: 17, atBottom: false });
+    });
+
+    expect(onScrollStateChange).toHaveBeenCalledWith(worktree.id, { position: 17, atBottom: false });
+  });
+
   it('sets stdin to disabled after the terminal exits', async () => {
     const { api, exitListeners } = createApi();
     render(<WorktreeTerminalPane api={api} worktree={worktree} active visible onNotification={() => {}} />);
@@ -235,7 +269,8 @@ describe('WorktreeTerminalPane', () => {
     await waitFor(() => expect(api.getTerminalSnapshot).toHaveBeenCalled());
 
     mockTerminalHandle.write.mockClear();
-    mockTerminalHandle.getScrollPosition.mockReturnValue(42);
+    let currentPosition = 42;
+    mockTerminalHandle.getScrollPosition.mockImplementation(() => currentPosition);
     mockTerminalHandle.isScrolledToBottom.mockReturnValue(false);
 
     rerender(
@@ -257,6 +292,9 @@ describe('WorktreeTerminalPane', () => {
 
     expect(mockTerminalHandle.write).not.toHaveBeenCalled();
 
+    mockTerminalHandle.scrollLines.mockClear();
+    currentPosition = 0;
+
     rerender(
       <WorktreeTerminalPane
         api={api}
@@ -270,7 +308,6 @@ describe('WorktreeTerminalPane', () => {
     await waitFor(() => {
       expect(api.startWorktreeTerminal).toHaveBeenCalledTimes(1);
       expect(mockTerminalHandle.refreshLayout).toHaveBeenCalled();
-      expect(mockTerminalHandle.scrollToLine).toHaveBeenCalledWith(42);
       expect(mockTerminalHandle.write).toHaveBeenCalledWith('buffered output\n');
     });
   });

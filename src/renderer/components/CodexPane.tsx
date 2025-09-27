@@ -39,6 +39,8 @@ interface CodexPaneProps {
   onUserInput?(data: string): void;
   onBootstrapped?(): void;
   onUnbootstrapped?(): void;
+  initialScrollState?: { position: number; atBottom: boolean };
+  onScrollStateChange?(worktreeId: string, state: { position: number; atBottom: boolean }): void;
 }
 
 const CODEX_RESUME_REGEX = /codex resume --yolo (\S+)/i;
@@ -168,7 +170,10 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   paneId,
   onNotification,
   onUserInput,
-  onBootstrapped
+  onBootstrapped,
+  onUnbootstrapped,
+  initialScrollState,
+  onScrollStateChange
 }) => {
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
   const hydratorRef = useRef<Hydrator | null>(null);
@@ -178,12 +183,16 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const pendingStartRef = useRef<Promise<void> | null>(null);
   const lastStartAttemptRef = useRef<number>(0);
   const scrollPositionRef = useRef<number>(0);
+  const previousWorktreeIdRef = useRef<string>(worktree.id);
+  const wasAtBottomRef = useRef<boolean>(true);
   const cancelledRef = useRef(false);
   const bufferedOutputRef = useRef<string>('');
   const needsInitialRefreshRef = useRef<boolean>(true);
   const bootstrappedRef = useRef(false);
   const visibleRef = useRef(visible);
   const tryFlushInputsRef = useRef<() => void>(() => {});
+  const scrollChangeCallbackRef = useRef<typeof onScrollStateChange>(onScrollStateChange);
+  const initialScrollRestoredRef = useRef<boolean>(false);
   const startSessionRef = useRef<(
     options?: { throttled?: boolean; forceStart?: boolean }
   ) => Promise<void>>(async () => {});
@@ -218,6 +227,54 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
+
+  useEffect(() => {
+    scrollChangeCallbackRef.current = onScrollStateChange;
+  }, [onScrollStateChange]);
+
+  useEffect(() => {
+    if (initialScrollRestoredRef.current) {
+      return;
+    }
+    if (initialScrollState) {
+      scrollPositionRef.current = initialScrollState.position;
+      wasAtBottomRef.current = initialScrollState.atBottom;
+      initialScrollRestoredRef.current = true;
+    }
+  }, [initialScrollState]);
+
+  useEffect(() => {
+    // Persist scroll state for the previous worktree before switching.
+    const previousId = previousWorktreeIdRef.current;
+    const terminal = terminalRef.current;
+    if (terminal && scrollChangeCallbackRef.current && previousId !== worktree.id) {
+      const position = terminal.getScrollPosition();
+      const atBottom = typeof terminal.isScrolledToBottom === 'function'
+        ? terminal.isScrolledToBottom()
+        : true;
+      scrollChangeCallbackRef.current(previousId, { position, atBottom });
+    }
+    previousWorktreeIdRef.current = worktree.id;
+    // Reset per-worktree so the initial scroll state for the new worktree
+    // is applied the first time it becomes visible.
+    initialScrollRestoredRef.current = false;
+    if (initialScrollState) {
+      scrollPositionRef.current = initialScrollState.position;
+      wasAtBottomRef.current = initialScrollState.atBottom;
+      if (visibleRef.current) {
+        requestAnimationFrame(() => {
+          const t = terminalRef.current;
+          if (!t) return;
+          if (!wasAtBottomRef.current && scrollPositionRef.current > 0) {
+            t.scrollToLine(scrollPositionRef.current);
+          } else {
+            t.scrollToBottom();
+          }
+          t.forceRender?.();
+        });
+      }
+    }
+  }, [worktree.id]);
 
   const tryFlushInputs = useCallback(() => {
     if (pendingInputsRef.current.length === 0) {
@@ -537,6 +594,18 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     }
     if (!visible) {
       scrollPositionRef.current = terminal.getScrollPosition();
+      try {
+        // @ts-expect-error optional API
+        wasAtBottomRef.current = typeof terminal.isScrolledToBottom === 'function'
+          ? terminal.isScrolledToBottom()
+          : wasAtBottomRef.current;
+      } catch {
+        // ignore
+      }
+      const cb = scrollChangeCallbackRef.current;
+      if (cb) {
+        cb(worktree.id, { position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
+      }
       terminal.setStdinDisabled(true);
       return;
     }
@@ -545,10 +614,11 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       bufferedOutputRef.current = '';
     }
     needsInitialRefreshRef.current = false;
-    if (scrollPositionRef.current > 0) {
+    if (!wasAtBottomRef.current && scrollPositionRef.current > 0) {
       terminal.scrollToLine(scrollPositionRef.current);
     } else {
       terminal.scrollToBottom();
+      wasAtBottomRef.current = true;
     }
     const interactive = isInteractiveStatus(status) && active;
     terminal.setStdinDisabled(!(interactive && visible));
@@ -556,6 +626,10 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       terminal.focus();
     }
     terminal.refreshLayout();
+    const cb = scrollChangeCallbackRef.current;
+    if (cb) {
+      cb(worktree.id, { position: terminal.getScrollPosition(), atBottom: wasAtBottomRef.current });
+    }
   }, [active, status, visible]);
 
   useEffect(() => {

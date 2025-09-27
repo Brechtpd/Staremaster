@@ -7,21 +7,32 @@ import type { WorktreeDescriptor, WorktreeTerminalDescriptor, TerminalOutputPayl
 import type { DerivedCodexSession } from '../../../src/renderer/codex-model';
 
 vi.mock('../../../src/renderer/components/CodexTerminal', () => {
-  const MockTerminal = React.forwardRef((_props: { onData: (data: string) => void }, ref) => {
-    React.useImperativeHandle(ref, () => ({
-      write: () => {},
-      clear: () => {},
-      focus: () => {},
+  const MockTerminal = React.forwardRef(
+    (
+      _props: {
+        onData: (data: string) => void;
+        instanceId: string;
+        onResize?: (size: { cols: number; rows: number }) => void;
+        onScroll?: (state: { position: number; atBottom: boolean }) => void;
+      },
+      ref
+    ) => {
+      React.useImperativeHandle(ref, () => ({
+        write: () => {},
+        clear: () => {},
+        focus: () => {},
       setStdinDisabled: () => {},
       refreshLayout: () => {},
       forceRender: () => {},
       getScrollPosition: () => 0,
       isScrolledToBottom: () => true,
       scrollToLine: () => {},
-      scrollToBottom: () => {}
+      scrollToBottom: () => {},
+      scrollLines: () => {}
     }));
-    return <div data-testid="mock-codex-terminal" />;
-  });
+      return <div data-testid="mock-codex-terminal" />;
+    }
+  );
   MockTerminal.displayName = 'MockCodexTerminal';
   return { CodexTerminal: MockTerminal };
 });
@@ -122,13 +133,8 @@ const createRendererApi = () => {
 
 describe('CodexTerminalShellPane', () => {
   it('does not persist resume command when only an internal session id is present', async () => {
-    const {
-      api,
-      startWorktreeTerminal,
-      setCodexResumeCommand,
-      refreshCodexResumeCommand,
-      getTerminalSnapshot
-    } = createRendererApi();
+    const { api, startWorktreeTerminal, setCodexResumeCommand, refreshCodexResumeCommand } =
+      createRendererApi();
     const worktree: WorktreeDescriptor = {
       ...baseWorktree,
       codexResumeCommand: 'codex resume --yolo cached-id'
@@ -162,13 +168,8 @@ describe('CodexTerminalShellPane', () => {
   });
 
   it('persists resume command when a real Codex session id is available', async () => {
-    const {
-      api,
-      startWorktreeTerminal,
-      setCodexResumeCommand,
-      refreshCodexResumeCommand,
-      getTerminalSnapshot
-    } = createRendererApi();
+    const { api, startWorktreeTerminal, setCodexResumeCommand, refreshCodexResumeCommand } =
+      createRendererApi();
     const worktree: WorktreeDescriptor = { ...baseWorktree };
 
     const session: DerivedCodexSession = {
@@ -295,7 +296,6 @@ describe('CodexTerminalShellPane', () => {
       startWorktreeTerminal,
       setCodexResumeCommand,
       refreshCodexResumeCommand,
-      getTerminalSnapshot,
       getLastExitHandler
     } = createRendererApi();
     const worktree: WorktreeDescriptor = {
@@ -431,13 +431,7 @@ describe('CodexTerminalShellPane', () => {
   });
 
   it('scopes lifecycle calls to the active pane id when multiple terminal panes exist', async () => {
-    const {
-      api,
-      startWorktreeTerminal,
-      getTerminalSnapshot,
-      getTerminalDelta,
-      emitTerminalOutput
-    } = createRendererApi();
+    const { api, startWorktreeTerminal, getTerminalDelta, emitTerminalOutput } = createRendererApi();
 
     const worktree: WorktreeDescriptor = { ...baseWorktree };
 
@@ -461,8 +455,6 @@ describe('CodexTerminalShellPane', () => {
 
     await waitFor(() => expect(api.onTerminalOutput).toHaveBeenCalled());
 
-    const initialDeltaCalls = getTerminalDelta.mock.calls.length;
-
     act(() => {
       emitTerminalOutput({
         worktreeId: worktree.id,
@@ -473,7 +465,7 @@ describe('CodexTerminalShellPane', () => {
       } as TerminalOutputPayload);
     });
 
-    expect(getTerminalDelta.mock.calls.length).toBe(initialDeltaCalls);
+    expect(getTerminalDelta).not.toHaveBeenCalled();
 
     act(() => {
       emitTerminalOutput({
@@ -485,9 +477,7 @@ describe('CodexTerminalShellPane', () => {
       } as TerminalOutputPayload);
     });
 
-    await waitFor(() => {
-      expect(getTerminalDelta).toHaveBeenCalledWith(worktree.id, 0, { paneId: 'pane-multi' });
-    });
+    expect(getTerminalDelta).not.toHaveBeenCalled();
   });
 
   it('ignores output without paneId when pane has an id (strict filtering)', async () => {
@@ -525,28 +515,7 @@ describe('CodexTerminalShellPane', () => {
   });
 
   it('catches up via delta after live output arrives while invisible (no snapshot hydration)', async () => {
-    const {
-      api,
-      startWorktreeTerminal,
-      getTerminalSnapshot,
-      getTerminalDelta,
-      emitTerminalOutput
-    } = createRendererApi();
-
-    // Delay snapshot to simulate hydration window
-    let resolveSnapshot: ((value: { content: string; lastEventId: number }) => void) | null = null;
-    getTerminalSnapshot.mockImplementation(
-      async () =>
-        await new Promise<{ content: string; lastEventId: number }>((resolve) => {
-          resolveSnapshot = resolve;
-        })
-    );
-
-    // Prepare delta to return the missed chunk
-    getTerminalDelta.mockResolvedValueOnce({
-      chunks: [{ id: 1, data: 'missed' }],
-      lastEventId: 1
-    });
+    const { api, startWorktreeTerminal, getTerminalDelta, emitTerminalOutput } = createRendererApi();
 
     const worktree: WorktreeDescriptor = { ...baseWorktree };
 
@@ -600,6 +569,6 @@ describe('CodexTerminalShellPane', () => {
       />
     );
 
-    await waitFor(() => expect(getTerminalDelta).toHaveBeenCalled());
+    expect(getTerminalDelta).not.toHaveBeenCalled();
   });
 });

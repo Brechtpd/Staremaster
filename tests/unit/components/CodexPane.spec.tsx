@@ -69,7 +69,15 @@ let lastTerminalHandle: {
 
 vi.mock('../../../src/renderer/components/CodexTerminal', () => {
   const MockTerminal = React.forwardRef(
-    (props: { onData: (data: string) => void }, ref: React.Ref<unknown>) => {
+    (
+      props: {
+        onData: (data: string) => void;
+        instanceId: string;
+        onResize?: (size: { cols: number; rows: number }) => void;
+        onScroll?: (state: { position: number; atBottom: boolean }) => void;
+      },
+      ref: React.Ref<unknown>
+    ) => {
       const handle = {
         write: vi.fn(),
         clear: vi.fn(),
@@ -78,7 +86,8 @@ vi.mock('../../../src/renderer/components/CodexTerminal', () => {
         refreshLayout: vi.fn(),
         scrollToBottom: vi.fn(),
         scrollToLine: vi.fn(),
-        getScrollPosition: vi.fn(() => 0)
+        getScrollPosition: vi.fn(() => 0),
+        scrollLines: vi.fn<(offset: number) => void>()
       };
       React.useImperativeHandle(ref, () => handle);
       lastOnData = props.onData;

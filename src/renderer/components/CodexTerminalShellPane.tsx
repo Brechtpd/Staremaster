@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { RendererApi } from '@shared/api';
 import type { WorktreeDescriptor } from '@shared/ipc';
 import { CodexTerminal, type CodexTerminalHandle } from './CodexTerminal';
-import { longestSuffixPrefixOverlap } from '../utils/overlap';
 import type { DerivedCodexSession } from '../codex-model';
 
 interface CodexTerminalShellPaneProps {
@@ -17,7 +16,7 @@ interface CodexTerminalShellPaneProps {
   onBootstrapped?(): void;
   onUnbootstrapped?(): void;
   initialScrollState?: { position: number; atBottom: boolean };
-  onScrollStateChange?(state: { position: number; atBottom: boolean }): void;
+  onScrollStateChange?(worktreeId: string, state: { position: number; atBottom: boolean }): void;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -129,8 +128,6 @@ const isScrolledToBottom = (terminal: CodexTerminalHandle | null): boolean => {
   return terminal.isScrolledToBottom();
 };
 
-const buildSnapshotOptions = (paneId?: string) => (paneId ? { paneId } : undefined);
-
 export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   api,
   worktree,
@@ -154,8 +151,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const visibleRef = useRef<boolean>(visible);
   const bootstrappedRef = useRef<boolean>(false);
   const startRef = useRef<number | null>(null);
+  const previousWorktreeIdRef = useRef<string>(worktree.id);
   // We stream Codex output live only; no snapshot/delta replay.
-  const lastEventIdRef = useRef<number>(0);
   const scrollPositionRef = useRef<number>(0);
   const wasAtBottomRef = useRef<boolean>(true);
   const errorRef = useRef<string | null>(null);
@@ -164,8 +161,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const lastPersistedCommandRef = useRef<string | null>(sanitizeResumeCommand(worktree.codexResumeCommand));
   const initialScrollRestoredRef = useRef<boolean>(false);
   const scrollChangeCallbackRef = useRef<typeof onScrollStateChange>(onScrollStateChange);
-  // Start with no snapshot on first mount; rely on Codex resume to replay output.
-  const needsSnapshotRef = useRef<boolean>(false);
   const [resumeCommandDisplay, setResumeCommandDisplay] = useState<string | null>(
     sanitizeResumeCommand(worktree.codexResumeCommand)
   );
@@ -273,15 +268,28 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     persistResumeCommand(command);
   }, [persistResumeCommand, session?.codexSessionId]);
 
+  const handleTerminalScroll = useCallback(
+    ({ position, atBottom }: { position: number; atBottom: boolean }) => {
+      wasAtBottomRef.current = atBottom;
+      scrollPositionRef.current = position;
+      const cb = scrollChangeCallbackRef.current;
+      if (cb) {
+        cb(worktree.id, { position, atBottom });
+      }
+    },
+    [worktree.id]
+  );
+
   const updateScrollTracking = useCallback(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
     }
-    wasAtBottomRef.current = isScrolledToBottom(terminal);
-    scrollPositionRef.current = terminal.getScrollPosition();
-    scrollChangeCallbackRef.current?.({ position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
-  }, []);
+    handleTerminalScroll({
+      position: terminal.getScrollPosition(),
+      atBottom: isScrolledToBottom(terminal)
+    });
+  }, [handleTerminalScroll]);
 
   const restoreViewport = useCallback(() => {
     const terminal = terminalRef.current;
@@ -291,11 +299,41 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     if (wasAtBottomRef.current) {
       terminal.scrollToBottom();
     } else {
-      terminal.scrollToLine(scrollPositionRef.current);
+      const current = terminal.getScrollPosition();
+      const target = scrollPositionRef.current;
+      const delta = target - current;
+      if (delta !== 0) {
+        terminal.scrollLines(delta);
+      }
     }
     terminal.forceRender?.();
     updateScrollTracking();
   }, [updateScrollTracking]);
+
+  // When switching to a different worktree in the same pane, allow
+  // restoring the new worktree's initial scroll state on first render.
+  useEffect(() => {
+    const previousId = previousWorktreeIdRef.current;
+    if (previousId && scrollChangeCallbackRef.current && previousId !== worktree.id) {
+      const terminal = terminalRef.current;
+      if (terminal) {
+        try {
+          const position = terminal.getScrollPosition();
+          const atBottom = isScrolledToBottom(terminal);
+          scrollChangeCallbackRef.current(previousId, { position, atBottom });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    previousWorktreeIdRef.current = worktree.id;
+    initialScrollRestoredRef.current = false;
+    wasAtBottomRef.current = initialScrollState?.atBottom ?? true;
+    scrollPositionRef.current = initialScrollState?.position ?? 0;
+    if (visibleRef.current) {
+      requestAnimationFrame(() => restoreViewport());
+    }
+  }, [initialScrollState, restoreViewport, worktree.id]);
 
   const writeChunk = useCallback(
     (data: string) => {
@@ -335,14 +373,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       terminal.forceRender?.();
       updateScrollTracking();
     },
-    [updateScrollTracking]
+    [descriptorPid, updateScrollTracking]
   );
-
-  // Snapshot replay is disabled for Codex terminals; Codex resume already replays.
-  const syncSnapshot = useCallback(async () => { return; }, []);
-
-  // Delta replay is disabled at startup; rely on live stream only.
-  const syncDelta = useCallback(async () => { return; }, []);
 
   const syncInputState = useCallback(() => {
     const shouldEnable = status === 'running' && active && visible;
@@ -386,9 +418,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         bootstrappedRef.current = true;
         syncInputState();
         onBootstrapped?.();
-        // Avoid immediate delta/snapshot to prevent duplication with early live chunks.
-        // We will catch up via the visibility effect once we have an event id.
-        needsSnapshotRef.current = false;
         if (active && visibleRef.current) {
           terminalRef.current?.focus();
         }
@@ -482,7 +511,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       unsubscribeOutput();
       unsubscribeExit();
     };
-  }, [api, onNotification, onUnbootstrapped, persistResumeCommand, setStatusWithSideEffects, syncDelta, worktree.id, writeChunk]);
+  }, [api, onNotification, onUnbootstrapped, persistResumeCommand, setStatusWithSideEffects, worktree.id, writeChunk]);
 
   useEffect(() => {
     if (active && visible && status === 'running') {
@@ -496,13 +525,14 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       return;
     }
     if (!visible) {
-      scrollPositionRef.current = terminal.getScrollPosition();
-      wasAtBottomRef.current = isScrolledToBottom(terminal);
-      scrollChangeCallbackRef.current?.({ position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
+      handleTerminalScroll({
+        position: terminal.getScrollPosition(),
+        atBottom: isScrolledToBottom(terminal)
+      });
       return;
     }
     restoreViewport();
-  }, [restoreViewport, visible]);
+  }, [handleTerminalScroll, restoreViewport, visible]);
 
   const handleTerminalData = useCallback(
     (data: string) => {
@@ -559,12 +589,18 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
           scrollPositionRef.current = initialScrollState.position;
           wasAtBottomRef.current = initialScrollState.atBottom;
           initialScrollRestoredRef.current = true;
+          handleTerminalScroll({
+            position: initialScrollState.position,
+            atBottom: initialScrollState.atBottom
+          });
         }
         syncInputState();
-        updateScrollTracking();
+        if (!initialScrollState) {
+          updateScrollTracking();
+        }
       }
     },
-    [initialScrollState, syncInputState, updateScrollTracking]
+    [handleTerminalScroll, initialScrollState, syncInputState, updateScrollTracking]
   );
 
   return (
@@ -588,10 +624,12 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       ) : null}
       {errorRef.current ? <p className="terminal-error">{errorRef.current}</p> : null}
       <CodexTerminal
+        key={`${worktree.id}:${paneId ?? 'default'}`}
         ref={attachTerminalRef}
         onData={handleTerminalData}
         instanceId={paneId ? `${worktree.id}-codex-terminal-${paneId}` : `${worktree.id}-codex-terminal`}
         onResize={handleResize}
+        onScroll={handleTerminalScroll}
       />
       {descriptorPid ? (
         <footer className="terminal-footer">

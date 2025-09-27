@@ -20,7 +20,7 @@ interface WorktreeTerminalPaneProps {
   onNotification(message: string | null): void;
   onBootstrapped?(): void;
   initialScrollState?: { position: number; atBottom: boolean };
-  onScrollStateChange?(state: { position: number; atBottom: boolean }): void;
+  onScrollStateChange?(worktreeId: string, state: { position: number; atBottom: boolean }): void;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -52,6 +52,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
   const paneIdRef = useRef<string | undefined>(paneId);
   const visibleRef = useRef<boolean>(visible);
+  const previousWorktreeIdRef = useRef<string>(worktree.id);
   const pendingStartRef = useRef<Promise<void> | null>(null);
   const hydratingRef = useRef(false);
   const pendingOutputRef = useRef('');
@@ -88,15 +89,28 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
     }
   }, [initialScrollState]);
 
+  const handleTerminalScroll = useCallback(
+    ({ position, atBottom }: { position: number; atBottom: boolean }) => {
+      wasAtBottomRef.current = atBottom;
+      scrollPositionRef.current = position;
+      const cb = scrollChangeCallbackRef.current;
+      if (cb) {
+        cb(worktree.id, { position, atBottom });
+      }
+    },
+    [worktree.id]
+  );
+
   const updateScrollTracking = useCallback(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
       return;
     }
-    wasAtBottomRef.current = terminal.isScrolledToBottom();
-    scrollPositionRef.current = terminal.getScrollPosition();
-    scrollChangeCallbackRef.current?.({ position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
-  }, []);
+    handleTerminalScroll({
+      position: terminal.getScrollPosition(),
+      atBottom: terminal.isScrolledToBottom()
+    });
+  }, [handleTerminalScroll]);
 
   const writeToTerminal = useCallback(
     (chunk: string) => {
@@ -137,70 +151,16 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
     if (wasAtBottomRef.current) {
       terminal.scrollToBottom();
     } else {
-      terminal.scrollToLine(scrollPositionRef.current);
+      const current = terminal.getScrollPosition();
+      const target = scrollPositionRef.current;
+      const delta = target - current;
+      if (delta !== 0) {
+        terminal.scrollLines(delta);
+      }
     }
     terminal.forceRender?.();
     updateScrollTracking();
   }, [updateScrollTracking]);
-
-  const syncInputState = useCallback(() => {
-    const shouldEnable = status === 'running' && active && visible;
-    terminalRef.current?.setStdinDisabled(!shouldEnable);
-  }, [active, status, visible]);
-
-  const setStatusWithSideEffects = useCallback(
-    (next: TerminalLifecycle) => {
-      setStatus(next);
-      if (next === 'running') {
-        errorRef.current = null;
-      }
-    },
-    []
-  );
-
-  const ensureTerminalStarted = useCallback(
-    async (reason: string) => {
-      if (status === 'running' || pendingStartRef.current) {
-        return;
-      }
-      console.log('[renderer] worktree-terminal start', {
-        worktreeId: worktree.id,
-        paneId: paneIdRef.current ?? 'default',
-        reason
-      });
-      setStatusWithSideEffects('starting');
-      const startOptions = paneIdRef.current ? { paneId: paneIdRef.current } : undefined;
-      const startPromise = (startOptions
-        ? api.startWorktreeTerminal(worktree.id, startOptions)
-        : api.startWorktreeTerminal(worktree.id))
-        .then(async (descriptorResult) => {
-          setDescriptor(descriptorResult);
-          setStatusWithSideEffects('running');
-          setLastExit(null);
-          pendingOutputRef.current = '';
-          lastEventIdRef.current = 0;
-          wasAtBottomRef.current = true;
-          syncInputState();
-          onBootstrapped?.();
-          await syncSnapshot(false);
-          if (active && visibleRef.current) {
-            terminalRef.current?.focus();
-          }
-        })
-        .catch((error) => {
-          const message = getErrorMessage(error);
-          errorRef.current = message;
-          onNotification(message);
-          setStatusWithSideEffects('idle');
-        })
-        .finally(() => {
-          pendingStartRef.current = null;
-        });
-      pendingStartRef.current = startPromise;
-      await startPromise;
-    },
-    [active, api, onBootstrapped, onNotification, setStatusWithSideEffects, status, syncInputState, worktree.id]
-  );
 
   const syncSnapshot = useCallback(
     async (preserveViewport: boolean) => {
@@ -287,6 +247,90 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
     syncPromiseRef.current = promise;
     return promise;
   }, [api, restoreViewport, updateScrollTracking, worktree.id, writeToTerminal]);
+
+  // Reset per-worktree so the initial scroll state for the new worktree
+  // is applied the first time it becomes visible.
+  useEffect(() => {
+    const previousId = previousWorktreeIdRef.current;
+    if (previousId && scrollChangeCallbackRef.current && previousId !== worktree.id) {
+      const existingTerminal = terminalRef.current;
+      if (existingTerminal) {
+        try {
+          const position = existingTerminal.getScrollPosition();
+          const atBottom = existingTerminal.isScrolledToBottom();
+          scrollChangeCallbackRef.current(previousId, { position, atBottom });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    previousWorktreeIdRef.current = worktree.id;
+    initialScrollRestoredRef.current = false;
+    wasAtBottomRef.current = initialScrollState?.atBottom ?? true;
+    scrollPositionRef.current = initialScrollState?.position ?? 0;
+    if (visibleRef.current) {
+      requestAnimationFrame(() => restoreViewport());
+    }
+  }, [initialScrollState, restoreViewport, worktree.id]);
+
+  const syncInputState = useCallback(() => {
+    const shouldEnable = status === 'running' && active && visible;
+    terminalRef.current?.setStdinDisabled(!shouldEnable);
+  }, [active, status, visible]);
+
+  const setStatusWithSideEffects = useCallback(
+    (next: TerminalLifecycle) => {
+      setStatus(next);
+      if (next === 'running') {
+        errorRef.current = null;
+      }
+    },
+    []
+  );
+
+  const ensureTerminalStarted = useCallback(
+    async (reason: string) => {
+      if (status === 'running' || pendingStartRef.current) {
+        return;
+      }
+      console.log('[renderer] worktree-terminal start', {
+        worktreeId: worktree.id,
+        paneId: paneIdRef.current ?? 'default',
+        reason
+      });
+      setStatusWithSideEffects('starting');
+      const startOptions = paneIdRef.current ? { paneId: paneIdRef.current } : undefined;
+      const startPromise = (startOptions
+        ? api.startWorktreeTerminal(worktree.id, startOptions)
+        : api.startWorktreeTerminal(worktree.id))
+        .then(async (descriptorResult) => {
+          setDescriptor(descriptorResult);
+          setStatusWithSideEffects('running');
+          setLastExit(null);
+          pendingOutputRef.current = '';
+          lastEventIdRef.current = 0;
+          wasAtBottomRef.current = true;
+          syncInputState();
+          onBootstrapped?.();
+          await syncSnapshot(false);
+          if (active && visibleRef.current) {
+            terminalRef.current?.focus();
+          }
+        })
+        .catch((error) => {
+          const message = getErrorMessage(error);
+          errorRef.current = message;
+          onNotification(message);
+          setStatusWithSideEffects('idle');
+        })
+        .finally(() => {
+          pendingStartRef.current = null;
+        });
+      pendingStartRef.current = startPromise;
+      await startPromise;
+    },
+    [active, api, onBootstrapped, onNotification, setStatusWithSideEffects, status, syncInputState, syncSnapshot, worktree.id]
+  );
 
   useEffect(() => {
     void syncSnapshot(false);
@@ -375,9 +419,10 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       return;
     }
     if (!visible) {
-      scrollPositionRef.current = terminal.getScrollPosition();
-      wasAtBottomRef.current = terminal.isScrolledToBottom();
-      scrollChangeCallbackRef.current?.({ position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
+      handleTerminalScroll({
+        position: terminal.getScrollPosition(),
+        atBottom: terminal.isScrolledToBottom()
+      });
       return;
     }
     hydratingRef.current = true;
@@ -390,7 +435,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
         terminal.focus();
       }
     });
-  }, [active, drainPendingOutput, restoreViewport, status, visible]);
+  }, [active, drainPendingOutput, handleTerminalScroll, restoreViewport, status, visible]);
 
   const handleTerminalData = useCallback(
     (data: string) => {
@@ -456,11 +501,15 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
               scrollPositionRef.current = initialScrollState.position;
               wasAtBottomRef.current = initialScrollState.atBottom;
               initialScrollRestoredRef.current = true;
+              handleTerminalScroll({
+                position: initialScrollState.position,
+                atBottom: initialScrollState.atBottom
+              });
             }
             if (visibleRef.current) {
               restoreViewport();
               drainPendingOutput();
-            } else {
+            } else if (!initialScrollState) {
               updateScrollTracking();
             }
           }
@@ -468,6 +517,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
         onData={handleTerminalData}
         instanceId={paneId ? `${worktree.id}-terminal-${paneId}` : `${worktree.id}-terminal`}
         onResize={handleResize}
+        onScroll={handleTerminalScroll}
       />
       {descriptor ? (
         <footer className="terminal-footer">

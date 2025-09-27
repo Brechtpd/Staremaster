@@ -14,6 +14,7 @@ interface TerminalEntry {
   terminal: Terminal;
   fitAddon: FitAddon;
   dataDisposable: IDisposable | null;
+  scrollDisposable: IDisposable | null;
   refCount: number;
   stdinDisabled: boolean;
   disposeTimer: number | null;
@@ -32,20 +33,23 @@ export interface CodexTerminalHandle {
   isScrolledToBottom(): boolean;
   scrollToLine(line: number): void;
   scrollToBottom(): void;
+  scrollLines(offset: number): void;
 }
 
 interface CodexTerminalProps {
   onData(data: string): void;
   instanceId: string;
   onResize?: (size: { cols: number; rows: number }) => void;
+  onScroll?: (state: { position: number; atBottom: boolean }) => void;
 }
 
 export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminalProps>(
-  ({ onData, instanceId, onResize }, ref) => {
+  ({ onData, instanceId, onResize, onScroll }, ref) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const dataHandlerRef = useRef(onData);
+    const scrollHandlerRef = useRef<typeof onScroll>(onScroll);
     const themeRef = useRef({
       background: '#1c1d1f',
       foreground: '#f8fafc',
@@ -272,6 +276,10 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
       dataHandlerRef.current = onData;
     }, [onData]);
 
+    useEffect(() => {
+      scrollHandlerRef.current = onScroll;
+    }, [onScroll]);
+
     useLayoutEffect(() => {
       const container = containerRef.current;
       if (!container) {
@@ -296,6 +304,7 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
           terminal: terminalInstance,
           fitAddon,
           dataDisposable: null,
+          scrollDisposable: null,
           refCount: 0,
           stdinDisabled: false,
           disposeTimer: null
@@ -321,6 +330,24 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
       entry.dataDisposable?.dispose();
       entry.dataDisposable = terminalInstance.onData((data) => {
         dataHandlerRef.current(data);
+      });
+
+      entry.scrollDisposable?.dispose();
+      entry.scrollDisposable = terminalInstance.onScroll((ydisp: number) => {
+        const buffer = getActiveBuffer();
+        let atBottom = true;
+
+        if (buffer) {
+          const base = typeof (buffer as { baseY?: number }).baseY === 'number'
+            ? (buffer as { baseY: number }).baseY
+            : 0;
+          atBottom = ydisp >= base;
+        }
+
+        const handler = scrollHandlerRef.current;
+        if (handler) {
+          handler({ position: ydisp, atBottom });
+        }
       });
 
       let disposed = false;
@@ -365,6 +392,8 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         observer?.disconnect();
         entry?.dataDisposable?.dispose();
         entry.dataDisposable = null;
+        entry?.scrollDisposable?.dispose();
+        entry.scrollDisposable = null;
         if (entry) {
           entry.refCount = Math.max(0, entry.refCount - 1);
           if (entry.refCount === 0) {
@@ -387,7 +416,7 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         }
         lastSizeRef.current = null;
       };
-    }, [flushPending, safeFit, instanceId, notifyResize]);
+    }, [flushPending, getActiveBuffer, safeFit, instanceId, notifyResize]);
 
     useImperativeHandle(
       ref,
@@ -471,6 +500,12 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
         },
         scrollToBottom() {
           terminalRef.current?.scrollToBottom();
+        },
+        scrollLines(offset: number) {
+          if (!terminalRef.current || !Number.isFinite(offset) || offset === 0) {
+            return;
+          }
+          terminalRef.current.scrollLines(offset);
         }
       }),
       [safeFit, getActiveBuffer, instanceId, notifyResize]

@@ -1487,9 +1487,9 @@ export const App: React.FC = () => {
               onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
               onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
               onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
-              initialScrollState={codexScrollStateRef.current[pane.id]}
-              onScrollStateChange={(state) => {
-                codexScrollStateRef.current[pane.id] = state;
+              initialScrollState={codexScrollStateRef.current[`${worktree.id}:${pane.id}`]}
+              onScrollStateChange={(worktreeId, state) => {
+                codexScrollStateRef.current[`${worktreeId}:${pane.id}`] = state;
               }}
             />
           ) : (
@@ -1505,6 +1505,10 @@ export const App: React.FC = () => {
               onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
               onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
               onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
+              initialScrollState={codexScrollStateRef.current[`${worktree.id}:${pane.id}`]}
+              onScrollStateChange={(worktreeId, state) => {
+                codexScrollStateRef.current[`${worktreeId}:${pane.id}`] = state;
+              }}
             />
           )}
         </div>
@@ -1547,9 +1551,9 @@ export const App: React.FC = () => {
           paneId={pane.id}
           onNotification={setNotification}
           onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
-          initialScrollState={terminalScrollStateRef.current[pane.id]}
-          onScrollStateChange={(state) => {
-            terminalScrollStateRef.current[pane.id] = state;
+          initialScrollState={terminalScrollStateRef.current[`${worktree.id}:${pane.id}`]}
+          onScrollStateChange={(worktreeId, state) => {
+            terminalScrollStateRef.current[`${worktreeId}:${pane.id}`] = state;
           }}
         />
       </div>
