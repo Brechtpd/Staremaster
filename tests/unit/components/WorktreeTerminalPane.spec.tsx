@@ -77,6 +77,7 @@ const createApi = () => {
     resizeTerminal: vi.fn(async () => undefined),
     getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
     getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
+    removeProject: vi.fn(),
     onTerminalOutput: vi.fn((callback: Listener<TerminalOutputPayload>) => {
       outputListeners.push(callback);
       return () => {

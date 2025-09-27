@@ -109,10 +109,20 @@ export class WorktreeService extends EventEmitter {
     }
 
     const latestState = this.store.getState();
-    const defaultWorktreeId = latestState.worktrees.find((item) => item.projectId === projectId)?.id ?? null;
-    await this.store.patchProject(projectId, {
-      defaultWorktreeId: defaultWorktreeId ?? undefined
-    });
+    const project = latestState.projects.find((item) => item.id === projectId);
+    const existingDefaultId = project?.defaultWorktreeId;
+    const existingDefaultStillValid = existingDefaultId
+      ? latestState.worktrees.some((item) => item.id === existingDefaultId)
+      : false;
+    if (!existingDefaultStillValid) {
+      const fallback = latestState.worktrees.find((item) => item.projectId === projectId)?.id ?? null;
+      const nextDefault = fallback ?? undefined;
+      if (nextDefault !== existingDefaultId) {
+        await this.store.patchProject(projectId, {
+          defaultWorktreeId: nextDefault
+        });
+      }
+    }
 
     for (const item of existingForProject) {
       if (!seen.has(item.id)) {
@@ -197,6 +207,25 @@ export class WorktreeService extends EventEmitter {
     }
     const descriptor = state.worktrees.find((item) => item.id === worktreeId);
     return descriptor?.codexResumeCommand ?? null;
+  }
+
+  async removeProject(projectId: string): Promise<void> {
+    const state = this.store.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error(`Unknown project ${projectId}`);
+    }
+
+    const removedWorktreeIds = state.worktrees.filter((item) => item.projectId === projectId).map((item) => item.id);
+
+    this.projects.delete(projectId);
+    await this.store.removeProject(projectId);
+
+    removedWorktreeIds.forEach((worktreeId) => {
+      this.emit('worktree-removed', worktreeId);
+    });
+
+    this.emit('state-changed', this.store.getState());
   }
 
   async removeWorktree(worktreeId: string, options?: { deleteFolder?: boolean }): Promise<void> {

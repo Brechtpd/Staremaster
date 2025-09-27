@@ -731,36 +731,6 @@ export const App: React.FC = () => {
     );
   }, []);
 
-  const handleHideProject = useCallback(
-    (projectId: string) => {
-      const nextHidden = new Set(hiddenProjects);
-      nextHidden.add(projectId);
-      const fallbackProjectId = state.projects.find((project) => !nextHidden.has(project.id))?.id ?? null;
-
-      setHiddenProjectIds((prev) => (prev.includes(projectId) ? prev : [...prev, projectId]));
-      setCollapsedProjectIds((prev) => prev.filter((id) => id !== projectId));
-
-      setSelectedProjectId((current) => {
-        if (current && !nextHidden.has(current) && current !== projectId) {
-          return current;
-        }
-        return fallbackProjectId;
-      });
-
-      setSelectedWorktreeId((current) => {
-        const currentDescriptor = state.worktrees.find((worktree) => worktree.id === current);
-        if (currentDescriptor && !nextHidden.has(currentDescriptor.projectId) && currentDescriptor.projectId !== projectId) {
-          return current;
-        }
-        if (!fallbackProjectId) {
-          return null;
-        }
-        return state.worktrees.find((worktree) => worktree.projectId === fallbackProjectId)?.id ?? null;
-      });
-    },
-    [hiddenProjects, state.projects, state.worktrees]
-  );
-
   const rootWorktree = useMemo<WorktreeDescriptor | null>(() => {
     if (!selectedWorktreeId?.startsWith('project-root:')) {
       return null;
@@ -1272,6 +1242,63 @@ export const App: React.FC = () => {
     });
   };
 
+  const handleRemoveProject = useCallback(
+    async (projectId: string) => {
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Remove ${project.name} from Staremaster? Worktrees remain on disk and can be re-added later.`
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      const associatedWorktrees = state.worktrees.filter((worktree) => worktree.projectId === projectId);
+      const removedIds = new Set<string>(associatedWorktrees.map((worktree) => worktree.id));
+      removedIds.add(`project-root:${projectId}`);
+
+      const nextState = await runAction(() => api.removeProject(projectId));
+      if (!nextState) {
+        return;
+      }
+
+      removedIds.forEach((id) => {
+        delete worktreeCacheRef.current[id];
+        removeStoredPaneLayout(id);
+      });
+
+      setPaneLayouts((prev) => {
+        let mutated = false;
+        const next = { ...prev };
+        removedIds.forEach((id) => {
+          const layout = next[id];
+          if (layout) {
+            layout.panes.forEach((pane) => {
+              bootstrappedPaneIdsRef.current.delete(pane.id);
+            });
+            delete next[id];
+            mutated = true;
+          }
+        });
+        return mutated ? next : prev;
+      });
+
+      setRenderedWorktreeIds((prev) => {
+        const next = prev.filter((id) => !removedIds.has(id));
+        return next.length === prev.length ? prev : next;
+      });
+
+      setHiddenProjectIds((prev) => prev.filter((id) => id !== projectId));
+      setCollapsedProjectIds((prev) => prev.filter((id) => id !== projectId));
+
+      applyState(nextState);
+    },
+    [api, applyState, runAction, state.projects, state.worktrees]
+  );
+
   const openCreateModal = (projectId?: string) => {
     setNotification(null);
     setCreateName('');
@@ -1485,6 +1512,7 @@ export const App: React.FC = () => {
               active={isActive}
               visible={isVisible}
               paneId={pane.id}
+              sessionWorktreeId={sessionWorktreeId}
               onNotification={setNotification}
               onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
               onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
@@ -1669,8 +1697,8 @@ export const App: React.FC = () => {
                       <button
                         type="button"
                         className="project-section__remove"
-                        onClick={() => handleHideProject(project.id)}
-                        disabled={busy}
+                        onClick={() => void handleRemoveProject(project.id)}
+                        disabled={busy || !bridge}
                       >
                         Remove
                       </button>

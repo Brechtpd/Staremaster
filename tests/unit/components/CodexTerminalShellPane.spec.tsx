@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, render, waitFor, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { CodexTerminalShellPane } from '../../../src/renderer/components/CodexTerminalShellPane';
 import type { RendererApi } from '../../../src/shared/api';
@@ -49,6 +49,7 @@ const createRendererApi = () => {
   }));
   const setCodexResumeCommand = vi.fn(async () => {});
   const refreshCodexResumeCommand = vi.fn(async () => null);
+  const refreshCodexResumeFromLogs = vi.fn(async () => {});
   const getCodexTerminalSnapshot = vi.fn(async () => ({ content: '', lastEventId: 0 }));
   const getCodexTerminalDelta = vi.fn(async () => ({ chunks: [], lastEventId: 0 }));
   let lastCodexTerminalExitHandler: ((payload: {
@@ -72,6 +73,8 @@ const createRendererApi = () => {
     }),
     setCodexResumeCommand,
     refreshCodexResumeCommand,
+    refreshCodexResumeFromLogs,
+    removeProject: vi.fn(),
     // Unused API surface mocked for type completeness.
     getState: vi.fn(),
     addProject: vi.fn(),
@@ -150,8 +153,8 @@ describe('CodexTerminalShellPane', () => {
 
     const call = startCodexTerminal.mock.calls[0];
     expect(call[1]?.startupCommand).toBe('codex resume --yolo cached-id');
+    await waitFor(() => expect(refreshCodexResumeCommand).toHaveBeenCalledTimes(1));
     expect(setCodexResumeCommand).not.toHaveBeenCalled();
-    expect(refreshCodexResumeCommand).toHaveBeenCalledTimes(1);
   });
 
   it('persists resume command when a real Codex session id is available', async () => {
@@ -193,6 +196,103 @@ describe('CodexTerminalShellPane', () => {
 
     const call = startCodexTerminal.mock.calls[0];
     expect(call[1]?.startupCommand).toBe('codex resume --yolo real-codex-id');
+  });
+
+  it('syncs refreshed resume command back to the project-root alias', async () => {
+    const {
+      api,
+      refreshCodexResumeCommand,
+      setCodexResumeCommand
+    } = createRendererApi();
+
+    refreshCodexResumeCommand.mockResolvedValueOnce('codex resume --yolo proj-root');
+
+    const worktree: WorktreeDescriptor = {
+      ...baseWorktree,
+      id: 'project-root:proj-1',
+      codexStatus: 'idle'
+    };
+
+    render(
+      <CodexTerminalShellPane
+        api={api}
+        worktree={worktree}
+        session={undefined}
+        paneId="pane-3"
+        active
+        visible
+        sessionWorktreeId="wt-main"
+        onNotification={() => {}}
+      />
+    );
+
+    await waitFor(() => expect(refreshCodexResumeCommand).toHaveBeenCalledWith('wt-main'));
+    await waitFor(() => expect(setCodexResumeCommand).toHaveBeenCalledTimes(2));
+
+    const ids = setCodexResumeCommand.mock.calls.map((call) => call[0]);
+    expect(ids).toContain('wt-main');
+    expect(ids).toContain('project-root:proj-1');
+
+    const payloads = setCodexResumeCommand.mock.calls.map((call) => call[1]);
+    expect(new Set(payloads)).toEqual(new Set(['codex resume --yolo proj-root']));
+  });
+
+  it('replays the stored project-root resume command when the canonical worktree lacks one', async () => {
+    const {
+      api,
+      refreshCodexResumeCommand,
+      setCodexResumeCommand
+    } = createRendererApi();
+
+    refreshCodexResumeCommand.mockResolvedValueOnce(null);
+
+    const worktree: WorktreeDescriptor = {
+      ...baseWorktree,
+      id: 'project-root:proj-1',
+      codexStatus: 'idle',
+      codexResumeCommand: 'codex resume --yolo cached-project-root'
+    };
+
+    render(
+      <CodexTerminalShellPane
+        api={api}
+        worktree={worktree}
+        session={undefined}
+        paneId="pane-4"
+        active
+        visible
+        sessionWorktreeId="wt-main"
+        onNotification={() => {}}
+      />
+    );
+
+    await waitFor(() => expect(refreshCodexResumeCommand).toHaveBeenCalledWith('wt-main'));
+    await waitFor(() => expect(setCodexResumeCommand).toHaveBeenCalledTimes(2));
+    expect(setCodexResumeCommand).toHaveBeenCalledWith('wt-main', 'codex resume --yolo cached-project-root');
+    expect(setCodexResumeCommand).toHaveBeenCalledWith('project-root:proj-1', 'codex resume --yolo cached-project-root');
+  });
+
+  it('derives the session id from stored commands with alternate flags', async () => {
+    const { api } = createRendererApi();
+
+    const worktree: WorktreeDescriptor = {
+      ...baseWorktree,
+      codexResumeCommand: 'codex resume --session-id=abc-123 --resume-mode fast'
+    };
+
+    render(
+      <CodexTerminalShellPane
+        api={api}
+        worktree={worktree}
+        session={undefined}
+        active
+        visible
+        sessionWorktreeId={worktree.id}
+        onNotification={() => {}}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText(/Session ID:\s*abc-123/)).toBeInTheDocument());
   });
 
   it('clears a stale resume command and falls back to a fresh session when the resume exits with error', async () => {

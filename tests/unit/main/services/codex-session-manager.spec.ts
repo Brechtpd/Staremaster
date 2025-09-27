@@ -59,4 +59,25 @@ describe('Codex resume detection', () => {
     ]);
     expect(state.resumeTarget).toBe('66666666-7777-8888-9999-aaaaaaaaaaaa');
   });
+
+  it('accepts resume ids with non-hex characters and ANSI sequences', () => {
+    const state: ResumeDetectionState = {
+      buffer: '',
+      resumeCaptured: false,
+      resumeTarget: null
+    };
+
+    const result = detectResumeCommands(
+      state,
+      '\u001b[32mcodex resume --session-id=g-session-id_123 --yolo\u001b[0m\n'
+    );
+    expect(result).toEqual([
+      {
+        codexSessionId: 'g-session-id_123',
+        command: 'codex resume --session-id=g-session-id_123 --yolo',
+        alreadyCaptured: false
+      }
+    ]);
+    expect(state.resumeTarget).toBe('g-session-id_123');
+  });
 });

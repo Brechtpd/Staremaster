@@ -51,6 +51,26 @@ export const registerIpcHandlers = (
     return worktreeService.getState();
   });
 
+  ipcMain.handle(IPCChannels.removeProject, async (_event, payload: { projectId: string }) => {
+    const state = worktreeService.getState();
+    const relatedWorktrees = state.worktrees.filter((worktree) => worktree.projectId === payload.projectId);
+
+    for (const worktree of relatedWorktrees) {
+      try {
+        await codexManager.stop(worktree.id);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith('No running Codex session')) {
+          throw error;
+        }
+      }
+      terminalService.dispose(worktree.id);
+      codexTerminalService.dispose(worktree.id);
+    }
+
+    await worktreeService.removeProject(payload.projectId);
+    return worktreeService.getState();
+  });
+
   ipcMain.handle(
     IPCChannels.createWorktree,
     async (_event, payload: { projectId: string; featureName: string }) => {
@@ -154,6 +174,16 @@ export const registerIpcHandlers = (
     IPCChannels.codexRefreshResume,
     async (_event, payload: { worktreeId: string }) => {
       return worktreeService.getCodexResumeCommand(payload.worktreeId);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.codexRefreshResumeLogs,
+    async (_event, payload: { worktreeId?: string }) => {
+      await codexManager.refreshResumeFromLogs(payload.worktreeId);
+      const updated = worktreeService.getState();
+      sendState(updated);
+      return updated;
     }
   );
 

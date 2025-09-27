@@ -1,6 +1,7 @@
 export const IPCChannels = {
   getState: 'project:get-state',
   addProject: 'project:add',
+  removeProject: 'project:remove',
   createWorktree: 'worktree:create',
   mergeWorktree: 'worktree:merge',
   removeWorktree: 'worktree:remove',
@@ -17,6 +18,7 @@ export const IPCChannels = {
   codexSummarize: 'codex:summarize',
   codexSetResume: 'codex:set-resume',
   codexRefreshResume: 'codex:refresh-resume',
+  codexRefreshResumeLogs: 'codex:refresh-resume-logs',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   terminalStart: 'terminal:start',
@@ -51,6 +53,7 @@ export interface ProjectDescriptor {
   createdAt: string;
   codexResumeCommand?: string;
   defaultWorktreeId?: string;
+  lastCodexWorktreeId?: string;
 }
 
 export interface WorktreeDescriptor {

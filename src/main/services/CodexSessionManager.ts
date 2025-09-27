@@ -31,8 +31,26 @@ export interface ResumeDetectionMatch {
   alreadyCaptured: boolean;
 }
 
-const RESUME_COMMAND_REGEX = /codex resume --yolo ([0-9a-fA-F-][0-9a-fA-F-]{7,})/gi;
+const ANSI_ESCAPE = '\u001b';
+const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
+const RESUME_LINE_REGEX = /codex\s+resume[^\n\r]*/gi;
 const MAX_RESUME_BUFFER = 512;
+
+const stripControlCharacters = (value: string, replacement: string = ' '): string => {
+  if (!value) {
+    return '';
+  }
+  let result = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0x20) {
+      result += value[index];
+    } else if (replacement) {
+      result += replacement;
+    }
+  }
+  return result;
+};
 
 export const detectResumeCommands = (
   state: ResumeDetectionState,
@@ -42,31 +60,128 @@ export const detectResumeCommands = (
     return [];
   }
 
-  state.buffer += chunk;
+  const sanitizedChunk = stripControlCharacters(chunk.replace(ANSI_ESCAPE_REGEX, ''));
+  if (!sanitizedChunk) {
+    return [];
+  }
+
+  state.buffer += sanitizedChunk;
 
   const results: ResumeDetectionMatch[] = [];
   let match: RegExpExecArray | null;
   let lastConsumedIndex = 0;
-  RESUME_COMMAND_REGEX.lastIndex = 0;
+  RESUME_LINE_REGEX.lastIndex = 0;
 
-  while ((match = RESUME_COMMAND_REGEX.exec(state.buffer)) !== null) {
-    lastConsumedIndex = Math.max(lastConsumedIndex, RESUME_COMMAND_REGEX.lastIndex);
-    const command = match[0];
-    const codexSessionId = match[1];
+  while ((match = RESUME_LINE_REGEX.exec(state.buffer)) !== null) {
+    const resumeLine = match[0];
+    const codexSessionId = extractSessionIdFromResumeLine(resumeLine);
+    if (!codexSessionId) {
+      continue;
+    }
+    const command = sanitizeResumeCommand(resumeLine) ?? resumeLine.trim();
     const alreadyCaptured = state.resumeCaptured && state.resumeTarget === codexSessionId;
     results.push({ codexSessionId, command, alreadyCaptured });
     state.resumeTarget = codexSessionId;
     state.resumeCaptured = true;
+    lastConsumedIndex = Math.max(lastConsumedIndex, RESUME_LINE_REGEX.lastIndex);
   }
 
   if (lastConsumedIndex > 0) {
     state.buffer = state.buffer.slice(lastConsumedIndex);
-  }
-  if (state.buffer.length > MAX_RESUME_BUFFER) {
+  } else if (state.buffer.length > MAX_RESUME_BUFFER) {
     state.buffer = state.buffer.slice(-MAX_RESUME_BUFFER);
   }
 
   return results;
+};
+
+const extractResumeTarget = (command?: string | null): string | null => {
+  if (!command) {
+    return null;
+  }
+  const sanitized = stripControlCharacters(command.replace(ANSI_ESCAPE_REGEX, ''), ' ');
+  return extractSessionIdFromResumeLine(sanitized);
+};
+
+const SESSION_ID_FLAG_PREFIXES = ['--session', '--session-id', '--resume-id', '--yolo'];
+
+const sanitizeSessionId = (value: string): string => {
+  if (!value) {
+    return '';
+  }
+  return stripControlCharacters(value, '')
+    .replace(/^["']+/, '')
+    .replace(/["'.,;:]+$/, '');
+};
+
+const sanitizeResumeCommand = (command: string): string | null => {
+  const trimmed = command ? command.trim() : '';
+  if (!trimmed.toLowerCase().startsWith('codex')) {
+    return null;
+  }
+  const parts = trimmed.split(/\s+/);
+  const lastIndex = parts.length - 1;
+  if (lastIndex < 0) {
+    return trimmed;
+  }
+  const sanitizedId = sanitizeSessionId(parts[lastIndex]);
+  if (!sanitizedId) {
+    return trimmed;
+  }
+  parts[lastIndex] = sanitizedId;
+  return parts.join(' ');
+};
+
+const extractSessionIdFromResumeLine = (line: string): string | null => {
+  if (!line) {
+    return null;
+  }
+  const normalized = stripControlCharacters(line).replace(/\s+/g, ' ').trim();
+  if (!normalized.toLowerCase().includes('codex resume')) {
+    return null;
+  }
+  const tokens = normalized.split(' ');
+  let fallback: string | null = null;
+
+  const stripTrailing = (value: string) => sanitizeSessionId(stripControlCharacters(value, ''));
+  const isSessionFlag = (flag: string) => SESSION_ID_FLAG_PREFIXES.some((prefix) => flag.startsWith(prefix));
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token) {
+      continue;
+    }
+    if (token.startsWith('--')) {
+      const equalsIndex = token.indexOf('=');
+      const flag = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+      if (equalsIndex !== -1 && equalsIndex < token.length - 1) {
+        const value = stripTrailing(token.slice(equalsIndex + 1));
+        if (isSessionFlag(flag) && value) {
+          return value;
+        }
+        if (value) {
+          fallback = value;
+        }
+        continue;
+      }
+      const next = tokens[index + 1];
+      if (next && !next.startsWith('--')) {
+        const value = stripTrailing(next);
+        if (isSessionFlag(flag) && value) {
+          return value;
+        }
+        if (value) {
+          fallback = value;
+        }
+      }
+      continue;
+    }
+    const value = stripTrailing(token);
+    if (value && value.toLowerCase() !== 'codex' && value.toLowerCase() !== 'resume') {
+      fallback = value;
+    }
+  }
+  return fallback;
 };
 
 type ManagedSession = {
@@ -78,6 +193,7 @@ type ManagedSession = {
   resumeTarget?: string | null;
   resumeDetection: ResumeDetectionState;
   projectId: string;
+  sessionWorktreeId: string;
 };
 
 const DEFAULT_CODEX_COMMAND = 'codex --yolo';
@@ -127,9 +243,13 @@ export class CodexSessionManager extends EventEmitter {
     options?: { command?: string }
   ): Promise<CodexSessionDescriptor> {
     const previousSession = this.findLatestSessionForWorktree(worktree.id);
-    const resumeTarget = previousSession?.codexSessionId;
-    const isAutoResume = Boolean(resumeTarget) && !options?.command;
-    const command = options?.command ?? (resumeTarget ? `${CODEX_RESUME_TEMPLATE} ${resumeTarget}` : DEFAULT_CODEX_COMMAND);
+    const storedResumeCommand = worktree.codexResumeCommand ?? null;
+    const storedResumeTarget = extractResumeTarget(storedResumeCommand);
+    const resumeTarget = previousSession?.codexSessionId ?? storedResumeTarget ?? null;
+    const inferredResumeCommand = !previousSession?.codexSessionId && storedResumeCommand ? storedResumeCommand : null;
+    const autoResumeCommand = resumeTarget ? `${CODEX_RESUME_TEMPLATE} ${resumeTarget}` : inferredResumeCommand;
+    const isAutoResume = Boolean(autoResumeCommand) && !options?.command;
+    const command = options?.command ?? autoResumeCommand ?? DEFAULT_CODEX_COMMAND;
 
     const startTimestamp = Date.now();
     const { spawn } = await loadPty();
@@ -137,8 +257,14 @@ export class CodexSessionManager extends EventEmitter {
 
     const initialStatus: CodexStatus = isAutoResume ? 'resuming' : 'starting';
 
+    if (previousSession?.id) {
+      await this.store.patchSession(previousSession.id, {
+        status: 'stopped'
+      });
+    }
+
     const descriptor: CodexSessionDescriptor = {
-      id: previousSession?.id ?? randomUUID(),
+      id: randomUUID(),
       worktreeId: worktree.id,
       status: initialStatus,
       startedAt: new Date().toISOString(),
@@ -176,19 +302,23 @@ export class CodexSessionManager extends EventEmitter {
       resumeTarget: isAutoResume ? resumeTarget : null,
       resumeDetection: {
         buffer: '',
-        resumeCaptured: Boolean(isAutoResume && resumeTarget),
+        resumeCaptured: false,
         resumeTarget: resumeTarget ?? null
       },
-      projectId: worktree.projectId
+      projectId: worktree.projectId,
+      sessionWorktreeId: worktree.id
     };
 
     this.sessions.set(worktree.id, managed);
     await this.store.upsertSession(descriptor);
+    await this.store.setProjectDefaultWorktree(worktree.projectId, worktree.id);
 
     if (!resumeTarget) {
       void this.captureCodexSessionId(worktree.path, descriptor, managed, startTimestamp, worktree.id).catch((error) => {
         console.warn('[codex] failed to capture session id', error);
       });
+    } else {
+      managed.resumeDetection.resumeCaptured = true;
     }
 
     const respondToCursorProbe = () => {
@@ -196,6 +326,29 @@ export class CodexSessionManager extends EventEmitter {
     };
 
     let promotedToRunning = false;
+
+    const recordSessionInfo = (
+      sessionId: string | null,
+      resumeCommand?: string | null,
+      alreadyCaptured?: boolean
+    ) => {
+      if (!sessionId) {
+        return;
+      }
+      const normalizedCommand = resumeCommand ? sanitizeResumeCommand(resumeCommand) : null;
+      const commandToPersist = normalizedCommand ?? `${CODEX_RESUME_TEMPLATE} ${sessionId}`;
+      const seen = alreadyCaptured ?? (managed.resumeTarget === sessionId);
+      managed.resumeTarget = sessionId;
+      managed.descriptor.codexSessionId = sessionId;
+      void this.store.patchSession(descriptor.id, {
+        codexSessionId: sessionId
+      });
+      if (!seen && commandToPersist) {
+        void this.store.updateCodexResumeCommand(worktree.id, commandToPersist);
+        void this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, commandToPersist);
+        void this.store.setProjectDefaultWorktree(worktree.projectId, managed.sessionWorktreeId);
+      }
+    };
 
     const promoteRunning = () => {
       if (promotedToRunning) {
@@ -219,15 +372,7 @@ export class CodexSessionManager extends EventEmitter {
 
       const resumeMatches = detectResumeCommands(managed.resumeDetection, chunk);
       for (const match of resumeMatches) {
-        managed.resumeTarget = match.codexSessionId;
-        managed.descriptor.codexSessionId = match.codexSessionId;
-        void this.store.patchSession(descriptor.id, {
-          codexSessionId: match.codexSessionId
-        });
-        if (!match.alreadyCaptured) {
-          void this.store.updateCodexResumeCommand(worktree.id, match.command);
-          void this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, match.command);
-        }
+        recordSessionInfo(match.codexSessionId, match.command, match.alreadyCaptured);
       }
       if (chunk.includes('\u001b')) {
         managed.dsrBuffer += chunk;
@@ -291,6 +436,7 @@ export class CodexSessionManager extends EventEmitter {
       });
       await this.store.updateCodexResumeCommand(worktree.id, resumeCommand);
       await this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, resumeCommand);
+      await this.store.setProjectDefaultWorktree(worktree.projectId, resumeCommand ? managed.sessionWorktreeId : null);
 
       const shouldRetryFresh = exitCode !== 0 && isAutoResume;
       if (shouldRetryFresh) {
@@ -388,6 +534,7 @@ export class CodexSessionManager extends EventEmitter {
     const command = `${CODEX_RESUME_TEMPLATE} ${sessionId}`;
     await this.store.updateCodexResumeCommand(worktreeId, command);
     await this.store.updateCodexResumeCommand(`project-root:${managed.projectId}`, command);
+    await this.store.setProjectDefaultWorktree(managed.projectId, worktreeId);
     console.log('[codex] captured session id', sessionId, 'for', cwd);
   }
 
@@ -402,9 +549,13 @@ export class CodexSessionManager extends EventEmitter {
       if (match) {
         return match;
       }
+      const historyMatch = await this.scanCodexHistory(sessionStartMs, ignoreSessionId);
+      if (historyMatch) {
+        return historyMatch;
+      }
       await delay(SESSION_LOOKUP_DELAY_MS);
     }
-    return null;
+    return this.scanCodexHistory(sessionStartMs, ignoreSessionId);
   }
 
   private async scanCodexSessions(
@@ -470,6 +621,63 @@ export class CodexSessionManager extends EventEmitter {
     return null;
   }
 
+  private async scanCodexHistory(sessionStartMs: number, ignoreSessionId?: string | null): Promise<string | null> {
+    const historyPath = path.join(os.homedir(), '.codex', 'history.jsonl');
+    let raw: string;
+    try {
+      raw = await fs.readFile(historyPath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+
+    const thresholdMs = sessionStartMs - 5_000;
+    let candidate: string | null = null;
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line) as { session_id?: unknown; ts?: unknown };
+        const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id : null;
+        if (!sessionId || (ignoreSessionId && sessionId === ignoreSessionId)) {
+          continue;
+        }
+        const ts = typeof parsed.ts === 'number' ? parsed.ts : null;
+        const tsMs = ts == null ? null : ts > 3_153_600_000 ? ts : ts * 1000;
+        if (tsMs != null && tsMs >= thresholdMs) {
+          candidate = sessionId;
+          break;
+        }
+      } catch (error) {
+        console.warn('[codex] failed to parse history entry', error);
+      }
+    }
+
+    if (candidate) {
+      return candidate;
+    }
+
+    for (const line of raw.split('\n').reverse()) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line) as { session_id?: unknown };
+        const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id : null;
+        if (sessionId && (!ignoreSessionId || sessionId !== ignoreSessionId)) {
+          return sessionId;
+        }
+      } catch (error) {
+        console.warn('[codex] failed to parse history entry (reverse scan)', error);
+      }
+    }
+
+    return null;
+  }
+
   private resolveSessionsDirForOffset(root: string, referenceMs: number, dayOffset: number): string | null {
     const referenceDate = new Date(referenceMs + dayOffset * 24 * 60 * 60 * 1000);
     if (Number.isNaN(referenceDate.getTime())) {
@@ -498,6 +706,43 @@ export class CodexSessionManager extends EventEmitter {
         console.warn('[codex] failed to read session meta', filePath, error);
       }
       return null;
+    }
+  }
+
+  private async parseResumeCommandFromLog(worktreeId: string): Promise<string | null> {
+    const logPath = path.join(this.logDir, `${worktreeId}.log`);
+    let raw: string;
+    try {
+      raw = await fs.readFile(logPath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+
+    const cleaned = stripControlCharacters(raw).replace(ANSI_ESCAPE_REGEX, '');
+    const matches = Array.from(cleaned.matchAll(RESUME_LINE_REGEX));
+    if (matches.length === 0) {
+      return null;
+    }
+    const lastLine = matches[matches.length - 1][0];
+    return sanitizeResumeCommand(lastLine) ?? lastLine.trim();
+  }
+
+  async refreshResumeFromLogs(worktreeId?: string): Promise<void> {
+    const state = this.store.getState();
+    const targets = worktreeId
+      ? state.worktrees.filter((worktree) => worktree.id === worktreeId)
+      : state.worktrees;
+
+    for (const worktree of targets) {
+      const command = await this.parseResumeCommandFromLog(worktree.id);
+      await this.store.updateCodexResumeCommand(worktree.id, command ?? null);
+      await this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, command ?? null);
+      if (command) {
+        await this.store.setProjectDefaultWorktree(worktree.projectId, worktree.id);
+      }
     }
   }
 }

@@ -62,6 +62,7 @@ describe('GitPanel', () => {
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
       removeWorktree: vi.fn(),
+      removeProject: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
       openWorktreeInGitGui: vi.fn(),
       openWorktreeInFileManager: vi.fn(),

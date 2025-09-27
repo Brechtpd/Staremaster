@@ -21,6 +21,7 @@ beforeEach(() => {
   const api: RendererApi = {
     getState: vi.fn().mockResolvedValue(emptyState),
     addProject: vi.fn().mockResolvedValue(emptyState),
+    removeProject: vi.fn().mockResolvedValue(emptyState),
     createWorktree: vi.fn().mockImplementation(async (projectId) => ({
       id: 'mock',
       projectId,
@@ -73,6 +74,7 @@ beforeEach(() => {
     summarizeCodexOutput: vi.fn().mockResolvedValue(''),
     setCodexResumeCommand: vi.fn().mockResolvedValue(undefined),
     refreshCodexResumeCommand: vi.fn().mockResolvedValue(null),
+    refreshCodexResumeFromLogs: vi.fn().mockResolvedValue(undefined),
     startWorktreeTerminal: vi.fn().mockResolvedValue({
       sessionId: 'terminal-1',
       worktreeId: 'mock',

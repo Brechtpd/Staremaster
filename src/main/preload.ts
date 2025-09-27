@@ -4,6 +4,7 @@ import type { RendererApi } from '../shared/api';
 const IPCChannels = {
   getState: 'project:get-state',
   addProject: 'project:add',
+  removeProject: 'project:remove',
   createWorktree: 'worktree:create',
   mergeWorktree: 'worktree:merge',
   removeWorktree: 'worktree:remove',
@@ -20,6 +21,7 @@ const IPCChannels = {
   codexSummarize: 'codex:summarize',
   codexSetResume: 'codex:set-resume',
   codexRefreshResume: 'codex:refresh-resume',
+  codexRefreshResumeLogs: 'codex:refresh-resume-logs',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   terminalStart: 'terminal:start',
@@ -43,6 +45,7 @@ const IPCChannels = {
 const api: RendererApi = {
   getState: () => ipcRenderer.invoke(IPCChannels.getState),
   addProject: () => ipcRenderer.invoke(IPCChannels.addProject),
+  removeProject: (projectId) => ipcRenderer.invoke(IPCChannels.removeProject, { projectId }),
   createWorktree: (projectId, featureName) =>
     ipcRenderer.invoke(IPCChannels.createWorktree, { projectId, featureName }),
   mergeWorktree: (worktreeId) => ipcRenderer.invoke(IPCChannels.mergeWorktree, { worktreeId }),
@@ -101,6 +104,8 @@ const api: RendererApi = {
     ipcRenderer.invoke(IPCChannels.codexSetResume, { worktreeId, command }),
   refreshCodexResumeCommand: (worktreeId) =>
     ipcRenderer.invoke(IPCChannels.codexRefreshResume, { worktreeId }),
+  refreshCodexResumeFromLogs: (worktreeId) =>
+    ipcRenderer.invoke(IPCChannels.codexRefreshResumeLogs, { worktreeId }),
   startWorktreeTerminal: (worktreeId, options) =>
     ipcRenderer.invoke(IPCChannels.terminalStart, {
       worktreeId,

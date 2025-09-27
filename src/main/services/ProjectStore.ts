@@ -150,6 +150,10 @@ export class ProjectStore {
     }
   }
 
+  async setProjectDefaultWorktree(projectId: string, worktreeId: string | null): Promise<void> {
+    await this.patchProject(projectId, { defaultWorktreeId: worktreeId ?? undefined });
+  }
+
   async upsertSession(session: CodexSessionDescriptor): Promise<void> {
     const index = this.state.sessions.findIndex((item) => item.id === session.id);
     if (index >= 0) {

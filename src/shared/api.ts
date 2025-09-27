@@ -18,6 +18,7 @@ import {
 export interface RendererApi {
   getState(): Promise<AppState>;
   addProject(): Promise<AppState>;
+  removeProject(projectId: string): Promise<AppState>;
   createWorktree(projectId: string, featureName: string): Promise<WorktreeDescriptor>;
   mergeWorktree(worktreeId: string): Promise<AppState>;
   removeWorktree(worktreeId: string, deleteFolder?: boolean): Promise<AppState>;
@@ -53,6 +54,7 @@ export interface RendererApi {
   summarizeCodexOutput(worktreeId: string, text: string): Promise<string>;
   setCodexResumeCommand(worktreeId: string, command: string | null): Promise<void>;
   refreshCodexResumeCommand(worktreeId: string): Promise<string | null>;
+  refreshCodexResumeFromLogs(worktreeId?: string): Promise<void>;
   startWorktreeTerminal(
     worktreeId: string,
     options?: { paneId?: string; startupCommand?: string; respondToCursorProbe?: boolean }

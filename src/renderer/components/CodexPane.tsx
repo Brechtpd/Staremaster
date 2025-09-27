@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { RendererApi } from '@shared/api';
 import type { WorktreeDescriptor } from '@shared/ipc';
 import {
@@ -35,11 +35,26 @@ interface CodexPaneProps {
   active: boolean;
   visible: boolean;
   paneId?: string;
+  sessionWorktreeId: string;
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
   onBootstrapped?(): void;
   onUnbootstrapped?(): void;
 }
+
+const CODEX_RESUME_REGEX = /codex resume --yolo [0-9a-fA-F-]+/i;
+
+const extractSessionIdFromCommand = (command?: string | null): string | null => {
+  if (!command) {
+    return null;
+  }
+  const match = CODEX_RESUME_REGEX.exec(command);
+  if (!match) {
+    return null;
+  }
+  const parts = match[0].trim().split(' ');
+  return parts[parts.length - 1] ?? null;
+};
 
 const stripCodexLogAnnotations = (log: string): string => {
   const annotationPattern = /^\[[^\]]+]\s+Session\s+(started|exited|stopping\b).*$/;
@@ -144,6 +159,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   active,
   visible,
   paneId,
+  sessionWorktreeId,
   onNotification,
   onUserInput,
   onBootstrapped
@@ -170,6 +186,9 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const sessionSignature = session?.signature ?? 'none';
   const derivedError = session?.lastError;
   const hasCodexSessionId = Boolean(session?.codexSessionId);
+  const resumeCommandDisplay = worktree.codexResumeCommand ?? null;
+  const sessionIdDisplay = session?.codexSessionId ?? extractSessionIdFromCommand(resumeCommandDisplay);
+  const [rescanBusy, setRescanBusy] = useState(false);
 
   useEffect(() => () => {
     cancelledRef.current = true;
@@ -199,7 +218,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     pendingInputsRef.current = '';
 
     inflightInputRef.current = api
-      .sendCodexInput(worktree.id, payload)
+      .sendCodexInput(sessionWorktreeId, payload)
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : 'Failed to send input to Codex';
         onNotification(message);
@@ -214,7 +233,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
           tryFlushInputsRef.current();
         }
       });
-  }, [api, onNotification, session?.status, worktree.id]);
+  }, [api, onNotification, session?.status, sessionWorktreeId]);
 
   useEffect(() => {
     tryFlushInputsRef.current = tryFlushInputs;
@@ -223,31 +242,54 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const startSession = useCallback(
     async (options?: { throttled?: boolean; forceStart?: boolean }) => {
       if (!bridge) {
-        console.log('[renderer] codex-pane start skipped (no bridge)', { worktreeId: worktree.id, paneId: paneId ?? 'default' });
+        console.log('[renderer] codex-pane start skipped (no bridge)', {
+          worktreeId: worktree.id,
+          sessionWorktreeId,
+          paneId: paneId ?? 'default'
+        });
         return;
       }
       const currentStatus: CodexUiStatus = session?.status ?? 'idle';
       if (!options?.forceStart) {
         if (!canAutoStart(currentStatus)) {
-          console.log('[renderer] codex-pane start skipped (status)', { worktreeId: worktree.id, paneId: paneId ?? 'default', status: currentStatus, reason: 'canAutoStart=false' });
+          console.log('[renderer] codex-pane start skipped (status)', {
+            worktreeId: worktree.id,
+            sessionWorktreeId,
+            paneId: paneId ?? 'default',
+            status: currentStatus,
+            reason: 'canAutoStart=false'
+          });
           return;
         }
         if (pendingStartRef.current) {
-          console.log('[renderer] codex-pane start skipped (pending)', { worktreeId: worktree.id, paneId: paneId ?? 'default' });
+          console.log('[renderer] codex-pane start skipped (pending)', {
+            worktreeId: worktree.id,
+            sessionWorktreeId,
+            paneId: paneId ?? 'default'
+          });
           return;
         }
       }
       if (options?.throttled && !options?.forceStart) {
         const lastAttempt = lastStartAttemptRef.current;
         if (Date.now() - lastAttempt < START_THROTTLE_MS) {
-          console.log('[renderer] codex-pane start skipped (throttled)', { worktreeId: worktree.id, paneId: paneId ?? 'default' });
+          console.log('[renderer] codex-pane start skipped (throttled)', {
+            worktreeId: worktree.id,
+            sessionWorktreeId,
+            paneId: paneId ?? 'default'
+          });
           return;
         }
       }
       lastStartAttemptRef.current = Date.now();
-      console.log('[renderer] codex-pane start', { worktreeId: worktree.id, paneId: paneId ?? 'default', options });
+      console.log('[renderer] codex-pane start', {
+        worktreeId: worktree.id,
+        sessionWorktreeId,
+        paneId: paneId ?? 'default',
+        options
+      });
       onNotification(null);
-      const startPromise = api.startCodex(worktree.id);
+      const startPromise = api.startCodex(sessionWorktreeId);
       pendingStartRef.current = startPromise;
       try {
         await startPromise;
@@ -259,7 +301,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         tryFlushInputsRef.current();
       }
     },
-    [api, bridge, onNotification, paneId, session?.status, worktree.id]
+    [api, bridge, onNotification, paneId, session?.status, sessionWorktreeId, worktree.id]
   );
 
   useEffect(() => {
@@ -327,7 +369,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     }
 
     const unsubscribeOutput = bridge.onCodexOutput((payload) => {
-      if (payload.worktreeId !== worktree.id) {
+      if (payload.worktreeId !== sessionWorktreeId) {
         return;
       }
       const terminal = terminalRef.current;
@@ -343,7 +385,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     });
 
     const unsubscribeStatus = bridge.onCodexStatus((payload) => {
-      if (payload.worktreeId !== worktree.id) {
+      if (payload.worktreeId !== sessionWorktreeId) {
         return;
       }
       if (payload.status === 'error' && payload.error) {
@@ -358,7 +400,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       unsubscribeOutput();
       unsubscribeStatus();
     };
-  }, [bridge, onNotification, worktree.id]);
+  }, [bridge, onNotification, sessionWorktreeId, worktree.id]);
 
   useEffect(() => {
     if (!visible || !bridge) {
@@ -410,7 +452,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
 
       let content = '';
       try {
-        const log = await bridge.getCodexLog(worktree.id);
+        const log = await bridge.getCodexLog(sessionWorktreeId);
         if (cancelled) {
           return;
         }
@@ -464,7 +506,16 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       hydratorRef.current?.cancel();
       hydratorRef.current = null;
     };
-  }, [bridge, onNotification, session?.status, sessionSignature, visible, worktree.id, hasCodexSessionId]);
+  }, [
+    bridge,
+    onNotification,
+    session?.status,
+    sessionSignature,
+    visible,
+    sessionWorktreeId,
+    hasCodexSessionId,
+    worktree.id
+  ]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -499,10 +550,15 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       return;
     }
     if (canAutoStart(status)) {
-      console.log('[renderer] codex-pane auto-start', { worktreeId: worktree.id, paneId: paneId ?? 'default', status });
+      console.log('[renderer] codex-pane auto-start', {
+        worktreeId: worktree.id,
+        sessionWorktreeId,
+        paneId: paneId ?? 'default',
+        status
+      });
       void startSessionRef.current({ throttled: true });
     }
-  }, [paneId, status, visible, worktree.id]);
+  }, [paneId, sessionWorktreeId, status, visible, worktree.id]);
 
   return (
     <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
@@ -510,7 +566,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       <CodexTerminal
         ref={handleTerminalRef}
         onData={handleTerminalData}
-        instanceId={paneId ? `${worktree.id}-codex-${paneId}` : `${worktree.id}-codex`}
+        instanceId={paneId ? `${sessionWorktreeId}-codex-${paneId}` : `${sessionWorktreeId}-codex`}
       />
       {status !== 'running' ? (
         <p className="terminal-hint">
@@ -523,6 +579,31 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
                 : 'Codex session is not running.'}
         </p>
       ) : null}
+      <footer className="terminal-footer">
+        <span>Session ID: {sessionIdDisplay ?? '—'}</span>
+        <span>Resume: {resumeCommandDisplay ?? 'Unavailable'}</span>
+        <button
+          type="button"
+          onClick={async () => {
+            setRescanBusy(true);
+            try {
+              await api.refreshCodexResumeFromLogs(sessionWorktreeId);
+              await api.refreshCodexResumeCommand(sessionWorktreeId);
+              if (sessionWorktreeId !== worktree.id) {
+                await api.refreshCodexResumeCommand(worktree.id);
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Failed to rescan Codex resume command';
+              onNotification(message);
+            } finally {
+              setRescanBusy(false);
+            }
+          }}
+          disabled={rescanBusy}
+        >
+          {rescanBusy ? 'Rescanning…' : 'Rescan Resume'}
+        </button>
+      </footer>
     </section>
   );
 };

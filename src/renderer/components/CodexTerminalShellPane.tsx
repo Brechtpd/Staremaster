@@ -22,6 +22,96 @@ interface CodexTerminalShellPaneProps {
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
 
+const CODEX_RESUME_REGEX = /codex resume --yolo (\S+)/i;
+const ANSI_ESCAPE = '\u001b';
+const ANSI_CSI_REGEX = new RegExp(`${ANSI_ESCAPE}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
+const ANSI_OSC_LINK_REGEX = new RegExp(`${ANSI_ESCAPE}\\]8;;.*?\u0007`, 'g');
+const ANSI_OSC_TERMINATOR_REGEX = new RegExp(`${ANSI_ESCAPE}\\\\`, 'g');
+
+const stripControlCharacters = (value: string, replacement: string = ' '): string => {
+  if (!value) {
+    return '';
+  }
+  let result = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0x20) {
+      result += value[index];
+    } else if (replacement) {
+      result += replacement;
+    }
+  }
+  return result;
+};
+
+const stripAnsiSequences = (input: string): string =>
+  input
+    .replace(ANSI_OSC_LINK_REGEX, '')
+    .replace(ANSI_OSC_TERMINATOR_REGEX, '')
+    .replace(ANSI_CSI_REGEX, '');
+
+const extractResumeCommand = (chunk: string): string | null => {
+  const cleaned = stripAnsiSequences(chunk);
+  const match = cleaned.match(CODEX_RESUME_REGEX);
+  return match ? match[0] : null;
+};
+
+const SESSION_ID_FLAG_PREFIXES = ['--session', '--session-id', '--resume-id', '--yolo'];
+
+const extractSessionIdFromCommand = (command?: string | null): string | null => {
+  if (!command) {
+    return null;
+  }
+  const sanitized = stripControlCharacters(stripAnsiSequences(command), ' ');
+  const collapsed = sanitized.replace(/\s+/g, ' ').trim();
+  if (!collapsed.toLowerCase().includes('codex resume')) {
+    return null;
+  }
+  const tokens = collapsed.split(' ');
+  let fallback: string | null = null;
+
+  const stripTrailing = (value: string) => value.replace(/[.,;:]+$/, '');
+  const isSessionFlag = (flag: string) => SESSION_ID_FLAG_PREFIXES.some((prefix) => flag.startsWith(prefix));
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token) {
+      continue;
+    }
+    if (token.startsWith('--')) {
+      const equalsIndex = token.indexOf('=');
+      const flag = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+      if (equalsIndex !== -1 && equalsIndex < token.length - 1) {
+        const value = stripTrailing(token.slice(equalsIndex + 1));
+        if (isSessionFlag(flag) && value) {
+          return value;
+        }
+        if (value) {
+          fallback = value;
+        }
+        continue;
+      }
+      const next = tokens[index + 1];
+      if (next && !next.startsWith('--')) {
+        const value = stripTrailing(next);
+        if (isSessionFlag(flag) && value) {
+          return value;
+        }
+        if (value) {
+          fallback = value;
+        }
+      }
+      continue;
+    }
+    const value = stripTrailing(token);
+    if (value && value.toLowerCase() !== 'codex' && value.toLowerCase() !== 'resume') {
+      fallback = value;
+    }
+  }
+
+  return fallback;
+};
+
 const isScrolledToBottom = (terminal: CodexTerminalHandle | null): boolean => {
   if (!terminal) {
     return true;
@@ -65,6 +155,9 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const initialScrollRestoredRef = useRef<boolean>(false);
   const scrollChangeCallbackRef = useRef<typeof onScrollStateChange>(onScrollStateChange);
   const needsSnapshotRef = useRef<boolean>(true);
+  const [resumeCommandDisplay, setResumeCommandDisplay] = useState<string | null>(worktree.codexResumeCommand ?? null);
+  const sessionIdDisplay = session?.codexSessionId ?? extractSessionIdFromCommand(resumeCommandDisplay);
+  const [rescanBusy, setRescanBusy] = useState(false);
 
   useEffect(() => {
     scrollChangeCallbackRef.current = onScrollStateChange;
@@ -85,6 +178,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         const message = error instanceof Error ? error.message : 'Failed to persist Codex resume command';
         onNotification(message);
       });
+      setResumeCommandDisplay(command);
     },
     [api, onNotification, sessionWorktreeId, worktree.id]
   );
@@ -112,6 +206,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     if (typeof worktree.codexResumeCommand === 'string' && worktree.codexResumeCommand.length > 0) {
       resumeCommandRef.current = worktree.codexResumeCommand;
       lastPersistedCommandRef.current = worktree.codexResumeCommand;
+      setResumeCommandDisplay(worktree.codexResumeCommand);
     }
   }, [worktree.codexResumeCommand]);
 
@@ -124,16 +219,24 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
           return;
         }
         if (command) {
-          resumeCommandRef.current = command;
-          lastPersistedCommandRef.current = command;
-        } else if (!worktree.codexResumeCommand) {
-          resumeCommandRef.current = null;
-          lastPersistedCommandRef.current = null;
+          persistResumeCommand(command);
+          return;
         }
-        if (sessionWorktreeId !== worktree.id && command) {
-          resumeCommandRef.current = command;
-          lastPersistedCommandRef.current = command;
+        const existing = worktree.codexResumeCommand ?? null;
+        if (existing) {
+          if (sessionWorktreeId !== worktree.id) {
+            lastPersistedCommandRef.current = null;
+            persistResumeCommand(existing);
+          } else {
+            resumeCommandRef.current = existing;
+            lastPersistedCommandRef.current = existing;
+            setResumeCommandDisplay(existing);
+          }
+          return;
         }
+        resumeCommandRef.current = null;
+        lastPersistedCommandRef.current = null;
+        setResumeCommandDisplay(null);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -144,7 +247,14 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [api, onNotification, sessionWorktreeId, worktree.codexResumeCommand, worktree.id]);
+  }, [
+    api,
+    onNotification,
+    persistResumeCommand,
+    sessionWorktreeId,
+    worktree.codexResumeCommand,
+    worktree.id
+  ]);
 
   useEffect(() => {
     const codexSessionId = session?.codexSessionId;
@@ -481,6 +591,25 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     [api, sessionWorktreeId]
   );
 
+  const handleRescanResume = useCallback(async () => {
+    setRescanBusy(true);
+    try {
+      await api.refreshCodexResumeFromLogs(sessionWorktreeId);
+      const updated = await api.refreshCodexResumeCommand(sessionWorktreeId);
+      resumeCommandRef.current = updated ?? null;
+      lastPersistedCommandRef.current = updated ?? null;
+      setResumeCommandDisplay(updated ?? null);
+      if (sessionWorktreeId !== worktree.id) {
+        await api.refreshCodexResumeCommand(worktree.id);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to rescan Codex resume command';
+      onNotification(message);
+    } finally {
+      setRescanBusy(false);
+    }
+  }, [api, onNotification, sessionWorktreeId, worktree.id]);
+
   const attachTerminalRef = useCallback(
     (instance: CodexTerminalHandle | null) => {
       terminalRef.current = instance;
@@ -526,25 +655,13 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       {descriptorPid ? (
         <footer className="terminal-footer">
           <span>PID: {descriptorPid}</span>
+          <span>Session ID: {sessionIdDisplay ?? '—'}</span>
+          <span>Resume: {resumeCommandDisplay ?? 'Unavailable'}</span>
+          <button type="button" onClick={handleRescanResume} disabled={rescanBusy}>
+            {rescanBusy ? 'Rescanning…' : 'Rescan Resume'}
+          </button>
         </footer>
       ) : null}
     </section>
   );
-};
-const CODEX_RESUME_REGEX = /codex resume --yolo [0-9a-fA-F-]+/i;
-const ANSI_ESCAPE = '\u001b';
-const ANSI_CSI_REGEX = new RegExp(`${ANSI_ESCAPE}\x5b[0-9;]*[A-Za-z]`, 'g');
-const ANSI_OSC_LINK_REGEX = new RegExp(`${ANSI_ESCAPE}\x5d8;;.*?\u0007`, 'g');
-const ANSI_OSC_TERMINATOR_REGEX = new RegExp(`${ANSI_ESCAPE}\\\\`, 'g');
-
-const stripAnsiSequences = (input: string): string =>
-  input
-    .replace(ANSI_OSC_LINK_REGEX, '')
-    .replace(ANSI_OSC_TERMINATOR_REGEX, '')
-    .replace(ANSI_CSI_REGEX, '');
-
-const extractResumeCommand = (chunk: string): string | null => {
-  const cleaned = stripAnsiSequences(chunk);
-  const match = cleaned.match(CODEX_RESUME_REGEX);
-  return match ? match[0] : null;
 };

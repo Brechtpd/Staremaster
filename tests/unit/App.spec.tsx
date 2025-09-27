@@ -106,6 +106,7 @@ describe('App with project state', () => {
     const api = {
       getState: vi.fn(async () => state),
       addProject: vi.fn(async () => state),
+      removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
       removeWorktree: vi.fn(),
@@ -130,6 +131,11 @@ describe('App with project state', () => {
       summarizeCodexOutput: vi.fn(async () => ''),
       setCodexResumeCommand: vi.fn(),
       refreshCodexResumeCommand: vi.fn(async () => null),
+      refreshCodexResumeFromLogs: vi.fn(async () => {}),
+      refreshCodexResumeFromLogs: vi.fn(async () => {}),
+      refreshCodexResumeFromLogs: vi.fn(async () => {}),
+      refreshCodexResumeFromLogs: vi.fn(async () => {}),
+      refreshCodexResumeFromLogs: vi.fn(async () => {}),
       startWorktreeTerminal: vi.fn(async () => ({
         sessionId: 'terminal-1',
         worktreeId: worktree.id,
@@ -189,6 +195,7 @@ describe('App with project state', () => {
     const api = {
       getState: vi.fn(async () => state),
       addProject: vi.fn(async () => state),
+      removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
       removeWorktree: vi.fn(),
@@ -255,6 +262,93 @@ describe('App with project state', () => {
     expect(await screen.findByRole('tab', { name: 'Terminal 2' })).toBeInTheDocument();
   });
 
+  it('removes a project when the remove button is confirmed', async () => {
+    const worktree: WorktreeDescriptor = {
+      id: 'wt-1',
+      projectId: 'proj-1',
+      featureName: 'feature-1',
+      branch: 'feature-1',
+      path: '/tmp/feature-1',
+      createdAt: new Date().toISOString(),
+      status: 'ready',
+      codexStatus: 'idle'
+    };
+
+    const project = { id: 'proj-1', root: '/tmp/repo', name: 'Project', createdAt: new Date().toISOString() };
+
+    const populatedState: AppState = {
+      projects: [project],
+      worktrees: [worktree],
+      sessions: []
+    };
+
+    const emptyState: AppState = {
+      projects: [],
+      worktrees: [],
+      sessions: []
+    };
+
+    const removeProject = vi.fn(async () => emptyState);
+
+    const api = {
+      getState: vi.fn(async () => populatedState),
+      addProject: vi.fn(async () => populatedState),
+      removeProject,
+      createWorktree: vi.fn(),
+      mergeWorktree: vi.fn(),
+      removeWorktree: vi.fn(),
+      openWorktreeInVSCode: vi.fn(),
+      openWorktreeInGitGui: vi.fn(),
+      openWorktreeInFileManager: vi.fn(),
+      startCodex: vi.fn(),
+      stopCodex: vi.fn(),
+      sendCodexInput: vi.fn(),
+      startCodexTerminal: vi.fn(),
+      stopCodexTerminal: vi.fn(),
+      sendCodexTerminalInput: vi.fn(),
+      resizeCodexTerminal: vi.fn(),
+      onStateUpdate: vi.fn(() => () => {}),
+      onCodexOutput: vi.fn(() => () => {}),
+      onCodexStatus: vi.fn(() => () => {}),
+      onCodexTerminalOutput: vi.fn(() => () => {}),
+      onCodexTerminalExit: vi.fn(() => () => {}),
+      getGitStatus: vi.fn(),
+      getGitDiff: vi.fn(),
+      getCodexLog: vi.fn(),
+      summarizeCodexOutput: vi.fn(async () => ''),
+      setCodexResumeCommand: vi.fn(),
+      refreshCodexResumeCommand: vi.fn(async () => null),
+      startWorktreeTerminal: vi.fn(),
+      stopWorktreeTerminal: vi.fn(),
+      sendTerminalInput: vi.fn(),
+      resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
+      onTerminalOutput: vi.fn(() => () => {}),
+      onTerminalExit: vi.fn(() => () => {})
+    } as unknown as RendererApi;
+
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: api
+    });
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<App />);
+
+    await waitFor(() => expect(api.getState).toHaveBeenCalled());
+
+    const removeButton = await screen.findByRole('button', { name: 'Remove' });
+    fireEvent.click(removeButton);
+
+    await waitFor(() => expect(removeProject).toHaveBeenCalledWith('proj-1'));
+
+    expect(await screen.findByRole('button', { name: 'Add Project' })).toBeInTheDocument();
+
+    confirmSpy.mockRestore();
+  });
+
   it('displays the latest codex status line beneath the header', async () => {
     const worktree: WorktreeDescriptor = {
       id: 'wt-1',
@@ -287,6 +381,7 @@ describe('App with project state', () => {
     const api = {
       getState: vi.fn(async () => state),
       addProject: vi.fn(async () => state),
+      removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
       removeWorktree: vi.fn(),
@@ -404,6 +499,7 @@ describe('App with project state', () => {
     const api = {
       getState: vi.fn(async () => state),
       addProject: vi.fn(async () => state),
+      removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
       removeWorktree: vi.fn(),
