@@ -27,7 +27,6 @@ let gitService: GitService;
 let codexManager: CodexSessionManager;
 let windowStateStore: WindowStateStore;
 let terminalService: TerminalService;
-let codexTerminalService: TerminalService;
 
 const preloadPath = (): string => {
   return path.join(__dirname, 'preload.js');
@@ -141,14 +140,10 @@ const bootstrap = async () => {
     history: {
       enabled: true,
       limit: 500_000
-    }
+    },
+    persistDir: path.join(app.getPath('userData'), 'terminal-logs')
   });
-  codexTerminalService = new TerminalService((id) => worktreeService.getWorktreePath(id), {
-    history: {
-      enabled: true,
-      limit: 1_000_000
-    }
-  });
+  // Codex terminals use the same TerminalService (no special-casing)
   await worktreeService.load();
 
   const savedBounds = await windowStateStore.load();
@@ -158,22 +153,14 @@ const bootstrap = async () => {
     worktreeService,
     gitService,
     codexManager,
-    terminalService,
-    codexTerminalService
+    terminalService
   );
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const latestBounds = await windowStateStore.load();
       const newWindow = await createMainWindow(latestBounds);
-      registerIpcHandlers(
-        newWindow,
-        worktreeService,
-        gitService,
-        codexManager,
-        terminalService,
-        codexTerminalService
-      );
+      registerIpcHandlers(newWindow, worktreeService, gitService, codexManager, terminalService);
     }
   });
 };

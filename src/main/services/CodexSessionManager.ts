@@ -116,20 +116,11 @@ const sanitizeSessionId = (value: string): string => {
 
 const sanitizeResumeCommand = (command: string): string | null => {
   const trimmed = command ? command.trim() : '';
-  if (!trimmed.toLowerCase().startsWith('codex')) {
+  if (!/^codex\s+resume\b/i.test(trimmed)) {
     return null;
   }
-  const parts = trimmed.split(/\s+/);
-  const lastIndex = parts.length - 1;
-  if (lastIndex < 0) {
-    return trimmed;
-  }
-  const sanitizedId = sanitizeSessionId(parts[lastIndex]);
-  if (!sanitizedId) {
-    return trimmed;
-  }
-  parts[lastIndex] = sanitizedId;
-  return parts.join(' ');
+  const id = extractSessionIdFromResumeLine(trimmed);
+  return id ? `codex resume --yolo ${sanitizeSessionId(id)}` : null;
 };
 
 const extractSessionIdFromResumeLine = (line: string): string | null => {
@@ -408,10 +399,6 @@ export class CodexSessionManager extends EventEmitter {
       managed.descriptor.status = exitCode === 0 ? 'stopped' : 'error';
       if (exitCode !== 0) {
         managed.descriptor.lastError = `Codex process exited with code ${exitCode}`;
-        if (managed.resumeTarget) {
-          managed.descriptor.codexSessionId = undefined;
-          managed.resumeTarget = null;
-        }
       }
       managed.stream.write(`\n[${new Date().toISOString()}] Session exited with code ${exitCode}\n`);
       managed.stream.end();
@@ -544,8 +531,12 @@ export class CodexSessionManager extends EventEmitter {
     ignoreSessionId?: string | null
   ): Promise<string | null> {
     const root = path.join(os.homedir(), '.codex', 'sessions');
+    let canonicalCwd = cwd;
+    try {
+      canonicalCwd = await fs.realpath(cwd);
+    } catch {}
     for (let attempt = 0; attempt < MAX_SESSION_LOOKUP_ATTEMPTS; attempt += 1) {
-      const match = await this.scanCodexSessions(root, cwd, sessionStartMs, ignoreSessionId);
+      const match = await this.scanCodexSessions(root, canonicalCwd, sessionStartMs, ignoreSessionId);
       if (match) {
         return match;
       }
@@ -573,7 +564,7 @@ export class CodexSessionManager extends EventEmitter {
       throw error;
     }
 
-    const dayOffsets = [0, -1];
+    const dayOffsets = [0, -1, -2, -3];
     const candidates: Array<{ filePath: string; mtimeMs: number }> = [];
     for (const offset of dayOffsets) {
       const dir = this.resolveSessionsDirForOffset(root, sessionStartMs, offset);
@@ -613,8 +604,16 @@ export class CodexSessionManager extends EventEmitter {
       if (!meta) {
         continue;
       }
-      if (meta.cwd === cwd && typeof meta.id === 'string' && (!ignoreSessionId || meta.id !== ignoreSessionId)) {
-        return meta.id;
+      const metaCwd = meta.cwd ?? '';
+      let canonicalMeta = metaCwd;
+      try {
+        canonicalMeta = await fs.realpath(metaCwd);
+      } catch {}
+      if (canonicalMeta === cwd) {
+        const id = (meta as { id?: string; payload?: { id?: string } }).id ?? meta.id;
+        if (typeof id === 'string' && (!ignoreSessionId || id !== ignoreSessionId)) {
+          return id;
+        }
       }
     }
 
@@ -665,8 +664,8 @@ export class CodexSessionManager extends EventEmitter {
         continue;
       }
       try {
-        const parsed = JSON.parse(line) as { session_id?: unknown };
-        const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id : null;
+        const parsed = JSON.parse(line) as { session_id?: unknown; id?: unknown; timestamp?: unknown };
+        const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id : typeof parsed.id === 'string' ? parsed.id : null;
         if (sessionId && (!ignoreSessionId || sessionId !== ignoreSessionId)) {
           return sessionId;
         }

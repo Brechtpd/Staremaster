@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { IPty } from 'node-pty';
 import type {
@@ -37,6 +39,8 @@ const loadPty = async (): Promise<typeof import('node-pty')> => {
   return ptyModulePromise;
 };
 
+const HISTORY_REWRITE_APPEND_INTERVAL = 200;
+
 const resolveShell = (): ShellResolution => {
   if (process.platform === 'win32') {
     const shell = process.env.COMSPEC ?? 'cmd.exe';
@@ -71,6 +75,8 @@ interface HistoryRecord {
   lastEventId: number;
   firstEventId: number;
   totalLength: number;
+  dirty: boolean;
+  appendSinceRewrite: number;
 }
 
 interface TerminalServiceOptions {
@@ -78,6 +84,7 @@ interface TerminalServiceOptions {
     enabled: boolean;
     limit?: number;
   };
+  persistDir?: string;
 }
 
 export class TerminalService extends EventEmitter<TerminalEvents> {
@@ -95,6 +102,12 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
 
   private readonly historyByKey = new Map<string, HistoryRecord>();
 
+  private readonly historyLoadPromises = new Map<string, Promise<void>>();
+
+  private readonly historyPersistPromises = new Map<string, Promise<void>>();
+
+  private readonly persistDir?: string;
+
   private getPaneKey(worktreeId: string, paneId?: string | null): string | null {
     if (!paneId) {
       return null;
@@ -109,6 +122,7 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     super();
     this.historyEnabled = options?.history?.enabled ?? false;
     this.historyLimit = options?.history?.limit ?? 500_000;
+    this.persistDir = options?.persistDir;
   }
 
   async start(
@@ -162,7 +176,18 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     options?: TerminalLaunchOptions,
     paneId?: string
   ): Promise<WorktreeTerminalDescriptor> {
-    return this.start(worktreeId, options, paneId);
+    const descriptor = await this.start(worktreeId, options, paneId);
+    if (this.historyEnabled) {
+      const key = this.historyKey(worktreeId, paneId);
+      if (!this.historyByKey.has(key)) {
+        try {
+          await this.loadPersistedHistory(key);
+        } catch {
+          // ignore failures, best effort
+        }
+      }
+    }
+    return descriptor;
   }
 
   private resolveSessionId(
@@ -267,8 +292,16 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
           historyKeys.push(key);
         }
       });
-      historyKeys.forEach((key) => this.historyByKey.delete(key));
-      this.historyByKey.delete(this.historyKey(worktreeId));
+      historyKeys.forEach((key) => {
+        this.historyByKey.delete(key);
+        this.deletePersistedHistory(key);
+      });
+      const defaultKey = this.historyKey(worktreeId);
+      if (this.historyByKey.delete(defaultKey)) {
+        this.deletePersistedHistory(defaultKey);
+      } else {
+        this.deletePersistedHistory(defaultKey);
+      }
     }
   }
 
@@ -418,6 +451,141 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     return paneId ? `${worktreeId}:${paneId}` : `${worktreeId}::default`;
   }
 
+  private safeKey(key: string): string {
+    return key.replace(/[^a-zA-Z0-9_.:-]/g, '_');
+  }
+
+  private queuePersistTask(key: string, task: () => Promise<void>): void {
+    if (!this.persistDir) return;
+    const previous = this.historyPersistPromises.get(key) ?? Promise.resolve();
+    const next = previous
+      .then(task)
+      .catch((error) => {
+        console.warn('[terminal] history persistence failed', { key, error });
+      })
+      .finally(() => {
+        if (this.historyPersistPromises.get(key) === next) {
+          this.historyPersistPromises.delete(key);
+        }
+      });
+    this.historyPersistPromises.set(key, next);
+  }
+
+  private appendPersistedEvent(key: string, event: HistoryEvent): void {
+    if (!this.persistDir) return;
+    this.queuePersistTask(key, async () => {
+      const dir = this.persistDir!;
+      const file = path.join(dir, `${this.safeKey(key)}.jsonl`);
+      await fs.mkdir(dir, { recursive: true });
+      const line = JSON.stringify(event) + '\n';
+      await fs.appendFile(file, line, 'utf8');
+    });
+  }
+
+  private rewritePersistedHistory(key: string, record: HistoryRecord): void {
+    if (!this.persistDir) return;
+    const eventsSnapshot = record.events.map((event) => ({ ...event }));
+    this.queuePersistTask(key, async () => {
+      const dir = this.persistDir!;
+      const file = path.join(dir, `${this.safeKey(key)}.jsonl`);
+      if (eventsSnapshot.length === 0) {
+        try {
+          await fs.unlink(file);
+        } catch (error) {
+          const err = error as NodeJS.ErrnoException;
+          if (err?.code !== 'ENOENT') {
+            throw err;
+          }
+        }
+        return;
+      }
+      await fs.mkdir(dir, { recursive: true });
+      const content = eventsSnapshot.map((event) => JSON.stringify(event)).join('\n') + '\n';
+      await fs.writeFile(file, content, 'utf8');
+    });
+    record.dirty = false;
+    record.appendSinceRewrite = 0;
+  }
+
+  private deletePersistedHistory(key: string): void {
+    if (!this.persistDir) return;
+    this.queuePersistTask(key, async () => {
+      const file = path.join(this.persistDir!, `${this.safeKey(key)}.jsonl`);
+      try {
+        await fs.unlink(file);
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err?.code && err.code !== 'ENOENT') {
+          throw err;
+        }
+      }
+    });
+  }
+
+  private async loadPersistedHistory(key: string): Promise<void> {
+    if (!this.persistDir) return;
+    if (this.historyByKey.has(key)) return;
+
+    const ongoing = this.historyLoadPromises.get(key);
+    if (ongoing) {
+      await ongoing;
+      return;
+    }
+
+    const loadPromise = (async () => {
+      const file = path.join(this.persistDir!, `${this.safeKey(key)}.jsonl`);
+      const record: HistoryRecord = {
+        events: [],
+        lastEventId: 0,
+        firstEventId: 1,
+        totalLength: 0,
+        dirty: false,
+        appendSinceRewrite: 0
+      };
+
+      try {
+        const raw = await fs.readFile(file, 'utf8');
+        for (const line of raw.split('\n')) {
+          const trim = line.trim();
+          if (!trim) continue;
+          try {
+            const parsed = JSON.parse(trim) as HistoryEvent;
+            if (typeof parsed.id === 'number' && typeof parsed.data === 'string') {
+              record.events.push(parsed);
+              record.lastEventId = Math.max(record.lastEventId, parsed.id);
+              record.totalLength += parsed.data.length;
+            }
+          } catch {
+            // ignore malformed entries
+          }
+          while (record.totalLength > this.historyLimit && record.events.length > 1) {
+            const removed = record.events.shift()!;
+            record.totalLength -= removed.data.length;
+            record.firstEventId = record.events[0]?.id ?? record.lastEventId + 1;
+          }
+        }
+        if (record.events.length > 0) {
+          record.firstEventId = record.events[0].id;
+        }
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err?.code && err.code !== 'ENOENT') {
+          console.warn('[terminal] failed to load history', { key, error: err });
+        }
+      } finally {
+        record.dirty = false;
+        record.appendSinceRewrite = 0;
+        this.historyByKey.set(key, record);
+      }
+    })()
+      .finally(() => {
+        this.historyLoadPromises.delete(key);
+      });
+
+    this.historyLoadPromises.set(key, loadPromise);
+    await loadPromise;
+  }
+
   private recordHistoryEvent(worktreeId: string, paneId: string | undefined, chunk: string): number | undefined {
     if (!this.historyEnabled) {
       return undefined;
@@ -429,31 +597,48 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
         events: [],
         lastEventId: 0,
         firstEventId: 1,
-        totalLength: 0
+        totalLength: 0,
+        dirty: false,
+        appendSinceRewrite: 0
       };
       this.historyByKey.set(key, record);
     }
     const nextId = record.lastEventId + 1;
-    record.events.push({ id: nextId, data: chunk });
+    const event = { id: nextId, data: chunk };
+    record.events.push(event);
     record.lastEventId = nextId;
     if (record.events.length === 1) {
       record.firstEventId = nextId;
     }
     record.totalLength += chunk.length;
+    let trimmed = false;
     while (record.totalLength > this.historyLimit && record.events.length > 1) {
       const removed = record.events.shift()!;
       record.totalLength -= removed.data.length;
       record.firstEventId = record.events[0]?.id ?? record.lastEventId + 1;
+      trimmed = true;
+    }
+    record.appendSinceRewrite += 1;
+    if (trimmed) {
+      record.dirty = true;
+    }
+    this.appendPersistedEvent(key, event);
+    if (record.dirty && record.appendSinceRewrite >= HISTORY_REWRITE_APPEND_INTERVAL) {
+      this.rewritePersistedHistory(key, record);
     }
     return nextId;
   }
 
-  getSnapshot(worktreeId: string, paneId?: string): TerminalSnapshot {
+  async getSnapshot(worktreeId: string, paneId?: string): Promise<TerminalSnapshot> {
     if (!this.historyEnabled) {
       throw new Error('Terminal history not enabled');
     }
     const key = this.historyKey(worktreeId, paneId);
-    const record = this.historyByKey.get(key);
+    let record = this.historyByKey.get(key);
+    if (!record) {
+      await this.loadPersistedHistory(key);
+      record = this.historyByKey.get(key);
+    }
     if (!record) {
       return { content: '', lastEventId: 0 };
     }
@@ -464,18 +649,22 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     };
   }
 
-  getDelta(worktreeId: string, afterEventId: number, paneId?: string): TerminalDelta {
+  async getDelta(worktreeId: string, afterEventId: number, paneId?: string): Promise<TerminalDelta> {
     if (!this.historyEnabled) {
       throw new Error('Terminal history not enabled');
     }
     const key = this.historyKey(worktreeId, paneId);
-    const record = this.historyByKey.get(key);
+    let record = this.historyByKey.get(key);
+    if (!record) {
+      await this.loadPersistedHistory(key);
+      record = this.historyByKey.get(key);
+    }
     if (!record) {
       return { chunks: [], lastEventId: 0 };
     }
 
     if (afterEventId < record.firstEventId) {
-      const snapshot = this.getSnapshot(worktreeId, paneId);
+      const snapshot = await this.getSnapshot(worktreeId, paneId);
       return {
         chunks: [],
         lastEventId: snapshot.lastEventId,

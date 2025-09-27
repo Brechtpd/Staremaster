@@ -62,6 +62,33 @@ export class WorktreeService extends EventEmitter {
     return descriptor?.path ?? null;
   }
 
+  resolveCanonicalWorktreeId(worktreeId: string): string | null {
+    if (!worktreeId.startsWith('project-root:')) {
+      return worktreeId;
+    }
+    const projectId = worktreeId.slice('project-root:'.length);
+    const state = this.store.getState();
+    const project = state.projects.find((p) => p.id === projectId);
+    if (!project) {
+      return null;
+    }
+    const preferred = project.defaultWorktreeId;
+    if (preferred && state.worktrees.some((w) => w.id === preferred)) {
+      return preferred;
+    }
+    const first = state.worktrees.find((w) => w.projectId === projectId);
+    return first ? first.id : null;
+  }
+
+  getProjectIdForWorktree(worktreeId: string): string | null {
+    if (worktreeId.startsWith('project-root:')) {
+      return worktreeId.slice('project-root:'.length);
+    }
+    const state = this.store.getState();
+    const wt = state.worktrees.find((w) => w.id === worktreeId);
+    return wt ? wt.projectId : null;
+  }
+
   async addProject(directory: string): Promise<void> {
     const resolved = await this.validateGitRepository(directory);
     const id = hashFromPath(resolved);

@@ -11,7 +11,7 @@ import {
   TerminalExitPayload
 } from '../../shared/ipc';
 import { WorktreeService } from '../services/WorktreeService';
-import { CodexSessionManager } from '../services/CodexSessionManager';
+import { CodexSessionManager, detectResumeCommands } from '../services/CodexSessionManager';
 import { GitService } from '../services/GitService';
 import { TerminalService } from '../services/TerminalService';
 import { CodexSummarizer } from '../services/CodexSummarizer';
@@ -21,14 +21,30 @@ export const registerIpcHandlers = (
   worktreeService: WorktreeService,
   gitService: GitService,
   codexManager: CodexSessionManager,
-  terminalService: TerminalService,
-  codexTerminalService: TerminalService
+  terminalService: TerminalService
 ): void => {
   const sendState = (state: AppState) => {
     window.webContents.send(IPCChannels.stateUpdates, state);
   };
 
   const codexSummarizer = new CodexSummarizer();
+  const resolveCanonical = (worktreeId: string): string => {
+    const resolved = worktreeService.resolveCanonicalWorktreeId(worktreeId);
+    return resolved ?? worktreeId;
+  };
+
+  const maybeMirrorPayload = <T extends { worktreeId: string }>(payload: T): [T, T | null] => {
+    const projectId = worktreeService.getProjectIdForWorktree(payload.worktreeId);
+    if (!projectId) {
+      return [payload, null];
+    }
+    const aliasId = `project-root:${projectId}`;
+    if (aliasId === payload.worktreeId) {
+      return [payload, null];
+    }
+    const mirrored = { ...payload, worktreeId: aliasId } as T;
+    return [payload, mirrored];
+  };
 
   ipcMain.handle(IPCChannels.getState, async () => {
     return worktreeService.getState();
@@ -64,7 +80,6 @@ export const registerIpcHandlers = (
         }
       }
       terminalService.dispose(worktree.id);
-      codexTerminalService.dispose(worktree.id);
     }
 
     await worktreeService.removeProject(payload.projectId);
@@ -118,8 +133,9 @@ export const registerIpcHandlers = (
   });
 
   ipcMain.handle(IPCChannels.startCodex, async (_event, payload: { worktreeId: string }) => {
+    const canonicalId = resolveCanonical(payload.worktreeId);
     const state = worktreeService.getState();
-    const worktree = state.worktrees.find((item) => item.id === payload.worktreeId);
+    const worktree = state.worktrees.find((item) => item.id === canonicalId);
     if (!worktree) {
       throw new Error(`Unknown worktree ${payload.worktreeId}`);
     }
@@ -129,12 +145,12 @@ export const registerIpcHandlers = (
   });
 
   ipcMain.handle(IPCChannels.stopCodex, async (_event, payload: { worktreeId: string }) => {
-    await codexManager.stop(payload.worktreeId);
+    await codexManager.stop(resolveCanonical(payload.worktreeId));
     return codexManager.getSessions();
   });
 
   ipcMain.handle(IPCChannels.sendCodexInput, async (_event, payload: { worktreeId: string; input: string }) => {
-    await codexManager.sendInput(payload.worktreeId, payload.input);
+    await codexManager.sendInput(resolveCanonical(payload.worktreeId), payload.input);
   });
 
   ipcMain.handle(IPCChannels.gitStatus, async (_event, payload: GitStatusRequest) => {
@@ -146,14 +162,14 @@ export const registerIpcHandlers = (
   });
 
   ipcMain.handle(IPCChannels.codexLog, async (_event, payload: CodexLogRequest) => {
-    return codexManager.getLog(payload.worktreeId);
+    return codexManager.getLog(resolveCanonical(payload.worktreeId));
   });
 
   ipcMain.handle(IPCChannels.codexSummarize, async (_event, payload: CodexSummarizeRequest) => {
     if (!payload || typeof payload.worktreeId !== 'string' || typeof payload.text !== 'string') {
       throw new Error('Invalid Codex summarize payload');
     }
-    const worktreePath = worktreeService.getWorktreePath(payload.worktreeId);
+    const worktreePath = worktreeService.getWorktreePath(resolveCanonical(payload.worktreeId));
     if (!worktreePath) {
       throw new Error(`Unknown worktree ${payload.worktreeId}`);
     }
@@ -166,7 +182,11 @@ export const registerIpcHandlers = (
   ipcMain.handle(
     IPCChannels.codexSetResume,
     async (_event, payload: { worktreeId: string; command: string | null }) => {
-      await worktreeService.setCodexResumeCommand(payload.worktreeId, payload.command);
+      const canonical = resolveCanonical(payload.worktreeId);
+      await worktreeService.setCodexResumeCommand(canonical, payload.command);
+      if (canonical !== payload.worktreeId) {
+        await worktreeService.setCodexResumeCommand(payload.worktreeId, payload.command);
+      }
     }
   );
 
@@ -199,7 +219,7 @@ export const registerIpcHandlers = (
       }
     ) => {
       return terminalService.ensure(
-        payload.worktreeId,
+        resolveCanonical(payload.worktreeId),
         {
           startupCommand: payload.startupCommand,
           respondToCursorProbe: payload.respondToCursorProbe
@@ -212,7 +232,7 @@ export const registerIpcHandlers = (
   ipcMain.handle(
     IPCChannels.terminalStop,
     async (_event, payload: { worktreeId: string; sessionId?: string; paneId?: string }) => {
-      await terminalService.stop(payload.worktreeId, {
+      await terminalService.stop(resolveCanonical(payload.worktreeId), {
         sessionId: payload.sessionId,
         paneId: payload.paneId
       });
@@ -222,7 +242,7 @@ export const registerIpcHandlers = (
   ipcMain.handle(
     IPCChannels.terminalInput,
     async (_event, payload: { worktreeId: string; data: string; sessionId?: string; paneId?: string }) => {
-      terminalService.sendInput(payload.worktreeId, payload.data ?? '', {
+      terminalService.sendInput(resolveCanonical(payload.worktreeId), payload.data ?? '', {
         sessionId: payload.sessionId,
         paneId: payload.paneId
       });
@@ -230,83 +250,20 @@ export const registerIpcHandlers = (
   );
 
   ipcMain.handle(IPCChannels.terminalResize, async (_event, payload: TerminalResizeRequest) => {
-    terminalService.resize(payload);
+    terminalService.resize({ ...payload, worktreeId: resolveCanonical(payload.worktreeId) });
   });
 
   ipcMain.handle(
     IPCChannels.terminalSnapshot,
     async (_event, payload: { worktreeId: string; paneId?: string }) => {
-      return terminalService.getSnapshot(payload.worktreeId, payload.paneId);
+      return terminalService.getSnapshot(resolveCanonical(payload.worktreeId), payload.paneId);
     }
   );
 
   ipcMain.handle(
     IPCChannels.terminalDelta,
     async (_event, payload: { worktreeId: string; afterEventId: number; paneId?: string }) => {
-      return terminalService.getDelta(payload.worktreeId, payload.afterEventId, payload.paneId);
-    }
-  );
-
-  ipcMain.handle(
-    IPCChannels.codexTerminalStart,
-    async (
-      _event,
-      payload: {
-        worktreeId: string;
-        startupCommand?: string;
-        paneId?: string;
-        respondToCursorProbe?: boolean;
-      }
-    ) => {
-      return codexTerminalService.ensure(
-        payload.worktreeId,
-        {
-          startupCommand: payload.startupCommand,
-          respondToCursorProbe: payload.respondToCursorProbe
-        },
-        payload.paneId
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPCChannels.codexTerminalStop,
-    async (_event, payload: { worktreeId: string; sessionId?: string; paneId?: string }) => {
-      await codexTerminalService.stop(payload.worktreeId, {
-        sessionId: payload.sessionId,
-        paneId: payload.paneId
-      });
-    }
-  );
-
-  ipcMain.handle(
-    IPCChannels.codexTerminalInput,
-    async (_event, payload: { worktreeId: string; data: string; sessionId?: string; paneId?: string }) => {
-      codexTerminalService.sendInput(payload.worktreeId, payload.data ?? '', {
-        sessionId: payload.sessionId,
-        paneId: payload.paneId
-      });
-    }
-  );
-
-  ipcMain.handle(IPCChannels.codexTerminalResize, async (_event, payload: TerminalResizeRequest) => {
-    codexTerminalService.resize(payload);
-  });
-
-  ipcMain.handle(
-    IPCChannels.codexTerminalSnapshot,
-    async (_event, payload: { worktreeId: string; paneId?: string }) => {
-      return codexTerminalService.getSnapshot(payload.worktreeId, payload.paneId);
-    }
-  );
-
-  ipcMain.handle(
-    IPCChannels.codexTerminalDelta,
-    async (
-      _event,
-      payload: { worktreeId: string; afterEventId: number; paneId?: string }
-    ) => {
-      return codexTerminalService.getDelta(payload.worktreeId, payload.afterEventId, payload.paneId);
+      return terminalService.getDelta(resolveCanonical(payload.worktreeId), payload.afterEventId, payload.paneId);
     }
   );
 
@@ -314,48 +271,91 @@ export const registerIpcHandlers = (
   worktreeService.on('worktree-updated', () => sendState(worktreeService.getState()));
   worktreeService.on('worktree-removed', (worktreeId) => {
     terminalService.dispose(worktreeId);
-    codexTerminalService.dispose(worktreeId);
+    // prune resume detection state for removed worktree (both canonical and alias ids)
+    try {
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      const stateMap = (forwardTerminalOutput as unknown as {
+        __state?: Map<string, { buffer: string; resumeCaptured: boolean; resumeTarget: string | null }>;
+      }).
+        __state;
+      if (stateMap) {
+        const canonical = resolveCanonical(worktreeId);
+        stateMap.delete(canonical);
+        const projectId = worktreeService.getProjectIdForWorktree(canonical);
+        if (projectId) {
+          stateMap.delete(`project-root:${projectId}`);
+        }
+      }
+    } catch {}
     sendState(worktreeService.getState());
   });
 
   codexManager.on('codex-output', (payload) => {
-    window.webContents.send(IPCChannels.codexOutput, payload);
+    if (window.isDestroyed()) return;
+    const [original, mirror] = maybeMirrorPayload(payload);
+    window.webContents.send(IPCChannels.codexOutput, original);
+    if (mirror) {
+      window.webContents.send(IPCChannels.codexOutput, mirror);
+    }
   });
 
   codexManager.on('codex-status', (payload) => {
+    if (window.isDestroyed()) return;
     void worktreeService.updateCodexStatus(payload.worktreeId, payload.status, payload.error);
-    window.webContents.send(IPCChannels.codexStatus, payload);
+    const [original, mirror] = maybeMirrorPayload(payload);
+    window.webContents.send(IPCChannels.codexStatus, original);
+    if (mirror) {
+      window.webContents.send(IPCChannels.codexStatus, mirror);
+    }
   });
 
   const forwardTerminalOutput = (payload: TerminalOutputPayload) => {
-    if (!window.isDestroyed()) {
-      window.webContents.send(IPCChannels.terminalOutput, payload);
+    if (window.isDestroyed()) return;
+    // Codex resume detection on any terminal output
+    try {
+      if (/codex/i.test(payload.chunk)) {
+        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+        const stateMap = (forwardTerminalOutput as unknown as { __state?: Map<string, { buffer: string; resumeCaptured: boolean; resumeTarget: string | null }> }).__state ||
+          new Map<string, { buffer: string; resumeCaptured: boolean; resumeTarget: string | null }>();
+        // @ts-ignore attach bag
+        (forwardTerminalOutput as any).__state = stateMap;
+        const canonicalId = resolveCanonical(payload.worktreeId);
+        const detector = stateMap.get(canonicalId) ?? { buffer: '', resumeCaptured: false, resumeTarget: null };
+        const matches = detectResumeCommands(detector, payload.chunk);
+        if (matches.length > 0) {
+          stateMap.set(canonicalId, detector);
+          const projectId = worktreeService.getProjectIdForWorktree(canonicalId);
+          const aliasId = projectId ? `project-root:${projectId}` : null;
+          for (const match of matches) {
+            void worktreeService.setCodexResumeCommand(canonicalId, match.command);
+            if (aliasId) {
+              void worktreeService.setCodexResumeCommand(aliasId, match.command);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('[terminal] resume detection failed', error);
     }
+    const [original, mirror] = maybeMirrorPayload(payload);
+    window.webContents.send(IPCChannels.terminalOutput, original);
+    if (mirror) {
+      window.webContents.send(IPCChannels.terminalOutput, mirror);
+    }
+
   };
 
   const forwardTerminalExit = (payload: TerminalExitPayload) => {
-    if (!window.isDestroyed()) {
-      window.webContents.send(IPCChannels.terminalExit, payload);
+    if (window.isDestroyed()) return;
+    const [original, mirror] = maybeMirrorPayload(payload);
+    window.webContents.send(IPCChannels.terminalExit, original);
+    if (mirror) {
+      window.webContents.send(IPCChannels.terminalExit, mirror);
     }
   };
 
   terminalService.on('terminal-output', forwardTerminalOutput);
   terminalService.on('terminal-exit', forwardTerminalExit);
-
-  const forwardCodexTerminalOutput = (payload: TerminalOutputPayload) => {
-    if (!window.isDestroyed()) {
-      window.webContents.send(IPCChannels.codexTerminalOutput, payload);
-    }
-  };
-
-  const forwardCodexTerminalExit = (payload: TerminalExitPayload) => {
-    if (!window.isDestroyed()) {
-      window.webContents.send(IPCChannels.codexTerminalExit, payload);
-    }
-  };
-
-  codexTerminalService.on('terminal-output', forwardCodexTerminalOutput);
-  codexTerminalService.on('terminal-exit', forwardCodexTerminalExit);
 
   window.on('closed', () => {
     ipcMain.removeHandler(IPCChannels.getState);
@@ -379,17 +379,9 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.terminalResize);
     ipcMain.removeHandler(IPCChannels.terminalSnapshot);
     ipcMain.removeHandler(IPCChannels.terminalDelta);
-    ipcMain.removeHandler(IPCChannels.codexTerminalStart);
-    ipcMain.removeHandler(IPCChannels.codexTerminalStop);
-    ipcMain.removeHandler(IPCChannels.codexTerminalInput);
-    ipcMain.removeHandler(IPCChannels.codexTerminalResize);
-    ipcMain.removeHandler(IPCChannels.codexTerminalSnapshot);
-    ipcMain.removeHandler(IPCChannels.codexTerminalDelta);
     worktreeService.removeAllListeners();
     codexManager.removeAllListeners();
     terminalService.off('terminal-output', forwardTerminalOutput);
     terminalService.off('terminal-exit', forwardTerminalExit);
-    codexTerminalService.off('terminal-output', forwardCodexTerminalOutput);
-    codexTerminalService.off('terminal-exit', forwardCodexTerminalExit);
   });
 };

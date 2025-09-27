@@ -28,23 +28,6 @@ export interface RendererApi {
   startCodex(worktreeId: string): Promise<CodexSessionDescriptor>;
   stopCodex(worktreeId: string): Promise<CodexSessionDescriptor[]>;
   sendCodexInput(worktreeId: string, input: string): Promise<void>;
-  startCodexTerminal(
-    worktreeId: string,
-    options?: { startupCommand?: string; paneId?: string; respondToCursorProbe?: boolean }
-  ): Promise<WorktreeTerminalDescriptor>;
-  stopCodexTerminal(worktreeId: string, options?: { sessionId?: string; paneId?: string }): Promise<void>;
-  sendCodexTerminalInput(
-    worktreeId: string,
-    data: string,
-    options?: { sessionId?: string; paneId?: string }
-  ): Promise<void>;
-  resizeCodexTerminal(request: TerminalResizeRequest): Promise<void>;
-  getCodexTerminalSnapshot(worktreeId: string, options?: { paneId?: string }): Promise<TerminalSnapshot>;
-  getCodexTerminalDelta(
-    worktreeId: string,
-    afterEventId: number,
-    options?: { paneId?: string }
-  ): Promise<TerminalDelta>;
   onStateUpdate(callback: (state: AppState) => void): () => void;
   onCodexOutput(callback: (payload: CodexOutputPayload) => void): () => void;
   onCodexStatus(callback: (payload: CodexStatusPayload) => void): () => void;
@@ -70,6 +53,4 @@ export interface RendererApi {
   getTerminalDelta(worktreeId: string, afterEventId: number, options?: { paneId?: string }): Promise<TerminalDelta>;
   onTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
   onTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
-  onCodexTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
-  onCodexTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
 }

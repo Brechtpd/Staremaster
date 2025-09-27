@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { RendererApi } from '@shared/api';
 import type { WorktreeDescriptor } from '@shared/ipc';
 import { CodexTerminal, type CodexTerminalHandle } from './CodexTerminal';
+import { longestSuffixPrefixOverlap } from '../utils/overlap';
 import type { DerivedCodexSession } from '../codex-model';
 
 interface CodexTerminalShellPaneProps {
@@ -11,7 +12,6 @@ interface CodexTerminalShellPaneProps {
   active: boolean;
   visible: boolean;
   paneId?: string;
-  sessionWorktreeId: string;
   onNotification(message: string | null): void;
   onUserInput?(data: string): void;
   onBootstrapped?(): void;
@@ -53,10 +53,20 @@ const stripAnsiSequences = (input: string): string =>
 const extractResumeCommand = (chunk: string): string | null => {
   const cleaned = stripAnsiSequences(chunk);
   const match = cleaned.match(CODEX_RESUME_REGEX);
-  return match ? match[0] : null;
+  return match ? `codex resume --yolo ${match[1]}` : null;
 };
 
 const SESSION_ID_FLAG_PREFIXES = ['--session', '--session-id', '--resume-id', '--yolo'];
+
+const sanitizeResumeCommand = (command: string | null | undefined): string | null => {
+  if (!command) {
+    return null;
+  }
+  const trimmed = command.trim();
+  if (!/^codex\s+resume\b/i.test(trimmed)) return null;
+  const sessionId = extractSessionIdFromCommand(trimmed);
+  return sessionId ? `codex resume --yolo ${sessionId}` : null;
+};
 
 const extractSessionIdFromCommand = (command?: string | null): string | null => {
   if (!command) {
@@ -128,7 +138,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   active,
   visible,
   paneId,
-  sessionWorktreeId,
   onNotification,
   onUserInput,
   onBootstrapped,
@@ -144,18 +153,22 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const paneIdRef = useRef<string | undefined>(paneId);
   const visibleRef = useRef<boolean>(visible);
   const bootstrappedRef = useRef<boolean>(false);
+  const startRef = useRef<number | null>(null);
+  // We stream Codex output live only; no snapshot/delta replay.
   const lastEventIdRef = useRef<number>(0);
-  const syncPromiseRef = useRef<Promise<void> | null>(null);
   const scrollPositionRef = useRef<number>(0);
   const wasAtBottomRef = useRef<boolean>(true);
   const errorRef = useRef<string | null>(null);
   const pendingStartRef = useRef<Promise<void> | null>(null);
-  const resumeCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
-  const lastPersistedCommandRef = useRef<string | null>(worktree.codexResumeCommand ?? null);
+  const resumeCommandRef = useRef<string | null>(sanitizeResumeCommand(worktree.codexResumeCommand));
+  const lastPersistedCommandRef = useRef<string | null>(sanitizeResumeCommand(worktree.codexResumeCommand));
   const initialScrollRestoredRef = useRef<boolean>(false);
   const scrollChangeCallbackRef = useRef<typeof onScrollStateChange>(onScrollStateChange);
-  const needsSnapshotRef = useRef<boolean>(true);
-  const [resumeCommandDisplay, setResumeCommandDisplay] = useState<string | null>(worktree.codexResumeCommand ?? null);
+  // Start with no snapshot on first mount; rely on Codex resume to replay output.
+  const needsSnapshotRef = useRef<boolean>(false);
+  const [resumeCommandDisplay, setResumeCommandDisplay] = useState<string | null>(
+    sanitizeResumeCommand(worktree.codexResumeCommand)
+  );
   const sessionIdDisplay = session?.codexSessionId ?? extractSessionIdFromCommand(resumeCommandDisplay);
   const [rescanBusy, setRescanBusy] = useState(false);
 
@@ -165,22 +178,20 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
 
   const persistResumeCommand = useCallback(
     (command: string | null) => {
-      if (lastPersistedCommandRef.current === command) {
+      const sanitized = sanitizeResumeCommand(command);
+      if (lastPersistedCommandRef.current === sanitized) {
         return;
       }
-      lastPersistedCommandRef.current = command;
-      resumeCommandRef.current = command;
-      const updates: Array<Promise<void>> = [api.setCodexResumeCommand(sessionWorktreeId, command)];
-      if (sessionWorktreeId !== worktree.id) {
-        updates.push(api.setCodexResumeCommand(worktree.id, command));
-      }
+      lastPersistedCommandRef.current = sanitized;
+      resumeCommandRef.current = sanitized;
+      const updates: Array<Promise<void>> = [api.setCodexResumeCommand(worktree.id, sanitized)];
       void Promise.all(updates).catch((error) => {
         const message = error instanceof Error ? error.message : 'Failed to persist Codex resume command';
         onNotification(message);
       });
-      setResumeCommandDisplay(command);
+      setResumeCommandDisplay(sanitized);
     },
-    [api, onNotification, sessionWorktreeId, worktree.id]
+    [api, onNotification, worktree.id]
   );
 
   useEffect(() => {
@@ -203,35 +214,33 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   }, [initialScrollState]);
 
   useEffect(() => {
-    if (typeof worktree.codexResumeCommand === 'string' && worktree.codexResumeCommand.length > 0) {
-      resumeCommandRef.current = worktree.codexResumeCommand;
-      lastPersistedCommandRef.current = worktree.codexResumeCommand;
-      setResumeCommandDisplay(worktree.codexResumeCommand);
+    const normalized = sanitizeResumeCommand(worktree.codexResumeCommand);
+    if (normalized !== worktree.codexResumeCommand) {
+      persistResumeCommand(normalized);
+      return;
     }
-  }, [worktree.codexResumeCommand]);
+    resumeCommandRef.current = normalized;
+    lastPersistedCommandRef.current = normalized;
+    setResumeCommandDisplay(normalized);
+  }, [persistResumeCommand, worktree.codexResumeCommand]);
 
   useEffect(() => {
     let cancelled = false;
     api
-      .refreshCodexResumeCommand(sessionWorktreeId)
+      .refreshCodexResumeCommand(worktree.id)
       .then((command) => {
         if (cancelled) {
           return;
         }
-        if (command) {
-          persistResumeCommand(command);
+        const normalized = sanitizeResumeCommand(command);
+        if (normalized) {
+          persistResumeCommand(normalized);
           return;
         }
         const existing = worktree.codexResumeCommand ?? null;
         if (existing) {
-          if (sessionWorktreeId !== worktree.id) {
-            lastPersistedCommandRef.current = null;
-            persistResumeCommand(existing);
-          } else {
-            resumeCommandRef.current = existing;
-            lastPersistedCommandRef.current = existing;
-            setResumeCommandDisplay(existing);
-          }
+          lastPersistedCommandRef.current = null;
+          persistResumeCommand(sanitizeResumeCommand(existing));
           return;
         }
         resumeCommandRef.current = null;
@@ -251,7 +260,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     api,
     onNotification,
     persistResumeCommand,
-    sessionWorktreeId,
     worktree.codexResumeCommand,
     worktree.id
   ]);
@@ -298,6 +306,26 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       if (!terminal) {
         return;
       }
+      // Heuristic de-duplication: Codex occasionally reprints the banner
+      // very early at startup. Trim a second banner if it appears again
+      // in the first few seconds after start.
+      try {
+        const BANNER_RE = />_\s*OpenAI Codex[\s\S]*?To get started, describe a task/i;
+        if (BANNER_RE.test(data)) {
+          const now = Date.now();
+          // When descriptorPid is set we consider the session started.
+          // Drop a second banner within the first 5s window.
+          if ((descriptorPid != null) && (now - (startRef.current ?? now)) < 5000) {
+            const first = data.replace(BANNER_RE, '');
+            if (first.trim().length === 0) {
+              return;
+            }
+            data = first;
+          }
+        }
+      } catch {
+        // best-effort trimming only
+      }
       const anchoredToBottom = wasAtBottomRef.current || isScrolledToBottom(terminal);
       terminal.write(data);
       if (anchoredToBottom) {
@@ -310,96 +338,18 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     [updateScrollTracking]
   );
 
-  const syncSnapshot = useCallback(
-    async (preserveViewport: boolean) => {
-      if (!terminalRef.current) {
-        return;
-      }
-      try {
-    const snapshot = await api.getCodexTerminalSnapshot(sessionWorktreeId, buildSnapshotOptions(paneIdRef.current));
-        const terminal = terminalRef.current;
-        if (!terminal) {
-          return;
-        }
-        terminal.clear();
-        if (snapshot.content) {
-          terminal.write(snapshot.content);
-        }
-        lastEventIdRef.current = snapshot.lastEventId;
-        if (!preserveViewport) {
-          wasAtBottomRef.current = true;
-          scrollPositionRef.current = terminal.getScrollPosition();
-        }
-        restoreViewport();
-        needsSnapshotRef.current = false;
-      } catch (error) {
-        console.warn('[codex-terminal] failed to load snapshot', error);
-      }
-    },
-    [api, restoreViewport, sessionWorktreeId]
-  );
+  // Snapshot replay is disabled for Codex terminals; Codex resume already replays.
+  const syncSnapshot = useCallback(async () => { return; }, []);
 
-  const syncDelta = useCallback(async () => {
-    if (!terminalRef.current) {
-      return;
-    }
-    const execute = async () => {
-      try {
-        const response = await api.getCodexTerminalDelta(
-          sessionWorktreeId,
-          lastEventIdRef.current,
-          buildSnapshotOptions(paneIdRef.current)
-        );
-        const terminal = terminalRef.current;
-        if (!terminal) {
-          return;
-        }
-        if (response.snapshot !== undefined) {
-          terminal.clear();
-          if (response.snapshot) {
-            terminal.write(response.snapshot);
-          }
-          lastEventIdRef.current = response.lastEventId;
-          restoreViewport();
-        }
-        for (const chunk of response.chunks) {
-          if (chunk.id <= lastEventIdRef.current) {
-            continue;
-          }
-          writeChunk(chunk.data);
-          lastEventIdRef.current = chunk.id;
-        }
-        if (response.snapshot !== undefined || response.chunks.length > 0) {
-          updateScrollTracking();
-        }
-        if (response.lastEventId > lastEventIdRef.current) {
-          lastEventIdRef.current = response.lastEventId;
-        }
-      } catch (error) {
-        console.warn('[codex-terminal] failed to synchronise delta', error);
-      }
-    };
-
-    if (syncPromiseRef.current) {
-      syncPromiseRef.current = syncPromiseRef.current.then(() => execute());
-      return syncPromiseRef.current;
-    }
-
-    const promise = execute().finally(() => {
-      syncPromiseRef.current = null;
-    });
-    syncPromiseRef.current = promise;
-    return promise;
-  }, [api, restoreViewport, sessionWorktreeId, updateScrollTracking, writeChunk]);
+  // Delta replay is disabled at startup; rely on live stream only.
+  const syncDelta = useCallback(async () => { return; }, []);
 
   const syncInputState = useCallback(() => {
     const shouldEnable = status === 'running' && active && visible;
     terminalRef.current?.setStdinDisabled(!shouldEnable);
   }, [active, status, visible]);
 
-  useEffect(() => {
-    void syncSnapshot(false);
-  }, [syncSnapshot]);
+  // No snapshot on mount. We rely on Codex resume to replay prior output.
 
   const setStatusWithSideEffects = useCallback(
     (next: TerminalLifecycle) => {
@@ -422,8 +372,9 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     if (startupCommand.startsWith('codex resume --yolo')) {
       persistResumeCommand(startupCommand);
     }
+    startRef.current = Date.now();
     const startPromise = api
-      .startCodexTerminal(sessionWorktreeId, {
+      .startWorktreeTerminal(worktree.id, {
         startupCommand,
         paneId: paneIdRef.current,
         respondToCursorProbe: true
@@ -435,7 +386,9 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         bootstrappedRef.current = true;
         syncInputState();
         onBootstrapped?.();
-        await syncSnapshot(false);
+        // Avoid immediate delta/snapshot to prevent duplication with early live chunks.
+        // We will catch up via the visibility effect once we have an event id.
+        needsSnapshotRef.current = false;
         if (active && visibleRef.current) {
           terminalRef.current?.focus();
         }
@@ -451,27 +404,18 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [active, api, onBootstrapped, onNotification, persistResumeCommand, session?.codexSessionId, sessionWorktreeId, setStatusWithSideEffects, status, syncInputState, syncSnapshot]);
+  }, [active, api, onBootstrapped, onNotification, persistResumeCommand, session?.codexSessionId, setStatusWithSideEffects, status, syncInputState, worktree.id]);
 
   useEffect(() => {
     if (!visible) {
-      needsSnapshotRef.current = true;
       return;
     }
     if (status === 'running') {
       syncInputState();
-      const synchronise = async () => {
-        if (needsSnapshotRef.current) {
-          await syncSnapshot(true);
-          needsSnapshotRef.current = false;
-        }
-        await syncDelta();
-      };
-      void synchronise();
       return;
     }
     void ensureTerminalStarted();
-  }, [ensureTerminalStarted, status, syncDelta, syncInputState, syncSnapshot, visible]);
+  }, [ensureTerminalStarted, status, syncInputState, visible]);
 
   useEffect(() => {
     syncInputState();
@@ -485,32 +429,30 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   }, [onBootstrapped, status]);
 
   useEffect(() => {
-    const unsubscribeOutput = api.onCodexTerminalOutput((payload) => {
-      if (payload.worktreeId !== sessionWorktreeId) {
+    const unsubscribeOutput = api.onTerminalOutput((payload) => {
+      if (payload.worktreeId !== worktree.id) {
         return;
       }
-      if (paneIdRef.current && payload.paneId && payload.paneId !== paneIdRef.current) {
+      // Strict pane filtering
+      const currentPane = paneIdRef.current;
+      if (currentPane !== undefined) {
+        if (payload.paneId !== currentPane) {
+          return;
+        }
+      } else if (payload.paneId !== undefined) {
         return;
       }
-      const candidate = extractResumeCommand(payload.chunk);
+      const chunk = payload.chunk;
+
+      const candidate = extractResumeCommand(chunk);
       if (candidate && candidate !== lastPersistedCommandRef.current) {
         persistResumeCommand(candidate);
       }
-      if (payload.eventId != null) {
-        if (payload.eventId <= lastEventIdRef.current) {
-          return;
-        }
-        if (payload.eventId > lastEventIdRef.current + 1) {
-          void syncDelta();
-          return;
-        }
-        lastEventIdRef.current = payload.eventId;
-      }
-      writeChunk(payload.chunk);
+      writeChunk(chunk);
     });
 
-    const unsubscribeExit = api.onCodexTerminalExit((payload) => {
-      if (payload.worktreeId !== sessionWorktreeId) {
+    const unsubscribeExit = api.onTerminalExit((payload) => {
+      if (payload.worktreeId !== worktree.id) {
         return;
       }
       setStatusWithSideEffects('exited');
@@ -556,7 +498,6 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     if (!visible) {
       scrollPositionRef.current = terminal.getScrollPosition();
       wasAtBottomRef.current = isScrolledToBottom(terminal);
-      needsSnapshotRef.current = true;
       scrollChangeCallbackRef.current?.({ position: scrollPositionRef.current, atBottom: wasAtBottomRef.current });
       return;
     }
@@ -569,8 +510,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         return;
       }
       onUserInput?.(data);
-      api
-        .sendCodexTerminalInput(sessionWorktreeId, data, { paneId: paneIdRef.current })
+    api
+      .sendTerminalInput(worktree.id, data, { paneId: paneIdRef.current })
         .catch((error) => {
           const message = error instanceof Error ? error.message : 'Failed to send Codex terminal input';
           errorRef.current = message;
@@ -582,25 +523,25 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
 
   const handleResize = useCallback(
     ({ cols, rows }: { cols: number; rows: number }) => {
-      api
-        .resizeCodexTerminal({ worktreeId: sessionWorktreeId, cols, rows, paneId: paneIdRef.current })
+    api
+      .resizeTerminal({ worktreeId: worktree.id, cols, rows, paneId: paneIdRef.current })
         .catch((error) => {
           console.warn('[codex-terminal] failed to resize pty', error);
         });
     },
-    [api, sessionWorktreeId]
+    [api, worktree.id]
   );
 
   const handleRescanResume = useCallback(async () => {
     setRescanBusy(true);
     try {
-      await api.refreshCodexResumeFromLogs(sessionWorktreeId);
-      const updated = await api.refreshCodexResumeCommand(sessionWorktreeId);
-      resumeCommandRef.current = updated ?? null;
-      lastPersistedCommandRef.current = updated ?? null;
-      setResumeCommandDisplay(updated ?? null);
-      if (sessionWorktreeId !== worktree.id) {
-        await api.refreshCodexResumeCommand(worktree.id);
+      await api.refreshCodexResumeFromLogs(worktree.id);
+      const updated = sanitizeResumeCommand(await api.refreshCodexResumeCommand(worktree.id));
+      resumeCommandRef.current = updated;
+      lastPersistedCommandRef.current = updated;
+      setResumeCommandDisplay(updated);
+      if (updated !== worktree.codexResumeCommand) {
+        persistResumeCommand(updated);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to rescan Codex resume command';
@@ -608,7 +549,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     } finally {
       setRescanBusy(false);
     }
-  }, [api, onNotification, sessionWorktreeId, worktree.id]);
+  }, [api, onNotification, persistResumeCommand, worktree.codexResumeCommand, worktree.id]);
 
   const attachTerminalRef = useCallback(
     (instance: CodexTerminalHandle | null) => {

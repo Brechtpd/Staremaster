@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import { CodexPane } from '../../../src/renderer/components/CodexPane';
 import type { RendererApi } from '../../../src/shared/api';
@@ -119,12 +119,10 @@ const createRendererApi = () => {
     openWorktreeInVSCode: vi.fn(),
     openWorktreeInGitGui: vi.fn(),
     openWorktreeInFileManager: vi.fn(),
-    startCodexTerminal: vi.fn(),
-    stopCodexTerminal: vi.fn(),
-    sendCodexTerminalInput: vi.fn(),
-    resizeCodexTerminal: vi.fn(),
-    getCodexTerminalSnapshot: vi.fn(),
-    getCodexTerminalDelta: vi.fn(),
+    startWorktreeTerminal: vi.fn(),
+    stopWorktreeTerminal: vi.fn(),
+    sendTerminalInput: vi.fn(),
+    resizeTerminal: vi.fn(),
     getGitStatus: vi.fn(),
     getGitDiff: vi.fn(),
     summarizeCodexOutput: vi.fn(),
@@ -138,9 +136,7 @@ const createRendererApi = () => {
     getTerminalSnapshot: vi.fn(),
     getTerminalDelta: vi.fn(),
     onTerminalOutput: vi.fn(() => () => {}),
-    onTerminalExit: vi.fn(() => () => {}),
-    onCodexTerminalOutput: vi.fn(() => () => {}),
-    onCodexTerminalExit: vi.fn(() => () => {})
+    onTerminalExit: vi.fn(() => () => {})
   } as unknown as RendererApi;
 
   return {
@@ -179,13 +175,12 @@ describe('CodexPane', () => {
         active
         visible
         paneId="pane-1"
-        sessionWorktreeId="wt-main"
         onNotification={() => {}}
       />
     );
 
     await waitFor(() => expect(startCodex).toHaveBeenCalledTimes(1));
-    expect(startCodex).toHaveBeenCalledWith('wt-main');
+    expect(startCodex).toHaveBeenCalledWith('project-root:proj-1');
   });
 
   it('sends input through the session worktree id when the terminal emits data', async () => {
@@ -208,7 +203,6 @@ describe('CodexPane', () => {
         active
         visible
         paneId="pane-2"
-        sessionWorktreeId="wt-main"
         onNotification={() => {}}
       />
     );
@@ -220,7 +214,7 @@ describe('CodexPane', () => {
     });
 
     await waitFor(() => expect(sendCodexInput).toHaveBeenCalledTimes(1));
-    expect(sendCodexInput).toHaveBeenCalledWith('wt-main', 'ls\n');
+    expect(sendCodexInput).toHaveBeenCalledWith('project-root:proj-1', 'ls\n');
   });
 
   it('hydrates using the session worktree id when resuming without an active session id', async () => {
@@ -240,12 +234,55 @@ describe('CodexPane', () => {
         active
         visible
         paneId="pane-3"
-        sessionWorktreeId="wt-main"
         onNotification={() => {}}
       />
     );
 
-    await waitFor(() => expect(getCodexLog).toHaveBeenCalledWith('wt-main'));
+    await waitFor(() => expect(getCodexLog).toHaveBeenCalledWith('project-root:proj-1'));
     expect(lastTerminalHandle?.clear).toHaveBeenCalled();
+  });
+
+  it('updates the footer immediately after a manual resume rescan', async () => {
+    const { api } = createRendererApi();
+    const refreshLogs = api.refreshCodexResumeFromLogs as ReturnType<typeof vi.fn>;
+    const refreshCommand = api.refreshCodexResumeCommand as ReturnType<typeof vi.fn>;
+    refreshLogs.mockResolvedValueOnce(undefined);
+    refreshCommand.mockResolvedValueOnce('codex resume --yolo fresh-session-id');
+
+    const worktree: WorktreeDescriptor = {
+      ...baseWorktree,
+      codexResumeCommand: null
+    };
+
+    const session: DerivedCodexSession = {
+      status: 'running',
+      signature: 'sig-running'
+    };
+
+    render(
+      <CodexPane
+        api={api}
+        bridge={null}
+        worktree={worktree}
+        session={session}
+        active
+        visible
+        paneId="pane-rescan"
+        onNotification={() => {}}
+      />
+    );
+
+    const button = screen.getByRole('button', { name: 'Rescan Resume' });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    await waitFor(() => expect(refreshLogs).toHaveBeenCalledWith('project-root:proj-1'));
+    await waitFor(() => expect(refreshCommand).toHaveBeenCalledWith('project-root:proj-1'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Resume: codex resume --yolo fresh-session-id')).toBeInTheDocument();
+      expect(screen.getByText('Session ID: fresh-session-id')).toBeInTheDocument();
+    });
   });
 });

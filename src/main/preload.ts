@@ -31,15 +31,7 @@ const IPCChannels = {
   terminalOutput: 'terminal:output',
   terminalExit: 'terminal:exit',
   terminalSnapshot: 'terminal:snapshot',
-  terminalDelta: 'terminal:delta',
-  codexTerminalStart: 'codex-terminal:start',
-  codexTerminalStop: 'codex-terminal:stop',
-  codexTerminalInput: 'codex-terminal:input',
-  codexTerminalResize: 'codex-terminal:resize',
-  codexTerminalOutput: 'codex-terminal:output',
-  codexTerminalExit: 'codex-terminal:exit',
-  codexTerminalSnapshot: 'codex-terminal:snapshot',
-  codexTerminalDelta: 'codex-terminal:delta'
+  terminalDelta: 'terminal:delta'
 } as const;
 
 const api: RendererApi = {
@@ -60,38 +52,6 @@ const api: RendererApi = {
   startCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.startCodex, { worktreeId }),
   stopCodex: (worktreeId) => ipcRenderer.invoke(IPCChannels.stopCodex, { worktreeId }),
   sendCodexInput: (worktreeId, input) => ipcRenderer.invoke(IPCChannels.sendCodexInput, { worktreeId, input }),
-  startCodexTerminal: (worktreeId, options) =>
-    ipcRenderer.invoke(IPCChannels.codexTerminalStart, {
-      worktreeId,
-      startupCommand: options?.startupCommand,
-      paneId: options?.paneId,
-      respondToCursorProbe: options?.respondToCursorProbe
-    }),
-  stopCodexTerminal: (worktreeId, options) =>
-    ipcRenderer.invoke(IPCChannels.codexTerminalStop, {
-      worktreeId,
-      sessionId: options?.sessionId,
-      paneId: options?.paneId
-    }),
-  sendCodexTerminalInput: (worktreeId, data, options) =>
-    ipcRenderer.invoke(IPCChannels.codexTerminalInput, {
-      worktreeId,
-      data,
-      sessionId: options?.sessionId,
-      paneId: options?.paneId
-    }),
-  resizeCodexTerminal: (request) => ipcRenderer.invoke(IPCChannels.codexTerminalResize, request),
-  getCodexTerminalSnapshot: (worktreeId, options) =>
-    ipcRenderer.invoke(IPCChannels.codexTerminalSnapshot, {
-      worktreeId,
-      paneId: options?.paneId
-    }),
-  getCodexTerminalDelta: (worktreeId, afterEventId, options) =>
-    ipcRenderer.invoke(IPCChannels.codexTerminalDelta, {
-      worktreeId,
-      afterEventId,
-      paneId: options?.paneId
-    }),
   onStateUpdate: (callback) => subscribe(IPCChannels.stateUpdates, callback),
   onCodexOutput: (callback) => subscribe(IPCChannels.codexOutput, callback),
   onCodexStatus: (callback) => subscribe(IPCChannels.codexStatus, callback),
@@ -139,9 +99,7 @@ const api: RendererApi = {
       paneId: options?.paneId
     }),
   onTerminalOutput: (callback) => subscribe(IPCChannels.terminalOutput, callback),
-  onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback),
-  onCodexTerminalOutput: (callback) => subscribe(IPCChannels.codexTerminalOutput, callback),
-  onCodexTerminalExit: (callback) => subscribe(IPCChannels.codexTerminalExit, callback)
+  onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback)
 };
 
 const subscribe = <Payload>(channel: string, callback: (payload: Payload) => void): (() => void) => {

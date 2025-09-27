@@ -20,3 +20,5 @@ Never commit Codex tokens; store them in `.env.local` and access via `process.en
 
 ## Agent Workflow Tips
 Each worktree maintains its own Codex session and terminal state. Start the app via `npm run dev`, create a worktree from the sidebar, and Codex will automatically resume within that directory. Keep logs concise by clearing inactive sessions with the UI’s stop action before switching contexts.
+
+Long-running tooling (tests, docker compose, migrations, etc.) must always be invoked with sensible timeouts or in non-interactive batch mode. Never leave a shell command waiting indefinitely—prefer explicit timeouts, scripted runs, or log polling after the command exits.

@@ -74,7 +74,8 @@ describe('Codex resume detection', () => {
     expect(result).toEqual([
       {
         codexSessionId: 'g-session-id_123',
-        command: 'codex resume --session-id=g-session-id_123 --yolo',
+        // The detector sanitizes to the canonical form
+        command: 'codex resume --yolo g-session-id_123',
         alreadyCaptured: false
       }
     ]);

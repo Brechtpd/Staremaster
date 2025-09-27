@@ -293,6 +293,7 @@ export const App: React.FC = () => {
   );
   const codexColumnsStorageKey = useMemo(() => `layout/${projectKey}/codex-columns`, [projectKey]);
   const [paneLayouts, setPaneLayouts] = useState<Record<string, PaneLayoutState>>({});
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [renderedWorktreeIds, setRenderedWorktreeIds] = useState<string[]>([]);
   const [openPaneMenuFor, setOpenPaneMenuFor] = useState<string | null>(null);
   const bootstrappedPaneIdsRef = useRef<Set<string>>(new Set());
@@ -999,7 +1000,7 @@ export const App: React.FC = () => {
       delete codexScrollStateRef.current[pane.id];
       delete terminalScrollStateRef.current[pane.id];
       if (pane.kind === 'codex') {
-        void api.stopCodexTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
+        void api.stopWorktreeTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
           console.warn('[pane] failed to stop Codex terminal', error);
         });
       } else {
@@ -1130,7 +1131,7 @@ export const App: React.FC = () => {
   }, [appendSummaryBuffer, bridge, captureStatusLine, consumeEcho]);
 
   useEffect(() => {
-    const unsubscribe = api.onCodexTerminalOutput((payload) => {
+    const unsubscribe = api.onTerminalOutput((payload) => {
       const remainder = consumeEcho(payload.worktreeId, payload.chunk);
       if (!remainder) {
         return;
@@ -1462,18 +1463,7 @@ export const App: React.FC = () => {
       isActive: boolean;
       isVisible: boolean;
     }) => {
-      const sessionWorktreeId = worktree.id.startsWith('project-root:')
-        ? (() => {
-            const project = state.projects.find((item) => item.id === worktree.projectId);
-            if (project?.defaultWorktreeId) {
-              return project.defaultWorktreeId;
-            }
-            const primary = state.worktrees.find((candidate) => candidate.projectId === worktree.projectId);
-            return primary?.id ?? worktree.id;
-          })()
-        : worktree.id;
-
-      const effectiveSession = session ?? codexSessions.get(sessionWorktreeId);
+      const effectiveSession = session ?? codexSessions.get(worktree.id);
 
       return (
         <div
@@ -1493,7 +1483,6 @@ export const App: React.FC = () => {
               active={isActive}
               visible={isVisible}
               paneId={pane.id}
-              sessionWorktreeId={sessionWorktreeId}
               onNotification={setNotification}
               onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
               onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
@@ -1512,7 +1501,6 @@ export const App: React.FC = () => {
               active={isActive}
               visible={isVisible}
               paneId={pane.id}
-              sessionWorktreeId={sessionWorktreeId}
               onNotification={setNotification}
               onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
               onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
@@ -1643,8 +1631,56 @@ export const App: React.FC = () => {
             <button type="button" onClick={handleAddProject} disabled={busy || !bridge}>
               Add project
             </button>
+            <button type="button" onClick={() => setShowDebugPanel((v) => !v)} disabled={!bridge}>
+              {showDebugPanel ? 'Hide debug' : 'Debug'}
+            </button>
           </div>
           <div className="project-list">
+            {showDebugPanel ? (
+              <section className="project-section project-section--debug" aria-label="Debug: Codex resume state">
+                <header className="project-section__header">
+                  <div className="project-section__title-group">
+                    <span className="project-section__title">Codex Debug</span>
+                  </div>
+                </header>
+                <div className="project-worktree-list" role="region" aria-label="Codex debug listing">
+                  {state.projects.map((project) => {
+                    const rootId = `project-root:${project.id}`;
+                    const worktrees = state.worktrees.filter((w) => w.projectId === project.id);
+                    return (
+                      <div key={project.id} style={{ padding: '6px 8px', borderBottom: '1px solid #333' }}>
+                        <div>
+                          <strong>{project.name}</strong>
+                          <span style={{ marginLeft: 8, opacity: 0.8 }}>root</span>
+                        </div>
+                        <div style={{ fontSize: '0.85em', opacity: 0.9 }}>
+                          resume: {project.codexResumeCommand ?? '—'}
+                        </div>
+                        <div style={{ marginTop: 4 }}>
+                          {worktrees.map((w) => {
+                            const session = codexSessions.get(w.id);
+                            return (
+                              <div key={w.id} style={{ marginBottom: 4 }}>
+                                <div>
+                                  <code>{w.featureName}</code>
+                                  <span style={{ marginLeft: 8, opacity: 0.8 }}>{w.branch}</span>
+                                </div>
+                                <div style={{ fontSize: '0.85em', opacity: 0.9 }}>
+                                  sessionId: {session?.codexSessionId ?? '—'} · resume: {w.codexResumeCommand ?? '—'}
+                                </div>
+                              </div>
+                            );
+                          })}
+                          <div style={{ fontSize: '0.85em', opacity: 0.9, marginTop: 6 }}>
+                            alias {rootId}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
             {visibleProjects.map((project) => {
               const worktrees = filteredWorktrees
                 .filter((worktree) => worktree.projectId === project.id)
@@ -2093,35 +2129,6 @@ const createRendererStub = (): RendererApi => {
       void input;
       return undefined;
     },
-    startCodexTerminal: async (worktreeId: string, options?: { startupCommand?: string }) => {
-      void worktreeId;
-      void options;
-      throw new Error('Renderer API unavailable: startCodexTerminal');
-    },
-    stopCodexTerminal: async (worktreeId: string) => {
-      void worktreeId;
-      return undefined;
-    },
-    sendCodexTerminalInput: async (worktreeId: string, data: string) => {
-      void worktreeId;
-      void data;
-      return undefined;
-    },
-    resizeCodexTerminal: async (request) => {
-      void request;
-      return undefined;
-    },
-    getCodexTerminalSnapshot: async (worktreeId: string, options?: { paneId?: string }) => {
-      void worktreeId;
-      void options;
-      return { content: '', lastEventId: 0 };
-    },
-    getCodexTerminalDelta: async (worktreeId: string, afterEventId: number, options?: { paneId?: string }) => {
-      void worktreeId;
-      void afterEventId;
-      void options;
-      return { chunks: [], lastEventId: 0 };
-    },
     onStateUpdate: (callback) => {
       void callback;
       return noop;
@@ -2173,8 +2180,6 @@ const createRendererStub = (): RendererApi => {
     getTerminalSnapshot: async () => ({ content: '', lastEventId: 0 }),
     getTerminalDelta: async () => ({ chunks: [], lastEventId: 0 }),
     onTerminalOutput: () => noop,
-    onTerminalExit: () => noop,
-    onCodexTerminalOutput: () => noop,
-    onCodexTerminalExit: () => noop
+    onTerminalExit: () => noop
   };
 };
