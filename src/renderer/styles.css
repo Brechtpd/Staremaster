@@ -731,9 +731,10 @@ button {
   background: #ffffff;
   color: #0f172a;
   border-radius: 12px;
-  padding: 24px;
-  width: min(420px, 90vw);
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.25);
+  padding: 32px;
+  width: min(840px, 90vw);
+  max-height: min(720px, 90vh);
+  box-shadow: 0 32px 80px rgba(15, 23, 42, 0.3);
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -793,6 +794,7 @@ button {
   font-size: 14px;
 }
 
+
 .session-picker__list {
   list-style: none;
   padding: 0;
@@ -800,14 +802,33 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 .session-picker__list label {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   font-size: 14px;
   color: #0f172a;
+}
+
+.session-picker__tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.05);
+  min-width: 0;
+  width: 100%;
+}
+
+.session-picker__tile-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .session-picker__id {
@@ -819,6 +840,13 @@ button {
   margin-left: auto;
   font-size: 12px;
   color: #475569;
+}
+
+.session-picker__summary {
+  margin: 0;
+  font-size: 13px;
+  color: #1e293b;
+  white-space: pre-wrap;
 }
 
 .overview-header {

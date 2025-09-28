@@ -170,7 +170,7 @@ describe('CodexTerminalShellPane', () => {
   it('lets users rescan the session id', async () => {
     const { api, refreshCodexSessionId } = createRendererApi();
     (api.listCodexSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: 'fresh-session-id', mtimeMs: Date.now() }
+      { id: 'fresh-session-id', mtimeMs: Date.now(), preview: 'preview text' }
     ]);
     refreshCodexSessionId.mockResolvedValue('fresh-session-id');
     const session: DerivedCodexSession = {

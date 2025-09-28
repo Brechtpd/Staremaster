@@ -36,7 +36,7 @@ export interface RendererApi {
   getCodexLog(worktreeId: string): Promise<string>;
   summarizeCodexOutput(worktreeId: string, text: string): Promise<string>;
   refreshCodexSessionId(worktreeId: string, sessionId?: string | null): Promise<string | null>;
-  listCodexSessions(worktreeId: string): Promise<Array<{ id: string; mtimeMs: number }>>;
+  listCodexSessions(worktreeId: string): Promise<Array<{ id: string; mtimeMs: number; preview: string }>>;
   startWorktreeTerminal(
     worktreeId: string,
     options?: { paneId?: string; startupCommand?: string; respondToCursorProbe?: boolean }

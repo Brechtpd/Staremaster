@@ -24,6 +24,7 @@ const SESSION_ID_POLL_INTERVAL_MS = 500;
 const SESSION_ID_POLL_TIMEOUT_MS = 15_000;
 const SESSION_CAPTURE_LOOKBACK_MS = 5 * 60 * 1000;
 const SESSION_REFRESH_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const SESSION_PREVIEW_MAX_CHARS = 2_000;
 
 type ManagedSession = {
   descriptor: CodexSessionDescriptor;
@@ -367,7 +368,9 @@ export class CodexSessionManager extends EventEmitter {
     return sessionId;
   }
 
-  async listCodexSessionCandidates(worktreeId: string): Promise<Array<{ id: string; mtimeMs: number }>> {
+  async listCodexSessionCandidates(
+    worktreeId: string
+  ): Promise<Array<{ id: string; mtimeMs: number; preview: string }>> {
     const state = this.store.getState();
     const worktree = state.worktrees.find((item) => item.id === worktreeId);
     if (!worktree) {
@@ -389,7 +392,15 @@ export class CodexSessionManager extends EventEmitter {
       SESSION_REFRESH_LOOKBACK_MS
     );
 
-    return candidates.map((candidate) => ({ id: candidate.id, mtimeMs: candidate.mtimeMs }));
+    const previews = await Promise.all(
+      candidates.map(async (candidate) => ({
+        id: candidate.id,
+        mtimeMs: candidate.mtimeMs,
+        preview: await this.readSessionPreview(candidate.filePath)
+      }))
+    );
+
+    return previews;
   }
 
   private async clearStoredSessionId(worktreeId: string): Promise<void> {
@@ -575,6 +586,25 @@ export class CodexSessionManager extends EventEmitter {
     }
 
     return results;
+  }
+
+  private async readSessionPreview(filePath: string): Promise<string> {
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      if (!content) {
+        return '';
+      }
+      const trimmed = content.trim();
+      if (trimmed.length <= SESSION_PREVIEW_MAX_CHARS) {
+        return trimmed;
+      }
+      return trimmed.slice(-SESSION_PREVIEW_MAX_CHARS);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn('[codex] failed to read session preview', filePath, error);
+      }
+      return '';
+    }
   }
 
   private resolveSessionsDirForOffset(root: string, referenceMs: number, dayOffset: number): string | null {

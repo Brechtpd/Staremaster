@@ -188,7 +188,9 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   const [sessionPickerLoading, setSessionPickerLoading] = useState(false);
   const [sessionPickerError, setSessionPickerError] = useState<string | null>(null);
-  const [sessionChoices, setSessionChoices] = useState<Array<{ id: string; mtimeMs: number }>>([]);
+  const [sessionChoices, setSessionChoices] = useState<Array<{ id: string; mtimeMs: number; preview: string }>>([]);
+  const [sessionSummaries, setSessionSummaries] = useState<Record<string, string>>({});
+  const [sessionSummariesLoading, setSessionSummariesLoading] = useState<Record<string, boolean>>({});
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const resolvedWorktreeId = sessionWorktreeId ?? (worktree.id.startsWith('project-root:') ? null : worktree.id);
   const codexUnavailable = resolvedWorktreeId == null;
@@ -240,6 +242,8 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       const options = await api.listCodexSessions(resolvedWorktreeId);
       setSessionChoices(options);
       setSelectedSessionId(options[0]?.id ?? null);
+      setSessionSummaries({});
+      setSessionSummariesLoading({});
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to list Codex sessions';
       setSessionPickerError(message);
@@ -750,6 +754,41 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     }
   }, [paneId, resolvedWorktreeId, status, visible, worktree.id]);
 
+  useEffect(() => {
+    if (!sessionPickerOpen || !resolvedWorktreeId) {
+      return;
+    }
+    const summarizer = api.summarizeCodexOutput;
+    sessionChoices.forEach((choice) => {
+      if (sessionSummaries[choice.id] || sessionSummariesLoading[choice.id]) {
+        return;
+      }
+      if (!choice.preview.trim()) {
+        setSessionSummaries((prev) => ({ ...prev, [choice.id]: 'No recent Codex output.' }));
+        return;
+      }
+      if (!summarizer) {
+        setSessionSummaries((prev) => ({ ...prev, [choice.id]: choice.preview.trim() }));
+        return;
+      }
+      setSessionSummariesLoading((prev) => ({ ...prev, [choice.id]: true }));
+      void Promise.resolve(summarizer(resolvedWorktreeId, choice.preview))
+        .then((summary) => {
+          setSessionSummaries((prev) => ({ ...prev, [choice.id]: summary?.trim() || choice.preview.trim() }));
+        })
+        .catch(() => {
+          setSessionSummaries((prev) => ({ ...prev, [choice.id]: choice.preview.trim() }));
+        })
+        .finally(() => {
+          setSessionSummariesLoading((prev) => {
+            const next = { ...prev };
+            delete next[choice.id];
+            return next;
+          });
+        });
+    });
+  }, [api.summarizeCodexOutput, resolvedWorktreeId, sessionChoices, sessionPickerOpen, sessionSummaries, sessionSummariesLoading]);
+
   return (
     <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
       {derivedError ? <p className="terminal-error">{derivedError}</p> : null}
@@ -805,10 +844,23 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
                           checked={selectedSessionId === choice.id}
                           onChange={() => setSelectedSessionId(choice.id)}
                         />
-                        <span className="session-picker__id">{choice.id}</span>
-                        <span className="session-picker__timestamp">
-                          {new Date(choice.mtimeMs).toLocaleString()}
-                        </span>
+                        <div className="session-picker__tile">
+                          <div className="session-picker__tile-header">
+                            <span className="session-picker__id">{choice.id}</span>
+                            <span className="session-picker__timestamp">
+                              {new Date(choice.mtimeMs).toLocaleString()}
+                            </span>
+                          </div>
+                          <p className="session-picker__summary">
+                            {sessionSummariesLoading[choice.id]
+                              ? 'Summarizing Codex activity…'
+                              : (() => {
+                                  const previewText = choice.preview.trim();
+                                  const resolved = sessionSummaries[choice.id] ?? (previewText || 'No recent Codex output.');
+                                  return resolved;
+                                })()}
+                          </p>
+                        </div>
                       </label>
                     </li>
                   ))}

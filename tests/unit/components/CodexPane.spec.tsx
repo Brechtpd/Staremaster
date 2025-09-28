@@ -255,7 +255,7 @@ describe('CodexPane', () => {
     const refreshSessionId = api.refreshCodexSessionId as ReturnType<typeof vi.fn>;
     refreshSessionId.mockResolvedValue('fresh-session-id');
     const listSessions = api.listCodexSessions as ReturnType<typeof vi.fn>;
-    listSessions.mockResolvedValue([{ id: 'fresh-session-id', mtimeMs: Date.now() }]);
+    listSessions.mockResolvedValue([{ id: 'fresh-session-id', mtimeMs: Date.now(), preview: 'preview text' }]);
 
     const worktree: WorktreeDescriptor = {
       ...baseWorktree

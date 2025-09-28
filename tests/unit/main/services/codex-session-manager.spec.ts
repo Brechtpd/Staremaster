@@ -77,6 +77,12 @@ describe('CodexSessionManager', () => {
       .mockResolvedValue([
         { id: 'captured-session-id', filePath: '/tmp/file.jsonl', mtimeMs: Date.now() }
       ]);
+    vi.spyOn(
+      manager as unknown as {
+        readSessionPreview(filePath: string): Promise<string>;
+      },
+      'readSessionPreview'
+    ).mockResolvedValue('preview');
 
     const result = await manager.refreshCodexSessionId('wt-1');
 
@@ -106,6 +112,12 @@ describe('CodexSessionManager', () => {
         { id: 'new-session-id', filePath: '/tmp/new.jsonl', mtimeMs: Date.now() - 10_000 },
         { id: 'another-session', filePath: '/tmp/another.jsonl', mtimeMs: Date.now() }
       ]);
+    vi.spyOn(
+      manager as unknown as {
+        readSessionPreview(filePath: string): Promise<string>;
+      },
+      'readSessionPreview'
+    ).mockResolvedValue('preview');
 
     const result = await manager.refreshCodexSessionId('wt-1', 'new-session-id');
 
@@ -134,6 +146,12 @@ describe('CodexSessionManager', () => {
         { id: 'new-session-id', filePath: '/tmp/new.jsonl', mtimeMs: Date.now() - 10_000 },
         { id: 'another-session', filePath: '/tmp/another.jsonl', mtimeMs: Date.now() }
       ]);
+    vi.spyOn(
+      manager as unknown as {
+        readSessionPreview(filePath: string): Promise<string>;
+      },
+      'readSessionPreview'
+    ).mockResolvedValue('preview');
 
     const result = await manager.refreshCodexSessionId('wt-1', null);
 
