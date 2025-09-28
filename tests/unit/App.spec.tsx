@@ -5,6 +5,27 @@ import { App } from '../../src/renderer/App';
 import type { RendererApi } from '../../src/shared/api';
 import type { AppState, TerminalOutputPayload, WorktreeDescriptor } from '../../src/shared/ipc';
 
+const createOrchestratorApi = () => {
+  const now = new Date().toISOString();
+  const run = {
+    worktreeId: 'wt-orchestrator',
+    runId: 'run-1',
+    epicId: null,
+    status: 'running' as const,
+    description: 'stub run',
+    createdAt: now,
+    updatedAt: now
+  };
+  return {
+    getOrchestratorSnapshot: vi.fn(async () => null),
+    startOrchestratorRun: vi.fn(async () => run),
+    submitOrchestratorFollowUp: vi.fn(async () => run),
+    approveOrchestratorTask: vi.fn(async () => {}),
+    commentOnOrchestratorTask: vi.fn(async () => {}),
+    onOrchestratorEvent: vi.fn(() => () => {})
+  };
+};
+
 vi.mock('../../src/renderer/components/CodexPane', () => ({
   CodexPane: () => <div data-testid="mock-codex-pane" />
 }));
@@ -103,6 +124,7 @@ describe('App with project state', () => {
     };
 
     const openFolderMock = vi.fn();
+    const orchestratorApi = createOrchestratorApi();
     const api = {
       getState: vi.fn(async () => state),
       addProject: vi.fn(async () => state),
@@ -116,7 +138,6 @@ describe('App with project state', () => {
       startCodex: vi.fn(),
       stopCodex: vi.fn(),
       sendCodexInput: vi.fn(),
-      startWorktreeTerminal: vi.fn(),
       onStateUpdate: vi.fn(() => () => {}),
       onCodexOutput: vi.fn(() => () => {}),
       onCodexStatus: vi.fn(() => () => {}),
@@ -140,7 +161,8 @@ describe('App with project state', () => {
       getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
       getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
-      onTerminalExit: vi.fn(() => () => {})
+      onTerminalExit: vi.fn(() => () => {}),
+      ...orchestratorApi
     } as unknown as RendererApi;
 
     Object.defineProperty(window, 'api', {
@@ -182,6 +204,7 @@ describe('App with project state', () => {
       sessions: []
     };
 
+    const orchestratorApi = createOrchestratorApi();
     const api = {
       getState: vi.fn(async () => state),
       addProject: vi.fn(async () => state),
@@ -196,10 +219,10 @@ describe('App with project state', () => {
       stopCodex: vi.fn(),
       sendCodexInput: vi.fn(),
       startWorktreeTerminal: vi.fn(async () => ({
-        sessionId: 'codex-terminal',
+        sessionId: 'terminal-1',
         worktreeId: 'project-root:proj-1',
         shell: '/bin/bash',
-        pid: 456,
+        pid: 789,
         startedAt: new Date().toISOString(),
         status: 'running'
       })),
@@ -212,21 +235,14 @@ describe('App with project state', () => {
       summarizeCodexOutput: vi.fn(async () => ''),
       refreshCodexSessionId: vi.fn(async () => null),
       listCodexSessions: vi.fn(async () => []),
-      startWorktreeTerminal: vi.fn(async () => ({
-        sessionId: 'terminal-1',
-        worktreeId: 'project-root:proj-1',
-        shell: '/bin/bash',
-        pid: 789,
-        startedAt: new Date().toISOString(),
-        status: 'running'
-      })),
       stopWorktreeTerminal: vi.fn(),
       sendTerminalInput: vi.fn(),
       resizeTerminal: vi.fn(),
       getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
       getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
-      onTerminalExit: vi.fn(() => () => {})
+      onTerminalExit: vi.fn(() => () => {}),
+      ...orchestratorApi
     } as unknown as RendererApi;
 
     Object.defineProperty(window, 'api', {
@@ -279,6 +295,7 @@ describe('App with project state', () => {
 
     const removeProject = vi.fn(async () => emptyState);
 
+    const orchestratorApi = createOrchestratorApi();
     const api = {
       getState: vi.fn(async () => populatedState),
       addProject: vi.fn(async () => populatedState),
@@ -292,7 +309,6 @@ describe('App with project state', () => {
       startCodex: vi.fn(),
       stopCodex: vi.fn(),
       sendCodexInput: vi.fn(),
-      startWorktreeTerminal: vi.fn(),
       onStateUpdate: vi.fn(() => () => {}),
       onCodexOutput: vi.fn(() => () => {}),
       onCodexStatus: vi.fn(() => () => {}),
@@ -309,7 +325,8 @@ describe('App with project state', () => {
       getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
       getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
-      onTerminalExit: vi.fn(() => () => {})
+      onTerminalExit: vi.fn(() => () => {}),
+      ...orchestratorApi
     } as unknown as RendererApi;
 
     Object.defineProperty(window, 'api', {
@@ -408,6 +425,8 @@ describe('App with project state', () => {
       }),
       onTerminalExit: vi.fn(() => () => {})
     } as unknown as RendererApi;
+
+    Object.assign(api, createOrchestratorApi());
 
     Object.defineProperty(window, 'api', {
       configurable: true,
@@ -524,6 +543,10 @@ describe('App with project state', () => {
       onTerminalOutput: vi.fn(() => () => {}),
       onTerminalExit: vi.fn(() => () => {})
     } as unknown as RendererApi;
+
+    Object.assign(api, createOrchestratorApi());
+
+    Object.assign(api, createOrchestratorApi());
 
     Object.defineProperty(window, 'api', {
       configurable: true,

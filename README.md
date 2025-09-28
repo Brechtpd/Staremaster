@@ -40,6 +40,19 @@ assets/       Static assets served into the renderer
 - **Codex orchestration:** Launch `codex resume --yolo` inside a worktree using `node-pty`, stream output to the UI, and stop sessions on demand.
 - **Tabbed UX:** Sidebar lists active worktrees; main pane splits Codex terminal output and a placeholder for diff tooling.
 
+## Codex CLI Requirements
+
+The in-app orchestrator shells out to the Codex CLI for every worker role. Make sure:
+
+- The `codex` binary is on `PATH`, or set `CODEX_BIN=/path/to/codex` before launching the app.
+- Per-role models/profiles are provided via `CODEX_PROFILE_<ROLE>` (e.g. `CODEX_PROFILE_ANALYST_A=analyst`, `CODEX_PROFILE_IMPLEMENTER=coder`). These feed into `codex exec --profile ...`.
+- Optional overrides:
+  - `CODEX_PROFILE_FALLBACK` supplies a default profile when a role-specific env var is missing.
+  - `CODEX_TIMEOUT_SECONDS` (numeric) terminates long-running Codex executions; defaults to CLI behaviour when unset.
+  - `RUN_REAL_CODEX_E2E=1` enables the gated Fibonacci end-to-end test (`npm run test -- --config vitest.e2e.config.ts`).
+
+Worker telemetry mirrors the applied model/profile so you can audit configuration from the Orchestrator tab. See `docs/orchestrator-worker-screenshots.md` for capturing updated screenshots of the configuration grid.
+
 ## Quality & Tooling
 
 - **Linting:** `npm run lint`

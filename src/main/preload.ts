@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { RendererApi } from '../shared/api';
+import type {
+  OrchestratorFollowUpResponse,
+  OrchestratorSnapshotResponse,
+  OrchestratorStartResponse
+} from '../shared/ipc';
+import type { OrchestratorEvent } from '../shared/orchestrator';
 
 const IPCChannels = {
   getState: 'project:get-state',
@@ -30,7 +36,16 @@ const IPCChannels = {
   terminalOutput: 'terminal:output',
   terminalExit: 'terminal:exit',
   terminalSnapshot: 'terminal:snapshot',
-  terminalDelta: 'terminal:delta'
+  terminalDelta: 'terminal:delta',
+  orchestratorSnapshot: 'orchestrator:snapshot',
+  orchestratorStart: 'orchestrator:start',
+  orchestratorFollowUp: 'orchestrator:follow-up',
+  orchestratorApprove: 'orchestrator:approve',
+  orchestratorComment: 'orchestrator:comment',
+  orchestratorEvent: 'orchestrator:event',
+  orchestratorStartWorkers: 'orchestrator:start-workers',
+  orchestratorStopWorkers: 'orchestrator:stop-workers',
+  orchestratorConfigureWorkers: 'orchestrator:configure-workers'
 } as const;
 
 const api: RendererApi = {
@@ -94,7 +109,59 @@ const api: RendererApi = {
       paneId: options?.paneId
     }),
   onTerminalOutput: (callback) => subscribe(IPCChannels.terminalOutput, callback),
-  onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback)
+  onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback),
+  getOrchestratorSnapshot: async (worktreeId) => {
+    const response: OrchestratorSnapshotResponse = await ipcRenderer.invoke(IPCChannels.orchestratorSnapshot, {
+      worktreeId
+    });
+    return response.snapshot;
+  },
+  startOrchestratorRun: async (worktreeId, input) => {
+    const response: OrchestratorStartResponse = await ipcRenderer.invoke(IPCChannels.orchestratorStart, {
+      worktreeId,
+      input
+    });
+    return response.run;
+  },
+  submitOrchestratorFollowUp: async (worktreeId, input) => {
+    const response: OrchestratorFollowUpResponse = await ipcRenderer.invoke(IPCChannels.orchestratorFollowUp, {
+      worktreeId,
+      input
+    });
+    return response.run;
+  },
+  approveOrchestratorTask: (worktreeId, taskId, approver) =>
+    ipcRenderer.invoke(IPCChannels.orchestratorApprove, {
+      worktreeId,
+      taskId,
+      approver
+    }),
+  commentOnOrchestratorTask: (worktreeId, input) =>
+    ipcRenderer.invoke(IPCChannels.orchestratorComment, {
+      worktreeId,
+      input
+    }),
+  startOrchestratorWorkers: (worktreeId, payload) => {
+    const body = Array.isArray(payload) && payload.length && typeof payload[0] === 'string'
+      ? { roles: payload as string[] }
+      : { configs: payload };
+    return ipcRenderer.invoke(IPCChannels.orchestratorStartWorkers, {
+      worktreeId,
+      ...body
+    });
+  },
+  stopOrchestratorWorkers: (worktreeId, roles) =>
+    ipcRenderer.invoke(IPCChannels.orchestratorStopWorkers, {
+      worktreeId,
+      roles
+    }),
+  configureOrchestratorWorkers: (worktreeId, configs) =>
+    ipcRenderer.invoke(IPCChannels.orchestratorConfigureWorkers, {
+      worktreeId,
+      configs
+    }),
+  onOrchestratorEvent: (callback: (event: OrchestratorEvent) => void) =>
+    subscribe(IPCChannels.orchestratorEvent, callback)
 };
 
 const subscribe = <Payload>(channel: string, callback: (payload: Payload) => void): (() => void) => {

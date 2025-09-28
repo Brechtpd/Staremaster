@@ -14,6 +14,16 @@ import {
   TerminalSnapshot,
   TerminalDelta
 } from './ipc';
+import type {
+  OrchestratorBriefingInput,
+  OrchestratorCommentInput,
+  OrchestratorEvent,
+  OrchestratorFollowUpInput,
+  OrchestratorRunSummary,
+  OrchestratorSnapshot,
+  WorkerRole
+} from './orchestrator';
+import type { WorkerSpawnConfig } from './orchestrator-config';
 
 export interface RendererApi {
   getState(): Promise<AppState>;
@@ -52,4 +62,13 @@ export interface RendererApi {
   getTerminalDelta(worktreeId: string, afterEventId: number, options?: { paneId?: string }): Promise<TerminalDelta>;
   onTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
   onTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
+  getOrchestratorSnapshot(worktreeId: string): Promise<OrchestratorSnapshot | null>;
+  startOrchestratorRun(worktreeId: string, input: OrchestratorBriefingInput): Promise<OrchestratorRunSummary>;
+  submitOrchestratorFollowUp(worktreeId: string, input: OrchestratorFollowUpInput): Promise<OrchestratorRunSummary>;
+  approveOrchestratorTask(worktreeId: string, taskId: string, approver: string): Promise<void>;
+  commentOnOrchestratorTask(worktreeId: string, input: OrchestratorCommentInput): Promise<void>;
+  startOrchestratorWorkers(worktreeId: string, configs?: WorkerSpawnConfig[] | WorkerRole[]): Promise<void>;
+  stopOrchestratorWorkers(worktreeId: string, roles?: WorkerRole[]): Promise<void>;
+  configureOrchestratorWorkers(worktreeId: string, configs: WorkerSpawnConfig[]): Promise<void>;
+  onOrchestratorEvent(callback: (event: OrchestratorEvent) => void): () => void;
 }

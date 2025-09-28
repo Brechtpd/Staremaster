@@ -1,4 +1,5 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron';
+import path from 'node:path';
 import {
   IPCChannels,
   AppState,
@@ -8,24 +9,72 @@ import {
   CodexSummarizeRequest,
   TerminalResizeRequest,
   TerminalOutputPayload,
-  TerminalExitPayload
+  TerminalExitPayload,
+  OrchestratorSnapshotRequest,
+  OrchestratorSnapshotResponse,
+  OrchestratorStartRequest,
+  OrchestratorStartResponse,
+  OrchestratorFollowUpRequest,
+  OrchestratorFollowUpResponse,
+  OrchestratorApproveRequest,
+  OrchestratorCommentRequest,
+  OrchestratorWorkersRequest
 } from '../../shared/ipc';
+import type {
+  OrchestratorBriefingInput,
+  OrchestratorCommentInput,
+  OrchestratorEvent,
+  OrchestratorFollowUpInput,
+  OrchestratorRunSummary,
+  OrchestratorSnapshot,
+  WorkerRole
+} from '../../shared/orchestrator';
+import { DEFAULT_COUNTS, DEFAULT_PRIORITY, WORKER_ROLES, type WorkerSpawnConfig } from '../../shared/orchestrator-config';
+import type { WorkerContextPayload } from '../../shared/orchestrator-ipc';
 import { WorktreeService } from '../services/WorktreeService';
 import { CodexSessionManager } from '../services/CodexSessionManager';
 import { GitService } from '../services/GitService';
 import { TerminalService } from '../services/TerminalService';
 import { CodexSummarizer } from '../services/CodexSummarizer';
 
+type OrchestratorBridge = {
+  on(listener: (event: OrchestratorEvent) => void): () => void;
+  getSnapshot(worktreeId: string): Promise<OrchestratorSnapshot | null>;
+  startRun(worktreeId: string, worktreePath: string, input: OrchestratorBriefingInput): Promise<OrchestratorRunSummary>;
+  submitFollowUp(worktreeId: string, input: OrchestratorFollowUpInput): Promise<OrchestratorRunSummary>;
+  approveTask(worktreeId: string, taskId: string, approver: string): Promise<void>;
+  addComment(worktreeId: string, input: OrchestratorCommentInput): Promise<void>;
+  handleWorktreeRemoved(worktreeId: string): void;
+  startWorkers(worktreeId: string, context: WorkerContextPayload, configs: WorkerSpawnConfig[]): Promise<void>;
+  stopWorkers(worktreeId: string, roles: WorkerRole[]): Promise<void>;
+};
+
 export const registerIpcHandlers = (
   window: BrowserWindow,
   worktreeService: WorktreeService,
   gitService: GitService,
   codexManager: CodexSessionManager,
-  terminalService: TerminalService
+  terminalService: TerminalService,
+  orchestrator: OrchestratorBridge
 ): void => {
   const sendState = (state: AppState) => {
     window.webContents.send(IPCChannels.stateUpdates, state);
   };
+
+  const orchestratorListener = (event: OrchestratorEvent) => {
+    if (window.isDestroyed()) {
+      unsubscribeOrchestrator();
+      return;
+    }
+    window.webContents.send(IPCChannels.orchestratorEvent, event);
+  };
+
+  let unsubscribeOrchestrator = () => {};
+  unsubscribeOrchestrator = orchestrator.on(orchestratorListener);
+
+  window.on('closed', () => {
+    unsubscribeOrchestrator();
+  });
 
   const codexSummarizer = new CodexSummarizer();
   const resolveCanonical = (worktreeId: string): string => {
@@ -41,6 +90,18 @@ export const registerIpcHandlers = (
 
   const maybeMirrorPayload = <T extends { worktreeId: string }>(payload: T): [T, T | null] => {
     return [payload, null];
+  };
+
+  const buildWorkerConfigs = (metadata?: OrchestratorSnapshot['metadata']): WorkerSpawnConfig[] => {
+    return WORKER_ROLES.map((role) => {
+      const count = Math.max(0, metadata?.workerCounts?.[role] ?? DEFAULT_COUNTS[role] ?? 0);
+      const priority = (metadata?.modelPriority?.[role] ?? DEFAULT_PRIORITY[role] ?? []).filter(Boolean);
+      return {
+        role,
+        count,
+        modelPriority: priority.slice(0, 4)
+      };
+    });
   };
 
   ipcMain.handle(IPCChannels.getState, async () => {
@@ -77,6 +138,8 @@ export const registerIpcHandlers = (
         }
       }
       terminalService.dispose(worktree.id);
+      orchestrator.handleWorktreeRemoved(worktree.id);
+      await orchestrator.stopWorkers(worktree.id, WORKER_ROLES).catch(() => {});
     }
 
     await worktreeService.removeProject(payload.projectId);
@@ -94,8 +157,9 @@ export const registerIpcHandlers = (
   ipcMain.handle(
     IPCChannels.removeWorktree,
     async (_event, payload: { worktreeId: string; deleteFolder?: boolean }) => {
+      const canonicalId = resolveCanonical(payload.worktreeId);
       try {
-        await codexManager.stop(payload.worktreeId);
+        await codexManager.stop(canonicalId);
       } catch (error) {
         if ((error as Error).message.startsWith('No running Codex session')) {
           // Ignore when no active session is present.
@@ -103,9 +167,11 @@ export const registerIpcHandlers = (
           throw error;
         }
       }
-      await worktreeService.removeWorktree(payload.worktreeId, {
+      await worktreeService.removeWorktree(canonicalId, {
         deleteFolder: Boolean(payload.deleteFolder)
       });
+      orchestrator.handleWorktreeRemoved(canonicalId);
+      await orchestrator.stopWorkers(canonicalId, WORKER_ROLES).catch(() => {});
       return worktreeService.getState();
     }
   );
@@ -192,6 +258,139 @@ export const registerIpcHandlers = (
     async (_event, payload: { worktreeId: string }) => {
       const canonical = resolveCanonical(payload.worktreeId);
       return codexManager.listCodexSessionCandidates(canonical);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorSnapshot,
+    async (_event, payload: OrchestratorSnapshotRequest): Promise<OrchestratorSnapshotResponse> => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const snapshot = await orchestrator.getSnapshot(canonical);
+      return { snapshot };
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorStart,
+    async (_event, payload: OrchestratorStartRequest): Promise<OrchestratorStartResponse> => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const worktreePath = worktreeService.getWorktreePath(canonical);
+      if (!worktreePath) {
+        throw new Error(`Unknown worktree ${canonical}`);
+      }
+      const run = await orchestrator.startRun(canonical, worktreePath, payload.input);
+      const runRoot = path.join(worktreePath, 'codex-runs', run.runId);
+      const context: WorkerContextPayload = {
+        worktreePath,
+        runId: run.runId,
+        runRoot,
+        tasksRoot: path.join(runRoot, 'tasks'),
+        conversationRoot: path.join(runRoot, 'conversations')
+      };
+      if (payload.input.autoStartWorkers ?? true) {
+        const snapshot = await orchestrator.getSnapshot(canonical);
+        const configs = buildWorkerConfigs(snapshot?.metadata);
+        await orchestrator.startWorkers(canonical, context, configs);
+      } else {
+        await orchestrator.startWorkers(canonical, context, []);
+      }
+      return { run };
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorFollowUp,
+    async (_event, payload: OrchestratorFollowUpRequest): Promise<OrchestratorFollowUpResponse> => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const run = await orchestrator.submitFollowUp(canonical, payload.input);
+      return { run };
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorApprove,
+    async (_event, payload: OrchestratorApproveRequest) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      await orchestrator.approveTask(canonical, payload.taskId, payload.approver);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorComment,
+    async (_event, payload: OrchestratorCommentRequest) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      await orchestrator.addComment(canonical, payload.input);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorStartWorkers,
+    async (_event, payload: OrchestratorWorkersRequest) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const worktreePath = worktreeService.getWorktreePath(canonical);
+      if (!worktreePath) {
+        throw new Error(`Unknown worktree ${canonical}`);
+      }
+      const snapshot = await orchestrator.getSnapshot(canonical);
+      if (!snapshot) {
+        throw new Error('No active orchestrator run to attach workers.');
+      }
+      const runId = snapshot.run.runId;
+      const runRoot = path.join(worktreePath, 'codex-runs', runId);
+      const context: WorkerContextPayload = {
+        worktreePath,
+        runId,
+        runRoot,
+        tasksRoot: path.join(runRoot, 'tasks'),
+        conversationRoot: path.join(runRoot, 'conversations')
+      };
+      let configs;
+      if (payload.configs && payload.configs.length > 0) {
+        configs = payload.configs;
+      } else if (payload.roles && payload.roles.length > 0) {
+        configs = payload.roles.map((role) => ({
+          role,
+          count: snapshot.metadata?.workerCounts?.[role] ?? DEFAULT_COUNTS[role] ?? 1,
+          modelPriority: [...(snapshot.metadata?.modelPriority?.[role] ?? DEFAULT_PRIORITY[role] ?? [])]
+        }));
+      } else {
+        configs = buildWorkerConfigs(snapshot.metadata);
+      }
+      await orchestrator.startWorkers(canonical, context, configs);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorConfigureWorkers,
+    async (_event, payload: OrchestratorWorkersRequest) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const worktreePath = worktreeService.getWorktreePath(canonical);
+      if (!worktreePath) {
+        throw new Error(`Unknown worktree ${canonical}`);
+      }
+      const snapshot = await orchestrator.getSnapshot(canonical);
+      if (!snapshot) {
+        throw new Error('No active orchestrator run to configure.');
+      }
+      const runRoot = path.join(worktreePath, 'codex-runs', snapshot.run.runId);
+      const context: WorkerContextPayload = {
+        worktreePath,
+        runId: snapshot.run.runId,
+        runRoot,
+        tasksRoot: path.join(runRoot, 'tasks'),
+        conversationRoot: path.join(runRoot, 'conversations')
+      };
+      const configs = payload.configs && payload.configs.length > 0 ? payload.configs : buildWorkerConfigs(snapshot.metadata);
+      await orchestrator.startWorkers(canonical, context, configs);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorStopWorkers,
+    async (_event, payload: OrchestratorWorkersRequest) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const roles = payload.roles && payload.roles.length > 0 ? payload.roles : WORKER_ROLES;
+      await orchestrator.stopWorkers(canonical, roles);
     }
   );
 

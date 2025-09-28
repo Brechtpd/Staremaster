@@ -1,11 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, WorktreeDescriptor, ProjectDescriptor } from '@shared/ipc';
 import type { RendererApi } from '@shared/api';
+import type {
+  OrchestratorBriefingInput,
+  OrchestratorCommentInput,
+  OrchestratorFollowUpInput
+} from '@shared/orchestrator';
+import { OrchestratorProvider } from './orchestrator/store';
 import { GitPanel } from './components/GitPanel';
 import { ResizableColumns } from './components/ResizableColumns';
 import { CodexPane } from './components/CodexPane';
 import { CodexTerminalShellPane } from './components/CodexTerminalShellPane';
 import { WorktreeTerminalPane } from './components/WorktreeTerminalPane';
+import { OrchestratorPane } from './components/OrchestratorPane';
 import {
   buildCodexSessions,
   getLatestSessionsByWorktree,
@@ -32,7 +39,7 @@ const hiddenProjectsStorageKey = 'layout/hidden-projects';
 const collapsedProjectsStorageKey = 'layout/collapsed-projects';
 const sidebarRatioStorageKey = 'layout/sidebar-ratio';
 
-type PaneKind = 'codex' | 'terminal';
+type PaneKind = 'codex' | 'terminal' | 'orchestrator';
 
 interface PaneInstance {
   id: string;
@@ -149,7 +156,8 @@ const buildPaneStorageKey = (worktreeId: string): string =>
   `${paneLayoutStoragePrefix}${encodeURIComponent(worktreeId)}`;
 
 const createPaneTitle = (kind: PaneKind, index: number): string => {
-  const base = kind === 'codex' ? 'Codex' : 'Terminal';
+  const base =
+    kind === 'codex' ? 'Codex' : kind === 'terminal' ? 'Terminal' : 'Orchestrator';
   return index === 0 ? base : `${base} ${index + 1}`;
 };
 
@@ -161,9 +169,16 @@ const createPaneId = (worktreeId: string, kind: PaneKind): string => {
 const createDefaultPaneLayout = (worktreeId: string): PaneLayoutState => {
   const codexPaneId = `${worktreeId}:codex:default`;
   const terminalPaneId = `${worktreeId}:terminal:default`;
+  const orchestratorPaneId = `${worktreeId}:orchestrator:default`;
   const panes: PaneInstance[] = [
     { id: codexPaneId, kind: 'codex', title: createPaneTitle('codex', 0), bootstrapped: false },
-    { id: terminalPaneId, kind: 'terminal', title: createPaneTitle('terminal', 0), bootstrapped: false }
+    { id: terminalPaneId, kind: 'terminal', title: createPaneTitle('terminal', 0), bootstrapped: false },
+    {
+      id: orchestratorPaneId,
+      kind: 'orchestrator',
+      title: createPaneTitle('orchestrator', 0),
+      bootstrapped: false
+    }
   ];
   return { panes, activePaneId: codexPaneId, showAll: false };
 };
@@ -194,7 +209,10 @@ const readStoredPaneLayout = (worktreeId: string): PaneLayoutState | null => {
       }
       const rawCandidate = candidate as { id?: unknown; kind?: unknown; title?: unknown };
       const id = typeof rawCandidate.id === 'string' ? rawCandidate.id : null;
-      const kind = rawCandidate.kind === 'codex' || rawCandidate.kind === 'terminal' ? rawCandidate.kind : null;
+      const kind =
+        rawCandidate.kind === 'codex' || rawCandidate.kind === 'terminal' || rawCandidate.kind === 'orchestrator'
+          ? rawCandidate.kind
+          : null;
       if (!id || !kind) {
         continue;
       }
@@ -211,6 +229,15 @@ const readStoredPaneLayout = (worktreeId: string): PaneLayoutState | null => {
     }
     if (panes.length === 0) {
       return null;
+    }
+    if (!panes.some((pane) => pane.kind === 'orchestrator')) {
+      const orchestratorPaneId = `${worktreeId}:orchestrator:${Date.now().toString(36)}`;
+      panes.push({
+        id: orchestratorPaneId,
+        kind: 'orchestrator',
+        title: createPaneTitle('orchestrator', 0),
+        bootstrapped: false
+      });
     }
     const activePaneId =
       typeof (parsed as { activePaneId?: unknown }).activePaneId === 'string'
@@ -324,6 +351,10 @@ export const App: React.FC = () => {
       return !root || worktree.path !== root;
     });
   }, [state.projects, state.worktrees]);
+  const orchestratorWorktreeIds = useMemo(
+    () => state.worktrees.map((worktree) => worktree.id),
+    [state.worktrees]
+  );
   const busyStates: Array<{ id: string; busy: boolean; running: boolean }> = [];
   const busySignatureParts: string[] = [];
   const busyTimestamp = Date.now();
@@ -998,6 +1029,14 @@ export const App: React.FC = () => {
   const handleAddPane = useCallback(
     (worktreeId: string, kind: PaneKind) => {
       const layout = paneLayouts[worktreeId] ?? createDefaultPaneLayout(worktreeId);
+      if (kind === 'orchestrator') {
+        const existing = layout.panes.find((pane) => pane.kind === 'orchestrator');
+        if (existing) {
+          updatePaneLayout(worktreeId, (current) => ({ ...current, activePaneId: existing.id }));
+          setOpenPaneMenuFor(null);
+          return;
+        }
+      }
       const sameKindCount = layout.panes.filter((pane) => pane.kind === kind).length;
       const newPane: PaneInstance = {
         id: createPaneId(worktreeId, kind),
@@ -1035,13 +1074,9 @@ export const App: React.FC = () => {
       bootstrappedPaneIdsRef.current.delete(pane.id);
       delete codexScrollStateRef.current[pane.id];
       delete terminalScrollStateRef.current[pane.id];
-      if (pane.kind === 'codex') {
+      if (pane.kind === 'codex' || pane.kind === 'terminal') {
         void api.stopWorktreeTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
-          console.warn('[pane] failed to stop Codex terminal', error);
-        });
-      } else {
-        void api.stopWorktreeTerminal(worktreeId, { paneId: pane.id }).catch((error) => {
-          console.warn('[pane] failed to stop worktree terminal', error);
+          console.warn('[pane] failed to stop terminal session', error);
         });
       }
     },
@@ -1485,6 +1520,35 @@ export const App: React.FC = () => {
     codexEchoBufferRef.current[worktreeId] = next;
   }, []);
 
+  const renderOrchestratorPane = useCallback(
+    ({
+      pane,
+      worktree,
+      isActive,
+      isVisible
+    }: { pane: PaneInstance; worktree: WorktreeDescriptor; isActive: boolean; isVisible: boolean }) => (
+      <div
+        key={pane.id}
+        id={`pane-panel-${pane.id}`}
+        className="codex-pane-wrapper"
+        role="tabpanel"
+        aria-labelledby={`pane-tab-${pane.id}`}
+        aria-hidden={!isVisible}
+        style={{ display: isVisible ? 'flex' : 'none' }}
+      >
+        <OrchestratorPane
+          worktreeId={worktree.id}
+          active={isActive}
+          visible={isVisible}
+          paneId={pane.id}
+          onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
+          onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
+        />
+      </div>
+    ),
+    [markPaneBootstrapped, markPaneUnbootstrapped]
+  );
+
   const renderCodexPane = useCallback(
     ({
       pane,
@@ -1674,7 +1738,8 @@ export const App: React.FC = () => {
   }
 
   return (
-    <>
+    <OrchestratorProvider api={api} activeWorktreeIds={orchestratorWorktreeIds}>
+      <>
       <div className="app-shell" style={{ gridTemplateColumns: `${sidebarRatio * 100}% 6px 1fr` }}>
         <aside className="sidebar">
           <div className="sidebar-header">
@@ -1983,21 +2048,33 @@ export const App: React.FC = () => {
                       const paneElements = panes.map((pane) => {
                         const isActivePane = activePaneId === pane.id;
                         const isPaneVisible = isSelectedWorktree && (showAll || isActivePane);
-                        return pane.kind === 'codex'
-                          ? renderCodexPane({
+                        switch (pane.kind) {
+                          case 'codex':
+                            return renderCodexPane({
                               pane,
                               worktree: descriptor,
                               session: codexSessions.get(descriptor.id),
                               isActive: isSelectedWorktree && isActivePane,
                               isVisible: isPaneVisible,
                               paneId: pane.id
-                            })
-                          : renderTerminalPane({
+                            });
+                          case 'terminal':
+                            return renderTerminalPane({
                               pane,
                               worktree: descriptor,
                               isActive: isSelectedWorktree && isActivePane,
                               isVisible: isPaneVisible
                             });
+                          case 'orchestrator':
+                            return renderOrchestratorPane({
+                              pane,
+                              worktree: descriptor,
+                              isActive: isSelectedWorktree && isActivePane,
+                              isVisible: isPaneVisible
+                            });
+                          default:
+                            return null;
+                        }
                       });
                       return (
                         <div
@@ -2074,6 +2151,13 @@ export const App: React.FC = () => {
                                     >
                                       New Terminal
                                     </button>
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() => handleAddPane(worktreeId, 'orchestrator')}
+                                    >
+                                      New Orchestrator
+                                    </button>
                                   </div>
                                 ) : null}
                               </div>
@@ -2135,7 +2219,8 @@ export const App: React.FC = () => {
           </div>
         </div>
       ) : null}
-    </>
+      </>
+    </OrchestratorProvider>
   );
 };
 
@@ -2236,6 +2321,27 @@ const createRendererStub = (): RendererApi => {
     getTerminalSnapshot: async () => ({ content: '', lastEventId: 0 }),
     getTerminalDelta: async () => ({ chunks: [], lastEventId: 0 }),
     onTerminalOutput: () => noop,
-    onTerminalExit: () => noop
+    onTerminalExit: () => noop,
+    getOrchestratorSnapshot: async () => null,
+    startOrchestratorRun: async (worktreeId: string, input: OrchestratorBriefingInput) => {
+      void worktreeId;
+      void input;
+      throw new Error('Renderer API unavailable: startOrchestratorRun');
+    },
+    submitOrchestratorFollowUp: async (worktreeId: string, input: OrchestratorFollowUpInput) => {
+      void worktreeId;
+      void input;
+      throw new Error('Renderer API unavailable: submitOrchestratorFollowUp');
+    },
+    approveOrchestratorTask: async (worktreeId: string, taskId: string, approver: string) => {
+      void worktreeId;
+      void taskId;
+      void approver;
+    },
+    commentOnOrchestratorTask: async (worktreeId: string, input: OrchestratorCommentInput) => {
+      void worktreeId;
+      void input;
+    },
+    onOrchestratorEvent: () => noop
   };
 };

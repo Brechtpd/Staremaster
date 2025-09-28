@@ -1,3 +1,12 @@
+import type {
+  OrchestratorBriefingInput,
+  OrchestratorCommentInput,
+  OrchestratorFollowUpInput,
+  OrchestratorRunSummary,
+  OrchestratorSnapshot,
+  WorkerRole
+} from './orchestrator';
+
 export const IPCChannels = {
   getState: 'project:get-state',
   addProject: 'project:add',
@@ -27,7 +36,16 @@ export const IPCChannels = {
   terminalOutput: 'terminal:output',
   terminalExit: 'terminal:exit',
   terminalSnapshot: 'terminal:snapshot',
-  terminalDelta: 'terminal:delta'
+  terminalDelta: 'terminal:delta',
+  orchestratorSnapshot: 'orchestrator:snapshot',
+  orchestratorStart: 'orchestrator:start',
+  orchestratorFollowUp: 'orchestrator:follow-up',
+  orchestratorApprove: 'orchestrator:approve',
+  orchestratorComment: 'orchestrator:comment',
+  orchestratorEvent: 'orchestrator:event',
+  orchestratorStartWorkers: 'orchestrator:start-workers',
+  orchestratorStopWorkers: 'orchestrator:stop-workers',
+  orchestratorConfigureWorkers: 'orchestrator:configure-workers'
 } as const;
 
 type ValueOf<T> = T[keyof T];
@@ -176,4 +194,47 @@ export interface TerminalDelta {
   chunks: TerminalChunk[];
   lastEventId: number;
   snapshot?: string;
+}
+
+export interface OrchestratorSnapshotRequest {
+  worktreeId: string;
+}
+
+export interface OrchestratorStartRequest {
+  worktreeId: string;
+  input: OrchestratorBriefingInput;
+}
+
+export interface OrchestratorStartResponse {
+  run: OrchestratorRunSummary;
+}
+
+export interface OrchestratorFollowUpRequest {
+  worktreeId: string;
+  input: OrchestratorFollowUpInput;
+}
+
+export interface OrchestratorFollowUpResponse {
+  run: OrchestratorRunSummary;
+}
+
+export interface OrchestratorApproveRequest {
+  worktreeId: string;
+  taskId: string;
+  approver: string;
+}
+
+export interface OrchestratorCommentRequest {
+  worktreeId: string;
+  input: OrchestratorCommentInput;
+}
+
+export interface OrchestratorWorkersRequest {
+  worktreeId: string;
+  roles?: WorkerRole[];
+  configs?: Array<{ role: WorkerRole; count: number; modelPriority: string[] }>;
+}
+
+export interface OrchestratorSnapshotResponse {
+  snapshot: OrchestratorSnapshot | null;
 }

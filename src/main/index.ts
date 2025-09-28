@@ -8,6 +8,7 @@ import { CodexSessionManager } from './services/CodexSessionManager';
 import { GitService } from './services/GitService';
 import { WindowStateStore, WindowBounds } from './services/WindowStateStore';
 import { TerminalService } from './services/TerminalService';
+import { WorkerOrchestratorBridge } from './orchestrator/worker-bridge';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 const isHeadless = process.env.ELECTRON_HEADLESS === '1';
@@ -27,6 +28,7 @@ let gitService: GitService;
 let codexManager: CodexSessionManager;
 let windowStateStore: WindowStateStore;
 let terminalService: TerminalService;
+let orchestratorBridge: WorkerOrchestratorBridge;
 
 const preloadPath = (): string => {
   return path.join(__dirname, 'preload.js');
@@ -143,6 +145,7 @@ const bootstrap = async () => {
     },
     persistDir: path.join(app.getPath('userData'), 'terminal-logs')
   });
+  orchestratorBridge = new WorkerOrchestratorBridge((id) => worktreeService.getWorktreePath(id));
   // Codex terminals use the same TerminalService (no special-casing)
   await worktreeService.load();
   const state = worktreeService.getState();
@@ -163,14 +166,15 @@ const bootstrap = async () => {
     worktreeService,
     gitService,
     codexManager,
-    terminalService
+    terminalService,
+    orchestratorBridge
   );
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const latestBounds = await windowStateStore.load();
       const newWindow = await createMainWindow(latestBounds);
-      registerIpcHandlers(newWindow, worktreeService, gitService, codexManager, terminalService);
+      registerIpcHandlers(newWindow, worktreeService, gitService, codexManager, terminalService, orchestratorBridge);
     }
   });
 };
@@ -181,6 +185,9 @@ bootstrap().catch((error) => {
 });
 
 app.on('window-all-closed', () => {
+  void orchestratorBridge?.dispose().catch((error) => {
+    console.warn('[orchestrator] dispose failed during shutdown', error);
+  });
   if (process.platform !== 'darwin') {
     app.quit();
   }

@@ -7,6 +7,7 @@ import type { CodexSessionManager } from '../../../../src/main/services/CodexSes
 import type { TerminalService } from '../../../../src/main/services/TerminalService';
 import type { BrowserWindow } from 'electron';
 import { IPCChannels } from '../../../../src/shared/ipc';
+import type { OrchestratorBriefingInput } from '../../../../src/shared/orchestrator';
 
 const sendMock = vi.fn();
 
@@ -88,6 +89,43 @@ class CodexManagerStub extends EventEmitter {
   listCodexSessionCandidates = vi.fn();
 }
 
+class OrchestratorStub extends EventEmitter {
+  getSnapshot = vi.fn(async () => null);
+  startRun = vi.fn(async (worktreeId: string, input: OrchestratorBriefingInput) => ({
+    worktreeId,
+    runId: 'run-123',
+    epicId: null,
+    status: 'running',
+    description: input.description ?? 'stub run',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }));
+  submitFollowUp = vi.fn(async () => ({
+    worktreeId: 'wt',
+    runId: 'run-123',
+    epicId: null,
+    status: 'running',
+    description: 'stub run',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }));
+  approveTask = vi.fn(async () => {});
+  addComment = vi.fn(async () => {});
+  handleWorktreeRemoved = vi.fn();
+  dispose = vi.fn();
+
+  on(listener: (event: unknown) => void): () => void {
+    this.addListener('event', listener);
+    return () => {
+      this.removeListener('event', listener);
+    };
+  }
+
+  emitEvent(event: unknown): void {
+    this.emit('event', event);
+  }
+}
+
 describe('registerIpcHandlers codex routing', () => {
   const windowStub = {
     webContents: {
@@ -106,16 +144,18 @@ describe('registerIpcHandlers codex routing', () => {
     const gitService = { getStatus: vi.fn(), getDiff: vi.fn() };
     const codexManager = new CodexManagerStub();
     const terminalService = new TerminalServiceStub();
+    const orchestrator = new OrchestratorStub();
 
     registerIpcHandlers(
       windowStub,
       worktreeService as unknown as WorktreeService,
       gitService as unknown as GitService,
       codexManager as unknown as CodexSessionManager,
-      terminalService as unknown as TerminalService
+      terminalService as unknown as TerminalService,
+      orchestrator as unknown as OrchestratorCoordinator
     );
 
-    return { worktreeService, codexManager };
+    return { worktreeService, codexManager, orchestrator };
   };
 
   it('forwards codex output events only for canonical worktrees', () => {
