@@ -203,14 +203,12 @@ export const registerIpcHandlers = (
         worktreeId: string;
         paneId?: string;
         startupCommand?: string;
-        respondToCursorProbe?: boolean;
       }
     ) => {
       return terminalService.ensure(
         resolveCanonical(payload.worktreeId),
         {
-          startupCommand: payload.startupCommand,
-          respondToCursorProbe: payload.respondToCursorProbe
+          startupCommand: payload.startupCommand
         },
         payload.paneId
       );

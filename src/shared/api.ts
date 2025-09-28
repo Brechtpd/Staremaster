@@ -39,7 +39,7 @@ export interface RendererApi {
   listCodexSessions(worktreeId: string): Promise<Array<{ id: string; mtimeMs: number; preview: string }>>;
   startWorktreeTerminal(
     worktreeId: string,
-    options?: { paneId?: string; startupCommand?: string; respondToCursorProbe?: boolean }
+    options?: { paneId?: string; startupCommand?: string }
   ): Promise<WorktreeTerminalDescriptor>;
   stopWorktreeTerminal(worktreeId: string, options?: { sessionId?: string; paneId?: string }): Promise<void>;
   sendTerminalInput(

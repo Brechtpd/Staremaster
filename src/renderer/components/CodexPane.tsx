@@ -610,7 +610,6 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
           terminal.write(bufferedOutputRef.current);
           bufferedOutputRef.current = '';
         }
-        terminal.write('\u001b[6n');
         needsInitialRefreshRef.current = false;
         if (session?.status === 'running') {
           tryFlushInputsRef.current();
@@ -754,12 +753,20 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     }
   }, [paneId, resolvedWorktreeId, status, visible, worktree.id]);
 
+  const SUMMARY_PREFETCH_LIMIT = 10;
+
   useEffect(() => {
     if (!sessionPickerOpen || !resolvedWorktreeId) {
       return;
     }
     const summarizer = api.summarizeCodexOutput;
-    sessionChoices.forEach((choice) => {
+    const relevantChoices = sessionChoices.filter((choice, index) => {
+      if (index < SUMMARY_PREFETCH_LIMIT) {
+        return true;
+      }
+      return choice.id === selectedSessionId;
+    });
+    relevantChoices.forEach((choice) => {
       if (sessionSummaries[choice.id] || sessionSummariesLoading[choice.id]) {
         return;
       }
@@ -768,16 +775,20 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         return;
       }
       if (!summarizer) {
-        setSessionSummaries((prev) => ({ ...prev, [choice.id]: choice.preview.trim() }));
+        const preview = choice.preview.trim();
+        setSessionSummaries((prev) => ({ ...prev, [choice.id]: preview ? preview : 'No recent Codex output.' }));
         return;
       }
       setSessionSummariesLoading((prev) => ({ ...prev, [choice.id]: true }));
       void Promise.resolve(summarizer(resolvedWorktreeId, choice.preview))
         .then((summary) => {
-          setSessionSummaries((prev) => ({ ...prev, [choice.id]: summary?.trim() || choice.preview.trim() }));
+          const preview = choice.preview.trim();
+          const resolvedSummary = summary?.trim();
+          setSessionSummaries((prev) => ({ ...prev, [choice.id]: resolvedSummary ? resolvedSummary : preview || 'No recent Codex output.' }));
         })
         .catch(() => {
-          setSessionSummaries((prev) => ({ ...prev, [choice.id]: choice.preview.trim() }));
+          const preview = choice.preview.trim();
+          setSessionSummaries((prev) => ({ ...prev, [choice.id]: preview ? preview : 'No recent Codex output.' }));
         })
         .finally(() => {
           setSessionSummariesLoading((prev) => {
@@ -787,7 +798,29 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
           });
         });
     });
-  }, [api.summarizeCodexOutput, resolvedWorktreeId, sessionChoices, sessionPickerOpen, sessionSummaries, sessionSummariesLoading]);
+  }, [api.summarizeCodexOutput, resolvedWorktreeId, sessionChoices, sessionPickerOpen, sessionSummaries, sessionSummariesLoading, selectedSessionId]);
+
+  const renderSessionSummary = useCallback(
+    (choiceId: string, preview: string): { title: string; abstract: string } => {
+      const resolvedSummary = sessionSummaries[choiceId] ?? preview.trim();
+      const normalized = resolvedSummary.replace(/\s+/g, ' ').trim();
+      const defaultTitle = 'Codex activity';
+      if (!normalized) {
+        return {
+          title: defaultTitle,
+          abstract: 'No recent Codex output.'
+        };
+      }
+      const lines = normalized.split(/[.!?]\s+/).filter(Boolean);
+      const titleSeed = lines[0] ?? normalized;
+      const abstractSeed = lines.slice(1).join('. ') || normalized;
+      return {
+        title: titleSeed.length > 120 ? `${titleSeed.slice(0, 117)}…` : titleSeed,
+        abstract: abstractSeed
+      };
+    },
+    [sessionSummaries]
+  );
 
   return (
     <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
@@ -844,23 +877,26 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
                           checked={selectedSessionId === choice.id}
                           onChange={() => setSelectedSessionId(choice.id)}
                         />
-                        <div className="session-picker__tile">
-                          <div className="session-picker__tile-header">
-                            <span className="session-picker__id">{choice.id}</span>
-                            <span className="session-picker__timestamp">
-                              {new Date(choice.mtimeMs).toLocaleString()}
-                            </span>
-                          </div>
-                          <p className="session-picker__summary">
-                            {sessionSummariesLoading[choice.id]
-                              ? 'Summarizing Codex activity…'
-                              : (() => {
-                                  const previewText = choice.preview.trim();
-                                  const resolved = sessionSummaries[choice.id] ?? (previewText || 'No recent Codex output.');
-                                  return resolved;
-                                })()}
-                          </p>
-                        </div>
+                        {(() => {
+                          const { title, abstract } = renderSessionSummary(choice.id, choice.preview);
+                          return (
+                            <div className="session-picker__tile">
+                              <div className="session-picker__tile-header">
+                                <span className="session-picker__title">
+                                  {title} <span className="session-picker__id">({choice.id})</span>
+                                </span>
+                                <span className="session-picker__timestamp">
+                                  {new Date(choice.mtimeMs).toLocaleString()}
+                                </span>
+                              </div>
+                              <p className="session-picker__summary">
+                                {sessionSummariesLoading[choice.id]
+                                  ? 'Summarizing Codex activity…'
+                                  : abstract || 'No recent Codex output.'}
+                              </p>
+                            </div>
+                          );
+                        })()}
                       </label>
                     </li>
                   ))}

@@ -66,8 +66,7 @@ const api: RendererApi = {
     ipcRenderer.invoke(IPCChannels.terminalStart, {
       worktreeId,
       paneId: options?.paneId,
-      startupCommand: options?.startupCommand,
-      respondToCursorProbe: options?.respondToCursorProbe
+      startupCommand: options?.startupCommand
     }),
   stopWorktreeTerminal: (worktreeId, options) =>
     ipcRenderer.invoke(IPCChannels.terminalStop, {

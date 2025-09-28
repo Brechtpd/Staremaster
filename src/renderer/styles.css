@@ -730,14 +730,14 @@ button {
 .modal {
   background: #ffffff;
   color: #0f172a;
-  border-radius: 12px;
-  padding: 32px;
-  width: min(840px, 90vw);
-  max-height: min(720px, 90vh);
-  box-shadow: 0 32px 80px rgba(15, 23, 42, 0.3);
+  border-radius: 16px;
+  padding: 40px;
+  width: min(1680px, 92vw);
+  max-height: min(2000px, 92vh);
+  box-shadow: 0 48px 120px rgba(15, 23, 42, 0.35);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
 }
 
 .modal h2 {
@@ -801,8 +801,8 @@ button {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 280px;
+  gap: 16px;
+  max-height: 900px;
   overflow-y: auto;
 }
 
@@ -817,9 +817,9 @@ button {
 .session-picker__tile {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: 12px;
   background: rgba(15, 23, 42, 0.05);
   min-width: 0;
   width: 100%;
@@ -827,8 +827,14 @@ button {
 
 .session-picker__tile-header {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.session-picker__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #0f172a;
 }
 
 .session-picker__id {
@@ -844,7 +850,8 @@ button {
 
 .session-picker__summary {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.5;
   color: #1e293b;
   white-space: pre-wrap;
 }
