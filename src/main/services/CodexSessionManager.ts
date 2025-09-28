@@ -19,161 +19,11 @@ export interface CodexEvents {
   'codex-status': (payload: CodexStatusPayload) => void;
 }
 
-export interface ResumeDetectionState {
-  buffer: string;
-  resumeCaptured: boolean;
-  resumeTarget: string | null;
-}
-
-export interface ResumeDetectionMatch {
-  codexSessionId: string;
-  command: string;
-  alreadyCaptured: boolean;
-}
-
 const ANSI_ESCAPE = '\u001b';
-const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
-const RESUME_LINE_REGEX = /codex\s+resume[^\n\r]*/gi;
-const MAX_RESUME_BUFFER = 512;
-
-const stripControlCharacters = (value: string, replacement: string = ' '): string => {
-  if (!value) {
-    return '';
-  }
-  let result = '';
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0x20) {
-      result += value[index];
-    } else if (replacement) {
-      result += replacement;
-    }
-  }
-  return result;
-};
-
-export const detectResumeCommands = (
-  state: ResumeDetectionState,
-  chunk: string
-): ResumeDetectionMatch[] => {
-  if (!chunk) {
-    return [];
-  }
-
-  const sanitizedChunk = stripControlCharacters(chunk.replace(ANSI_ESCAPE_REGEX, ''));
-  if (!sanitizedChunk) {
-    return [];
-  }
-
-  state.buffer += sanitizedChunk;
-
-  const results: ResumeDetectionMatch[] = [];
-  let match: RegExpExecArray | null;
-  let lastConsumedIndex = 0;
-  RESUME_LINE_REGEX.lastIndex = 0;
-
-  while ((match = RESUME_LINE_REGEX.exec(state.buffer)) !== null) {
-    const resumeLine = match[0];
-    const codexSessionId = extractSessionIdFromResumeLine(resumeLine);
-    if (!codexSessionId) {
-      continue;
-    }
-    const command = sanitizeResumeCommand(resumeLine) ?? resumeLine.trim();
-    const alreadyCaptured = state.resumeCaptured && state.resumeTarget === codexSessionId;
-    results.push({ codexSessionId, command, alreadyCaptured });
-    state.resumeTarget = codexSessionId;
-    state.resumeCaptured = true;
-    lastConsumedIndex = Math.max(lastConsumedIndex, RESUME_LINE_REGEX.lastIndex);
-  }
-
-  if (lastConsumedIndex > 0) {
-    state.buffer = state.buffer.slice(lastConsumedIndex);
-  } else if (state.buffer.length > MAX_RESUME_BUFFER) {
-    state.buffer = state.buffer.slice(-MAX_RESUME_BUFFER);
-  }
-
-  return results;
-};
-
-const extractResumeTarget = (command?: string | null): string | null => {
-  if (!command) {
-    return null;
-  }
-  const sanitized = stripControlCharacters(command.replace(ANSI_ESCAPE_REGEX, ''), ' ');
-  return extractSessionIdFromResumeLine(sanitized);
-};
-
-const SESSION_ID_FLAG_PREFIXES = ['--session', '--session-id', '--resume-id', '--yolo'];
-
-const sanitizeSessionId = (value: string): string => {
-  if (!value) {
-    return '';
-  }
-  return stripControlCharacters(value, '')
-    .replace(/^["']+/, '')
-    .replace(/["'.,;:]+$/, '');
-};
-
-const sanitizeResumeCommand = (command: string): string | null => {
-  const trimmed = command ? command.trim() : '';
-  if (!/^codex\s+resume\b/i.test(trimmed)) {
-    return null;
-  }
-  const id = extractSessionIdFromResumeLine(trimmed);
-  return id ? `codex resume --yolo ${sanitizeSessionId(id)}` : null;
-};
-
-const extractSessionIdFromResumeLine = (line: string): string | null => {
-  if (!line) {
-    return null;
-  }
-  const normalized = stripControlCharacters(line).replace(/\s+/g, ' ').trim();
-  if (!normalized.toLowerCase().includes('codex resume')) {
-    return null;
-  }
-  const tokens = normalized.split(' ');
-  let fallback: string | null = null;
-
-  const stripTrailing = (value: string) => sanitizeSessionId(stripControlCharacters(value, ''));
-  const isSessionFlag = (flag: string) => SESSION_ID_FLAG_PREFIXES.some((prefix) => flag.startsWith(prefix));
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (!token) {
-      continue;
-    }
-    if (token.startsWith('--')) {
-      const equalsIndex = token.indexOf('=');
-      const flag = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
-      if (equalsIndex !== -1 && equalsIndex < token.length - 1) {
-        const value = stripTrailing(token.slice(equalsIndex + 1));
-        if (isSessionFlag(flag) && value) {
-          return value;
-        }
-        if (value) {
-          fallback = value;
-        }
-        continue;
-      }
-      const next = tokens[index + 1];
-      if (next && !next.startsWith('--')) {
-        const value = stripTrailing(next);
-        if (isSessionFlag(flag) && value) {
-          return value;
-        }
-        if (value) {
-          fallback = value;
-        }
-      }
-      continue;
-    }
-    const value = stripTrailing(token);
-    if (value && value.toLowerCase() !== 'codex' && value.toLowerCase() !== 'resume') {
-      fallback = value;
-    }
-  }
-  return fallback;
-};
+const SESSION_ID_POLL_INTERVAL_MS = 500;
+const SESSION_ID_POLL_TIMEOUT_MS = 15_000;
+const SESSION_CAPTURE_LOOKBACK_MS = 5 * 60 * 1000;
+const SESSION_REFRESH_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 type ManagedSession = {
   descriptor: CodexSessionDescriptor;
@@ -181,17 +31,13 @@ type ManagedSession = {
   logPath: string;
   stream: WriteStream;
   dsrBuffer: string;
-  resumeTarget?: string | null;
-  resumeDetection: ResumeDetectionState;
+  expectedSessionId?: string | null;
   projectId: string;
   sessionWorktreeId: string;
 };
 
 const DEFAULT_CODEX_COMMAND = 'codex --yolo';
 const CODEX_RESUME_TEMPLATE = 'codex resume --yolo';
-const MAX_SESSION_LOOKUP_ATTEMPTS = 10;
-const SESSION_LOOKUP_DELAY_MS = 500;
-const SESSION_LOOKBACK_MS = 5 * 60 * 1000;
 
 export class CodexSessionManager extends EventEmitter {
   private readonly sessions = new Map<string, ManagedSession>();
@@ -234,13 +80,11 @@ export class CodexSessionManager extends EventEmitter {
     options?: { command?: string }
   ): Promise<CodexSessionDescriptor> {
     const previousSession = this.findLatestSessionForWorktree(worktree.id);
-    const storedResumeCommand = worktree.codexResumeCommand ?? null;
-    const storedResumeTarget = extractResumeTarget(storedResumeCommand);
-    const resumeTarget = previousSession?.codexSessionId ?? storedResumeTarget ?? null;
-    const inferredResumeCommand = !previousSession?.codexSessionId && storedResumeCommand ? storedResumeCommand : null;
-    const autoResumeCommand = resumeTarget ? `${CODEX_RESUME_TEMPLATE} ${resumeTarget}` : inferredResumeCommand;
-    const isAutoResume = Boolean(autoResumeCommand) && !options?.command;
-    const command = options?.command ?? autoResumeCommand ?? DEFAULT_CODEX_COMMAND;
+    const storedSessionId = previousSession?.codexSessionId ?? null;
+    const manualCommand = options?.command ?? null;
+    const resumeTarget = manualCommand ? null : storedSessionId;
+    const isAutoResume = Boolean(resumeTarget) && !manualCommand;
+    const command = manualCommand ?? (resumeTarget ? `${CODEX_RESUME_TEMPLATE} ${resumeTarget}` : DEFAULT_CODEX_COMMAND);
 
     const startTimestamp = Date.now();
     const { spawn } = await loadPty();
@@ -259,7 +103,7 @@ export class CodexSessionManager extends EventEmitter {
       worktreeId: worktree.id,
       status: initialStatus,
       startedAt: new Date().toISOString(),
-      codexSessionId: resumeTarget ?? previousSession?.codexSessionId,
+      codexSessionId: resumeTarget ?? undefined,
       lastError: undefined
     };
 
@@ -290,12 +134,7 @@ export class CodexSessionManager extends EventEmitter {
       logPath,
       stream,
       dsrBuffer: '',
-      resumeTarget: isAutoResume ? resumeTarget : null,
-      resumeDetection: {
-        buffer: '',
-        resumeCaptured: false,
-        resumeTarget: resumeTarget ?? null
-      },
+      expectedSessionId: resumeTarget ?? null,
       projectId: worktree.projectId,
       sessionWorktreeId: worktree.id
     };
@@ -304,42 +143,18 @@ export class CodexSessionManager extends EventEmitter {
     await this.store.upsertSession(descriptor);
     await this.store.setProjectDefaultWorktree(worktree.projectId, worktree.id);
 
-    if (!resumeTarget) {
-      void this.captureCodexSessionId(worktree.path, descriptor, managed, startTimestamp, worktree.id).catch((error) => {
-        console.warn('[codex] failed to capture session id', error);
-      });
-    } else {
-      managed.resumeDetection.resumeCaptured = true;
-    }
+    void this.captureCodexSessionId(worktree.path, descriptor, managed, startTimestamp, worktree.id, {
+      expected: resumeTarget,
+      isAutoResume
+    }).catch((error) => {
+      console.warn('[codex] failed to capture session id', error);
+    });
 
     const respondToCursorProbe = () => {
       child.write('\u001b[1;1R');
     };
 
     let promotedToRunning = false;
-
-    const recordSessionInfo = (
-      sessionId: string | null,
-      resumeCommand?: string | null,
-      alreadyCaptured?: boolean
-    ) => {
-      if (!sessionId) {
-        return;
-      }
-      const normalizedCommand = resumeCommand ? sanitizeResumeCommand(resumeCommand) : null;
-      const commandToPersist = normalizedCommand ?? `${CODEX_RESUME_TEMPLATE} ${sessionId}`;
-      const seen = alreadyCaptured ?? (managed.resumeTarget === sessionId);
-      managed.resumeTarget = sessionId;
-      managed.descriptor.codexSessionId = sessionId;
-      void this.store.patchSession(descriptor.id, {
-        codexSessionId: sessionId
-      });
-      if (!seen && commandToPersist) {
-        void this.store.updateCodexResumeCommand(worktree.id, commandToPersist);
-        void this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, commandToPersist);
-        void this.store.setProjectDefaultWorktree(worktree.projectId, managed.sessionWorktreeId);
-      }
-    };
 
     const promoteRunning = () => {
       if (promotedToRunning) {
@@ -361,11 +176,7 @@ export class CodexSessionManager extends EventEmitter {
       console.log('[codex] chunk', chunk.length);
       promoteRunning();
 
-      const resumeMatches = detectResumeCommands(managed.resumeDetection, chunk);
-      for (const match of resumeMatches) {
-        recordSessionInfo(match.codexSessionId, match.command, match.alreadyCaptured);
-      }
-      if (chunk.includes('\u001b')) {
+      if (chunk.includes(ANSI_ESCAPE)) {
         managed.dsrBuffer += chunk;
         let index = managed.dsrBuffer.indexOf('\u001b[6n');
         while (index !== -1) {
@@ -414,16 +225,13 @@ export class CodexSessionManager extends EventEmitter {
         lastError: managed.descriptor.lastError,
         codexSessionId: managed.descriptor.codexSessionId
       });
-      const resumeCommand = managed.descriptor.codexSessionId
-        ? `${CODEX_RESUME_TEMPLATE} ${managed.descriptor.codexSessionId}`
-        : null;
       await this.store.patchWorktree(worktree.id, {
         codexStatus: managed.descriptor.status,
         lastError: managed.descriptor.lastError
       });
-      await this.store.updateCodexResumeCommand(worktree.id, resumeCommand);
-      await this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, resumeCommand);
-      await this.store.setProjectDefaultWorktree(worktree.projectId, resumeCommand ? managed.sessionWorktreeId : null);
+      if (managed.descriptor.codexSessionId) {
+        await this.store.setProjectDefaultWorktree(worktree.projectId, managed.sessionWorktreeId);
+      }
 
       const shouldRetryFresh = exitCode !== 0 && isAutoResume;
       if (shouldRetryFresh) {
@@ -483,6 +291,119 @@ export class CodexSessionManager extends EventEmitter {
     }
   }
 
+  async refreshCodexSessionId(worktreeId: string, preferredId?: string | null): Promise<string | null> {
+    const state = this.store.getState();
+    const worktree = state.worktrees.find((item) => item.id === worktreeId);
+    if (!worktree) {
+      throw new Error(`Unknown worktree ${worktreeId}`);
+    }
+
+    const root = path.join(os.homedir(), '.codex', 'sessions');
+    let canonicalCwd = worktree.path;
+    try {
+      canonicalCwd = await fs.realpath(worktree.path);
+    } catch {
+      // fall back to the worktree path when resolution fails
+    }
+
+    const candidates = await this.collectCodexSessionCandidates(
+      root,
+      canonicalCwd,
+      Date.now(),
+      SESSION_REFRESH_LOOKBACK_MS
+    );
+
+    if (candidates.length === 0) {
+      console.warn('[codex] refresh session id failed to locate entry for', worktree.path);
+      return null;
+    }
+
+    const running = this.sessions.get(worktreeId);
+    const latest = this.findLatestSessionForWorktree(worktreeId);
+    const previousSessionId = running?.descriptor.codexSessionId ?? latest?.codexSessionId ?? null;
+
+    if (preferredId === null) {
+      await this.clearStoredSessionId(worktreeId);
+      return null;
+    }
+
+    const validIds = new Set(candidates.map((candidate) => candidate.id));
+    let sessionId = preferredId ?? previousSessionId ?? null;
+
+    if (sessionId && !validIds.has(sessionId)) {
+      sessionId = null;
+    }
+
+    if (!sessionId) {
+      sessionId = candidates[0]?.id ?? null;
+    }
+
+    if (!sessionId) {
+      await this.clearStoredSessionId(worktreeId);
+      return null;
+    }
+
+    if (running) {
+      running.descriptor.codexSessionId = sessionId;
+      running.expectedSessionId = sessionId;
+    }
+
+    if (latest) {
+      if (latest.codexSessionId !== sessionId) {
+        await this.store.patchSession(latest.id, { codexSessionId: sessionId });
+      }
+    } else {
+      const descriptor: CodexSessionDescriptor = {
+        id: randomUUID(),
+        worktreeId,
+        status: 'stopped',
+        startedAt: new Date().toISOString(),
+        codexSessionId: sessionId
+      };
+      await this.store.upsertSession(descriptor);
+    }
+
+    await this.store.setProjectDefaultWorktree(worktree.projectId, worktree.id);
+    return sessionId;
+  }
+
+  async listCodexSessionCandidates(worktreeId: string): Promise<Array<{ id: string; mtimeMs: number }>> {
+    const state = this.store.getState();
+    const worktree = state.worktrees.find((item) => item.id === worktreeId);
+    if (!worktree) {
+      throw new Error(`Unknown worktree ${worktreeId}`);
+    }
+
+    const root = path.join(os.homedir(), '.codex', 'sessions');
+    let canonicalCwd = worktree.path;
+    try {
+      canonicalCwd = await fs.realpath(worktree.path);
+    } catch {
+      // fall back to the worktree path when resolution fails
+    }
+
+    const candidates = await this.collectCodexSessionCandidates(
+      root,
+      canonicalCwd,
+      Date.now(),
+      SESSION_REFRESH_LOOKBACK_MS
+    );
+
+    return candidates.map((candidate) => ({ id: candidate.id, mtimeMs: candidate.mtimeMs }));
+  }
+
+  private async clearStoredSessionId(worktreeId: string): Promise<void> {
+    const sessionDescriptor = this.findLatestSessionForWorktree(worktreeId);
+    if (sessionDescriptor) {
+      await this.store.patchSession(sessionDescriptor.id, { codexSessionId: undefined });
+    }
+    const running = this.sessions.get(worktreeId);
+    if (running) {
+      running.descriptor.codexSessionId = undefined;
+      running.expectedSessionId = null;
+    }
+  }
+
   private findLatestSessionForWorktree(worktreeId: string): CodexSessionDescriptor | undefined {
     const candidates = this.store
       .getState()
@@ -505,61 +426,91 @@ export class CodexSessionManager extends EventEmitter {
     descriptor: CodexSessionDescriptor,
     managed: ManagedSession,
     sessionStartMs: number,
-    worktreeId: string
+    worktreeId: string,
+    options: { expected?: string | null; isAutoResume: boolean }
   ): Promise<void> {
-    const sessionId = await this.locateCodexSessionId(cwd, sessionStartMs, managed.resumeTarget);
+    const lookupStartedAt = Date.now();
+    const sessionId = await this.locateCodexSessionId(cwd, sessionStartMs, options.expected ?? null, SESSION_CAPTURE_LOOKBACK_MS);
     if (!sessionId) {
-      console.warn('[codex] unable to determine codex session id for', cwd);
+      console.warn('[codex] unable to determine codex session id for', cwd, {
+        expected: options.expected ?? null,
+        autoResume: options.isAutoResume,
+        elapsedMs: Date.now() - lookupStartedAt
+      });
       return;
     }
+    if (options.expected && options.expected !== sessionId) {
+      console.warn('[codex] session id changed during capture', {
+        expected: options.expected,
+        resolved: sessionId,
+        cwd
+      });
+    }
     managed.descriptor.codexSessionId = sessionId;
-    managed.resumeTarget = sessionId;
+    managed.expectedSessionId = sessionId;
     descriptor.codexSessionId = sessionId;
     await this.store.patchSession(descriptor.id, {
       codexSessionId: sessionId
     });
-    const command = `${CODEX_RESUME_TEMPLATE} ${sessionId}`;
-    await this.store.updateCodexResumeCommand(worktreeId, command);
-    await this.store.updateCodexResumeCommand(`project-root:${managed.projectId}`, command);
     await this.store.setProjectDefaultWorktree(managed.projectId, worktreeId);
-    console.log('[codex] captured session id', sessionId, 'for', cwd);
+    console.log('[codex] captured session id', sessionId, 'for', cwd, {
+      elapsedMs: Date.now() - lookupStartedAt
+    });
   }
 
   private async locateCodexSessionId(
     cwd: string,
     sessionStartMs: number,
-    ignoreSessionId?: string | null
+    ignoreSessionId: string | null,
+    lookbackMs: number
   ): Promise<string | null> {
     const root = path.join(os.homedir(), '.codex', 'sessions');
     let canonicalCwd = cwd;
     try {
       canonicalCwd = await fs.realpath(cwd);
-    } catch {}
-    for (let attempt = 0; attempt < MAX_SESSION_LOOKUP_ATTEMPTS; attempt += 1) {
-      const match = await this.scanCodexSessions(root, canonicalCwd, sessionStartMs, ignoreSessionId);
-      if (match) {
-        return match;
-      }
-      const historyMatch = await this.scanCodexHistory(sessionStartMs, ignoreSessionId);
-      if (historyMatch) {
-        return historyMatch;
-      }
-      await delay(SESSION_LOOKUP_DELAY_MS);
+    } catch {
+      // Ignore resolution failures; fall back to the original cwd.
     }
-    return this.scanCodexHistory(sessionStartMs, ignoreSessionId);
+    const deadline = Date.now() + SESSION_ID_POLL_TIMEOUT_MS;
+    let attempts = 0;
+
+    while (Date.now() <= deadline) {
+      attempts += 1;
+      const candidates = await this.collectCodexSessionCandidates(root, canonicalCwd, sessionStartMs, lookbackMs);
+      const match = candidates.find((candidate) => !ignoreSessionId || candidate.id !== ignoreSessionId) ?? candidates[0];
+      if (match) {
+        if (attempts > 1) {
+          console.log('[codex] session id located after retries', {
+            attempts,
+            cwd,
+            sessionId: match.id
+          });
+        }
+        return match.id;
+      }
+      await delay(SESSION_ID_POLL_INTERVAL_MS);
+    }
+
+    console.warn('[codex] session id lookup timed out', {
+      cwd,
+      attempts,
+      intervalMs: SESSION_ID_POLL_INTERVAL_MS,
+      timeoutMs: SESSION_ID_POLL_TIMEOUT_MS
+    });
+    return null;
   }
 
-  private async scanCodexSessions(
+  private async collectCodexSessionCandidates(
     root: string,
     cwd: string,
     sessionStartMs: number,
-    ignoreSessionId?: string | null
-  ): Promise<string | null> {
+    lookbackMs: number
+  ): Promise<Array<{ id: string; filePath: string; mtimeMs: number }>> {
     try {
       await fs.access(root);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null;
+        return [];
       }
       throw error;
     }
@@ -580,7 +531,7 @@ export class CodexSessionManager extends EventEmitter {
               const filePath = path.join(dir, name);
               try {
                 const stat = await fs.stat(filePath);
-                if (stat.mtimeMs + SESSION_LOOKBACK_MS >= sessionStartMs) {
+                if (stat.mtimeMs + lookbackMs >= sessionStartMs) {
                   candidates.push({ filePath, mtimeMs: stat.mtimeMs });
                 }
               } catch (error) {
@@ -599,6 +550,9 @@ export class CodexSessionManager extends EventEmitter {
 
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
+    const results: Array<{ id: string; filePath: string; mtimeMs: number }> = [];
+    const seen = new Set<string>();
+
     for (const candidate of candidates) {
       const meta = await this.readSessionMeta(candidate.filePath);
       if (!meta) {
@@ -608,73 +562,19 @@ export class CodexSessionManager extends EventEmitter {
       let canonicalMeta = metaCwd;
       try {
         canonicalMeta = await fs.realpath(metaCwd);
-      } catch {}
+      } catch {
+        // Ignore resolution failures; fall back to logged cwd.
+      }
       if (canonicalMeta === cwd) {
         const id = (meta as { id?: string; payload?: { id?: string } }).id ?? meta.id;
-        if (typeof id === 'string' && (!ignoreSessionId || id !== ignoreSessionId)) {
-          return id;
+        if (typeof id === 'string' && !seen.has(id)) {
+          results.push({ id, filePath: candidate.filePath, mtimeMs: candidate.mtimeMs });
+          seen.add(id);
         }
       }
     }
 
-    return null;
-  }
-
-  private async scanCodexHistory(sessionStartMs: number, ignoreSessionId?: string | null): Promise<string | null> {
-    const historyPath = path.join(os.homedir(), '.codex', 'history.jsonl');
-    let raw: string;
-    try {
-      raw = await fs.readFile(historyPath, 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null;
-      }
-      throw error;
-    }
-
-    const thresholdMs = sessionStartMs - 5_000;
-    let candidate: string | null = null;
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(line) as { session_id?: unknown; ts?: unknown };
-        const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id : null;
-        if (!sessionId || (ignoreSessionId && sessionId === ignoreSessionId)) {
-          continue;
-        }
-        const ts = typeof parsed.ts === 'number' ? parsed.ts : null;
-        const tsMs = ts == null ? null : ts > 3_153_600_000 ? ts : ts * 1000;
-        if (tsMs != null && tsMs >= thresholdMs) {
-          candidate = sessionId;
-          break;
-        }
-      } catch (error) {
-        console.warn('[codex] failed to parse history entry', error);
-      }
-    }
-
-    if (candidate) {
-      return candidate;
-    }
-
-    for (const line of raw.split('\n').reverse()) {
-      if (!line.trim()) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(line) as { session_id?: unknown; id?: unknown; timestamp?: unknown };
-        const sessionId = typeof parsed.session_id === 'string' ? parsed.session_id : typeof parsed.id === 'string' ? parsed.id : null;
-        if (sessionId && (!ignoreSessionId || sessionId !== ignoreSessionId)) {
-          return sessionId;
-        }
-      } catch (error) {
-        console.warn('[codex] failed to parse history entry (reverse scan)', error);
-      }
-    }
-
-    return null;
+    return results;
   }
 
   private resolveSessionsDirForOffset(root: string, referenceMs: number, dayOffset: number): string | null {
@@ -708,42 +608,6 @@ export class CodexSessionManager extends EventEmitter {
     }
   }
 
-  private async parseResumeCommandFromLog(worktreeId: string): Promise<string | null> {
-    const logPath = path.join(this.logDir, `${worktreeId}.log`);
-    let raw: string;
-    try {
-      raw = await fs.readFile(logPath, 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null;
-      }
-      throw error;
-    }
-
-    const cleaned = stripControlCharacters(raw).replace(ANSI_ESCAPE_REGEX, '');
-    const matches = Array.from(cleaned.matchAll(RESUME_LINE_REGEX));
-    if (matches.length === 0) {
-      return null;
-    }
-    const lastLine = matches[matches.length - 1][0];
-    return sanitizeResumeCommand(lastLine) ?? lastLine.trim();
-  }
-
-  async refreshResumeFromLogs(worktreeId?: string): Promise<void> {
-    const state = this.store.getState();
-    const targets = worktreeId
-      ? state.worktrees.filter((worktree) => worktree.id === worktreeId)
-      : state.worktrees;
-
-    for (const worktree of targets) {
-      const command = await this.parseResumeCommandFromLog(worktree.id);
-      await this.store.updateCodexResumeCommand(worktree.id, command ?? null);
-      await this.store.updateCodexResumeCommand(`project-root:${worktree.projectId}`, command ?? null);
-      if (command) {
-        await this.store.setProjectDefaultWorktree(worktree.projectId, worktree.id);
-      }
-    }
-  }
 }
 
 type ShellMode = 'posix' | 'powershell';

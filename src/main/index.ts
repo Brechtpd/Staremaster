@@ -145,6 +145,16 @@ const bootstrap = async () => {
   });
   // Codex terminals use the same TerminalService (no special-casing)
   await worktreeService.load();
+  const state = worktreeService.getState();
+  await Promise.all(
+    state.worktrees
+      .filter((worktree) => !worktree.id.startsWith('project-root:'))
+      .map((worktree) =>
+        codexManager
+          .refreshCodexSessionId(worktree.id)
+          .catch((error) => console.warn('[codex] bootstrap session refresh failed', { worktreeId: worktree.id, error }))
+      )
+  );
 
   const savedBounds = await windowStateStore.load();
   const window = await createMainWindow(savedBounds);

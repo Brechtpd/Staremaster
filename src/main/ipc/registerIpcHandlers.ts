@@ -11,7 +11,7 @@ import {
   TerminalExitPayload
 } from '../../shared/ipc';
 import { WorktreeService } from '../services/WorktreeService';
-import { CodexSessionManager, detectResumeCommands } from '../services/CodexSessionManager';
+import { CodexSessionManager } from '../services/CodexSessionManager';
 import { GitService } from '../services/GitService';
 import { TerminalService } from '../services/TerminalService';
 import { CodexSummarizer } from '../services/CodexSummarizer';
@@ -30,20 +30,17 @@ export const registerIpcHandlers = (
   const codexSummarizer = new CodexSummarizer();
   const resolveCanonical = (worktreeId: string): string => {
     const resolved = worktreeService.resolveCanonicalWorktreeId(worktreeId);
-    return resolved ?? worktreeId;
+    if (resolved) {
+      return resolved;
+    }
+    if (worktreeId.startsWith('project-root:')) {
+      throw new Error(`No canonical worktree found for ${worktreeId}`);
+    }
+    return worktreeId;
   };
 
   const maybeMirrorPayload = <T extends { worktreeId: string }>(payload: T): [T, T | null] => {
-    const projectId = worktreeService.getProjectIdForWorktree(payload.worktreeId);
-    if (!projectId) {
-      return [payload, null];
-    }
-    const aliasId = `project-root:${projectId}`;
-    if (aliasId === payload.worktreeId) {
-      return [payload, null];
-    }
-    const mirrored = { ...payload, worktreeId: aliasId } as T;
-    return [payload, mirrored];
+    return [payload, null];
   };
 
   ipcMain.handle(IPCChannels.getState, async () => {
@@ -180,30 +177,21 @@ export const registerIpcHandlers = (
   });
 
   ipcMain.handle(
-    IPCChannels.codexSetResume,
-    async (_event, payload: { worktreeId: string; command: string | null }) => {
+    IPCChannels.codexRefreshSessionId,
+    async (_event, payload: { worktreeId: string; sessionId?: string | null }) => {
       const canonical = resolveCanonical(payload.worktreeId);
-      await worktreeService.setCodexResumeCommand(canonical, payload.command);
-      if (canonical !== payload.worktreeId) {
-        await worktreeService.setCodexResumeCommand(payload.worktreeId, payload.command);
-      }
-    }
-  );
-
-  ipcMain.handle(
-    IPCChannels.codexRefreshResume,
-    async (_event, payload: { worktreeId: string }) => {
-      return worktreeService.getCodexResumeCommand(payload.worktreeId);
-    }
-  );
-
-  ipcMain.handle(
-    IPCChannels.codexRefreshResumeLogs,
-    async (_event, payload: { worktreeId?: string }) => {
-      await codexManager.refreshResumeFromLogs(payload.worktreeId);
+      const sessionId = await codexManager.refreshCodexSessionId(canonical, payload.sessionId);
       const updated = worktreeService.getState();
       sendState(updated);
-      return updated;
+      return sessionId;
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.codexListSessions,
+    async (_event, payload: { worktreeId: string }) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      return codexManager.listCodexSessionCandidates(canonical);
     }
   );
 
@@ -271,22 +259,6 @@ export const registerIpcHandlers = (
   worktreeService.on('worktree-updated', () => sendState(worktreeService.getState()));
   worktreeService.on('worktree-removed', (worktreeId) => {
     terminalService.dispose(worktreeId);
-    // prune resume detection state for removed worktree (both canonical and alias ids)
-    try {
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-      const stateMap = (forwardTerminalOutput as unknown as {
-        __state?: Map<string, { buffer: string; resumeCaptured: boolean; resumeTarget: string | null }>;
-      }).
-        __state;
-      if (stateMap) {
-        const canonical = resolveCanonical(worktreeId);
-        stateMap.delete(canonical);
-        const projectId = worktreeService.getProjectIdForWorktree(canonical);
-        if (projectId) {
-          stateMap.delete(`project-root:${projectId}`);
-        }
-      }
-    } catch {}
     sendState(worktreeService.getState());
   });
 
@@ -311,38 +283,11 @@ export const registerIpcHandlers = (
 
   const forwardTerminalOutput = (payload: TerminalOutputPayload) => {
     if (window.isDestroyed()) return;
-    // Codex resume detection on any terminal output
-    try {
-      if (/codex/i.test(payload.chunk)) {
-        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-        const stateMap = (forwardTerminalOutput as unknown as { __state?: Map<string, { buffer: string; resumeCaptured: boolean; resumeTarget: string | null }> }).__state ||
-          new Map<string, { buffer: string; resumeCaptured: boolean; resumeTarget: string | null }>();
-        // @ts-ignore attach bag
-        (forwardTerminalOutput as any).__state = stateMap;
-        const canonicalId = resolveCanonical(payload.worktreeId);
-        const detector = stateMap.get(canonicalId) ?? { buffer: '', resumeCaptured: false, resumeTarget: null };
-        const matches = detectResumeCommands(detector, payload.chunk);
-        if (matches.length > 0) {
-          stateMap.set(canonicalId, detector);
-          const projectId = worktreeService.getProjectIdForWorktree(canonicalId);
-          const aliasId = projectId ? `project-root:${projectId}` : null;
-          for (const match of matches) {
-            void worktreeService.setCodexResumeCommand(canonicalId, match.command);
-            if (aliasId) {
-              void worktreeService.setCodexResumeCommand(aliasId, match.command);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.warn('[terminal] resume detection failed', error);
-    }
     const [original, mirror] = maybeMirrorPayload(payload);
     window.webContents.send(IPCChannels.terminalOutput, original);
     if (mirror) {
       window.webContents.send(IPCChannels.terminalOutput, mirror);
     }
-
   };
 
   const forwardTerminalExit = (payload: TerminalExitPayload) => {

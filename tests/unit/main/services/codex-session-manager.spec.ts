@@ -1,84 +1,144 @@
-import { describe, expect, it } from 'vitest';
-import { detectResumeCommands, type ResumeDetectionState } from '../../../../src/main/services/CodexSessionManager';
+import { describe, expect, it, vi } from 'vitest';
+import { CodexSessionManager } from '../../../../src/main/services/CodexSessionManager';
+import type { ProjectStore } from '../../../../src/main/services/ProjectStore';
 
-describe('Codex resume detection', () => {
-  it('extracts resume commands from streamed Codex output', () => {
-    const state: ResumeDetectionState = {
-      buffer: '',
-      resumeCaptured: false,
-      resumeTarget: null
-    };
-
-    const first = detectResumeCommands(state, '\u001b[32mstatus:\u001b[0m codex res');
-    expect(first).toEqual([]);
-
-    const second = detectResumeCommands(state, 'ume --yolo deadbeefdeadbeef\n');
-    expect(second).toEqual([
+const createStore = () => {
+  const state = {
+    projects: [
       {
-        codexSessionId: 'deadbeefdeadbeef',
-        command: 'codex resume --yolo deadbeefdeadbeef',
-        alreadyCaptured: false
+        id: 'proj',
+        root: '/tmp/proj',
+        name: 'proj',
+        createdAt: new Date().toISOString(),
+        defaultWorktreeId: undefined as string | undefined
       }
-    ]);
-    expect(state.resumeTarget).toBe('deadbeefdeadbeef');
-    expect(state.resumeCaptured).toBe(true);
-
-    const third = detectResumeCommands(state, 'codex resume --yolo deadbeefdeadbeef\n');
-    expect(third).toEqual([
+    ],
+    worktrees: [
       {
-        codexSessionId: 'deadbeefdeadbeef',
-        command: 'codex resume --yolo deadbeefdeadbeef',
-        alreadyCaptured: true
+        id: 'wt-1',
+        projectId: 'proj',
+        featureName: 'alpha',
+        branch: 'alpha',
+        path: '/tmp/proj/alpha',
+        createdAt: new Date().toISOString(),
+        status: 'ready' as const,
+        codexStatus: 'idle' as const,
+        lastError: undefined
       }
-    ]);
+    ],
+    sessions: [
+      {
+        id: 'session-record-1',
+        worktreeId: 'wt-1',
+        status: 'running' as const,
+        startedAt: new Date().toISOString(),
+        codexSessionId: 'old-session-id'
+      }
+    ]
+  };
+
+  return {
+    getState: vi.fn(() => state),
+    patchSession: vi.fn(),
+    upsertSession: vi.fn(),
+    patchWorktree: vi.fn(),
+    upsertWorktree: vi.fn(),
+    upsertProject: vi.fn(),
+    setProjectDefaultWorktree: vi.fn(),
+    patchProject: vi.fn(),
+    removeSession: vi.fn(),
+    removeWorktree: vi.fn(),
+    removeProject: vi.fn(),
+    getUserDataDir: vi.fn(() => '/tmp')
+  } as unknown as ProjectStore & {
+    getState: ReturnType<typeof vi.fn>;
+    upsertSession: ReturnType<typeof vi.fn>;
+    patchSession: ReturnType<typeof vi.fn>;
+    setProjectDefaultWorktree: ReturnType<typeof vi.fn>;
+  };
+};
+
+describe('CodexSessionManager', () => {
+  it('refreshes session ids via ~/.codex/sessions', async () => {
+    const store = createStore();
+    const manager = new CodexSessionManager(store as unknown as ProjectStore);
+    const collectSpy = vi
+      .spyOn(
+        manager as unknown as {
+          collectCodexSessionCandidates(
+            root: string,
+            cwd: string,
+            sessionStart: number,
+            lookback: number
+          ): Promise<Array<{ id: string; filePath: string; mtimeMs: number }>>;
+        },
+        'collectCodexSessionCandidates'
+      )
+      .mockResolvedValue([
+        { id: 'captured-session-id', filePath: '/tmp/file.jsonl', mtimeMs: Date.now() }
+      ]);
+
+    const result = await manager.refreshCodexSessionId('wt-1');
+
+    expect(result).toBe('captured-session-id');
+    expect(collectSpy).toHaveBeenCalled();
+    expect(store.patchSession).toHaveBeenCalledWith(expect.any(String), { codexSessionId: 'captured-session-id' });
+    expect(store.setProjectDefaultWorktree).toHaveBeenCalledWith('proj', 'wt-1');
   });
 
-  it('emits new commands when Codex reports a different session id later', () => {
-    const state: ResumeDetectionState = {
-      buffer: '',
-      resumeCaptured: false,
-      resumeTarget: null
-    };
+  it('applies a preferred session id when provided', async () => {
+    const store = createStore();
+    const manager = new CodexSessionManager(store as unknown as ProjectStore);
+    const collectSpy = vi
+      .spyOn(
+        manager as unknown as {
+          collectCodexSessionCandidates(
+            root: string,
+            cwd: string,
+            sessionStart: number,
+            lookback: number
+          ): Promise<Array<{ id: string; filePath: string; mtimeMs: number }>>;
+        },
+        'collectCodexSessionCandidates'
+      )
+      .mockResolvedValue([
+        { id: 'old-session-id', filePath: '/tmp/old.jsonl', mtimeMs: Date.now() - 20_000 },
+        { id: 'new-session-id', filePath: '/tmp/new.jsonl', mtimeMs: Date.now() - 10_000 },
+        { id: 'another-session', filePath: '/tmp/another.jsonl', mtimeMs: Date.now() }
+      ]);
 
-    const first = detectResumeCommands(state, 'codex resume --yolo 11111111-2222-3333-4444-555555555555\n');
-    expect(first).toEqual([
-      {
-        codexSessionId: '11111111-2222-3333-4444-555555555555',
-        command: 'codex resume --yolo 11111111-2222-3333-4444-555555555555',
-        alreadyCaptured: false
-      }
-    ]);
+    const result = await manager.refreshCodexSessionId('wt-1', 'new-session-id');
 
-    const second = detectResumeCommands(state, 'codex resume --yolo 66666666-7777-8888-9999-aaaaaaaaaaaa\n');
-    expect(second).toEqual([
-      {
-        codexSessionId: '66666666-7777-8888-9999-aaaaaaaaaaaa',
-        command: 'codex resume --yolo 66666666-7777-8888-9999-aaaaaaaaaaaa',
-        alreadyCaptured: false
-      }
-    ]);
-    expect(state.resumeTarget).toBe('66666666-7777-8888-9999-aaaaaaaaaaaa');
+    expect(result).toBe('new-session-id');
+    expect(collectSpy).toHaveBeenCalled();
+    expect(store.patchSession).toHaveBeenCalledWith(expect.any(String), { codexSessionId: 'new-session-id' });
   });
 
-  it('accepts resume ids with non-hex characters and ANSI sequences', () => {
-    const state: ResumeDetectionState = {
-      buffer: '',
-      resumeCaptured: false,
-      resumeTarget: null
-    };
+  it('clears persisted ids when requested', async () => {
+    const store = createStore();
+    const manager = new CodexSessionManager(store as unknown as ProjectStore);
+    const collectSpy = vi
+      .spyOn(
+        manager as unknown as {
+          collectCodexSessionCandidates(
+            root: string,
+            cwd: string,
+            sessionStart: number,
+            lookback: number
+          ): Promise<Array<{ id: string; filePath: string; mtimeMs: number }>>;
+        },
+        'collectCodexSessionCandidates'
+      )
+      .mockResolvedValue([
+        { id: 'old-session-id', filePath: '/tmp/old.jsonl', mtimeMs: Date.now() - 20_000 },
+        { id: 'new-session-id', filePath: '/tmp/new.jsonl', mtimeMs: Date.now() - 10_000 },
+        { id: 'another-session', filePath: '/tmp/another.jsonl', mtimeMs: Date.now() }
+      ]);
 
-    const result = detectResumeCommands(
-      state,
-      '\u001b[32mcodex resume --session-id=g-session-id_123 --yolo\u001b[0m\n'
-    );
-    expect(result).toEqual([
-      {
-        codexSessionId: 'g-session-id_123',
-        // The detector sanitizes to the canonical form
-        command: 'codex resume --yolo g-session-id_123',
-        alreadyCaptured: false
-      }
-    ]);
-    expect(state.resumeTarget).toBe('g-session-id_123');
+    const result = await manager.refreshCodexSessionId('wt-1', null);
+
+    expect(result).toBeNull();
+    expect(collectSpy).toHaveBeenCalled();
+    expect(store.patchSession).toHaveBeenCalledWith(expect.any(String), { codexSessionId: undefined });
   });
 });

@@ -1,5 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import type { Mock } from 'vitest';
+import type { WorktreeService } from '../../../../src/main/services/WorktreeService';
+import type { GitService } from '../../../../src/main/services/GitService';
+import type { CodexSessionManager } from '../../../../src/main/services/CodexSessionManager';
+import type { TerminalService } from '../../../../src/main/services/TerminalService';
 import type { BrowserWindow } from 'electron';
 import { IPCChannels } from '../../../../src/shared/ipc';
 
@@ -23,6 +28,8 @@ vi.mock('electron', () => {
   };
 });
 
+const { ipcMain } = await import('electron');
+
 // Lazy import after mocks so the module picks up our stubs.
 const { registerIpcHandlers } = await import('../../../../src/main/ipc/registerIpcHandlers');
 
@@ -30,6 +37,9 @@ class WorktreeServiceStub extends EventEmitter {
   resolveCanonicalWorktreeId = vi.fn((worktreeId: string) => {
     if (worktreeId === 'project-root:proj') {
       return 'wt-main';
+    }
+    if (worktreeId === 'project-root:missing') {
+      return null;
     }
     return worktreeId;
   });
@@ -51,7 +61,6 @@ class WorktreeServiceStub extends EventEmitter {
   openWorktreeInFileManager = vi.fn();
   mergeWorktree = vi.fn();
   refreshProjectWorktrees = vi.fn();
-  setCodexResumeCommand = vi.fn();
   updateCodexStatus = vi.fn(async () => {});
   getWorktreePath = vi.fn();
   dispose = vi.fn();
@@ -75,10 +84,11 @@ class CodexManagerStub extends EventEmitter {
   sendInput = vi.fn();
   getSessions = vi.fn();
   getLog = vi.fn();
-  refreshResumeFromLogs = vi.fn();
+  refreshCodexSessionId = vi.fn();
+  listCodexSessionCandidates = vi.fn();
 }
 
-describe('registerIpcHandlers codex mirrors', () => {
+describe('registerIpcHandlers codex routing', () => {
   const windowStub = {
     webContents: {
       send: sendMock
@@ -99,16 +109,16 @@ describe('registerIpcHandlers codex mirrors', () => {
 
     registerIpcHandlers(
       windowStub,
-      worktreeService as unknown as any,
-      gitService as unknown as any,
-      codexManager as unknown as any,
-      terminalService as unknown as any
+      worktreeService as unknown as WorktreeService,
+      gitService as unknown as GitService,
+      codexManager as unknown as CodexSessionManager,
+      terminalService as unknown as TerminalService
     );
 
     return { worktreeService, codexManager };
   };
 
-  it('mirrors codex output events to the project root alias', () => {
+  it('forwards codex output events only for canonical worktrees', () => {
     const { codexManager } = createHarness();
     sendMock.mockClear();
 
@@ -118,20 +128,15 @@ describe('registerIpcHandlers codex mirrors', () => {
       chunk: 'hello world'
     });
 
-    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(sendMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenNthCalledWith(1, IPCChannels.codexOutput, {
       sessionId: 'session-1',
       worktreeId: 'wt-main',
       chunk: 'hello world'
     });
-    expect(sendMock).toHaveBeenNthCalledWith(2, IPCChannels.codexOutput, {
-      sessionId: 'session-1',
-      worktreeId: 'project-root:proj',
-      chunk: 'hello world'
-    });
   });
 
-  it('mirrors codex status events and updates canonical worktree state', () => {
+  it('forwards codex status events and updates canonical worktree state', () => {
     const { worktreeService, codexManager } = createHarness();
     sendMock.mockClear();
     worktreeService.updateCodexStatus.mockClear();
@@ -144,18 +149,48 @@ describe('registerIpcHandlers codex mirrors', () => {
     });
 
     expect(worktreeService.updateCodexStatus).toHaveBeenCalledWith('wt-main', 'running', undefined);
-    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(sendMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenNthCalledWith(1, IPCChannels.codexStatus, {
       sessionId: 'session-1',
       worktreeId: 'wt-main',
       status: 'running',
       error: undefined
     });
-    expect(sendMock).toHaveBeenNthCalledWith(2, IPCChannels.codexStatus, {
-      sessionId: 'session-1',
-      worktreeId: 'project-root:proj',
-      status: 'running',
-      error: undefined
-    });
+  });
+
+  it('refreshes session id using the canonical worktree id', async () => {
+    const { codexManager } = createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const refreshHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.codexRefreshSessionId)?.[1] as
+      | ((event: unknown, payload: { worktreeId: string; sessionId?: string | null }) => Promise<string | null>)
+      | undefined;
+    expect(refreshHandler).toBeDefined();
+    codexManager.refreshCodexSessionId.mockResolvedValue('session-from-fs');
+    const result = await refreshHandler?.({}, { worktreeId: 'project-root:proj' });
+    expect(codexManager.refreshCodexSessionId).toHaveBeenCalledWith('wt-main', undefined);
+    expect(result).toBe('session-from-fs');
+  });
+
+  it('rejects session refresh when no canonical worktree exists', async () => {
+    const { codexManager } = createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const refreshHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.codexRefreshSessionId)?.[1] as
+      | ((event: unknown, payload: { worktreeId: string; sessionId?: string | null }) => Promise<string | null>)
+      | undefined;
+    await expect(refreshHandler?.({}, { worktreeId: 'project-root:missing' })).rejects.toThrow(/No canonical worktree/);
+    expect(codexManager.refreshCodexSessionId).not.toHaveBeenCalled();
+  });
+
+  it('lists Codex sessions via the canonical worktree id', async () => {
+    const { codexManager } = createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const listHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.codexListSessions)?.[1] as
+      | ((event: unknown, payload: { worktreeId: string }) => Promise<Array<{ id: string; mtimeMs: number }>>)
+      | undefined;
+    expect(listHandler).toBeDefined();
+    codexManager.listCodexSessionCandidates.mockResolvedValue([{ id: 'abc', mtimeMs: 1 }]);
+    const result = await listHandler?.({}, { worktreeId: 'project-root:proj' });
+    expect(codexManager.listCodexSessionCandidates).toHaveBeenCalledWith('wt-main');
+    expect(result).toEqual([{ id: 'abc', mtimeMs: 1 }]);
   });
 });

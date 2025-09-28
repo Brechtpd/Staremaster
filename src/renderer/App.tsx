@@ -41,6 +41,9 @@ interface PaneInstance {
   bootstrapped?: boolean;
 }
 
+const formatResumeCommand = (sessionId?: string | null): string =>
+  sessionId ? `codex resume --yolo ${sessionId}` : '—';
+
 interface PaneLayoutState {
   panes: PaneInstance[];
   activePaneId: string;
@@ -708,6 +711,36 @@ export const App: React.FC = () => {
     [state.worktrees]
   );
 
+  const resolveSessionWorktreeId = useCallback(
+    (worktreeId: string): string | null => {
+      if (!worktreeId.startsWith('project-root:')) {
+        return worktreeId;
+      }
+      const projectId = worktreeId.slice('project-root:'.length);
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        return null;
+      }
+      const candidates = state.worktrees.filter((item) => item.projectId === projectId);
+      if (candidates.length === 0) {
+        return null;
+      }
+      if (project.defaultWorktreeId) {
+        const preferred = candidates.find((item) => item.id === project.defaultWorktreeId);
+        if (preferred) {
+          return preferred.id;
+        }
+      }
+      const sorted = [...candidates].sort((a, b) => {
+        const aTime = Date.parse(a.createdAt ?? '');
+        const bTime = Date.parse(b.createdAt ?? '');
+        return bTime - aTime;
+      });
+      return sorted[0]?.id ?? null;
+    },
+    [state.projects, state.worktrees]
+  );
+
   const selectProject = useCallback(
     (projectId: string) => {
       setCollapsedProjectIds((prev) => prev.filter((id) => id !== projectId));
@@ -741,8 +774,11 @@ export const App: React.FC = () => {
     if (!project) {
       return null;
     }
-    const representative = state.worktrees.find((item) => item.projectId === project.id);
-    const branch = representative?.branch ?? 'main';
+    const canonicalId = resolveSessionWorktreeId(selectedWorktreeId);
+    const canonical = canonicalId
+      ? state.worktrees.find((item) => item.id === canonicalId)
+      : undefined;
+    const branch = canonical?.branch ?? 'main';
     return {
       id: selectedWorktreeId,
       projectId: project.id,
@@ -750,11 +786,11 @@ export const App: React.FC = () => {
       branch,
       path: project.root,
       createdAt: project.createdAt,
-      status: 'ready',
-      codexStatus: 'idle',
-      codexResumeCommand: project.codexResumeCommand
+      status: canonical?.status ?? 'ready',
+      codexStatus: canonical?.codexStatus ?? 'idle',
+      lastError: canonical?.lastError
     };
-  }, [selectedWorktreeId, state.projects, state.worktrees]);
+  }, [resolveSessionWorktreeId, selectedWorktreeId, state.projects, state.worktrees]);
 
   const selectedWorktree = useMemo<WorktreeDescriptor | null>(() => {
     if (rootWorktree) {
@@ -1463,7 +1499,10 @@ export const App: React.FC = () => {
       isActive: boolean;
       isVisible: boolean;
     }) => {
-      const effectiveSession = session ?? codexSessions.get(worktree.id);
+      const sessionWorktreeId = resolveSessionWorktreeId(worktree.id);
+      const effectiveSession = sessionWorktreeId
+        ? codexSessions.get(sessionWorktreeId) ?? session
+        : session;
 
       return (
         <div
@@ -1483,8 +1522,13 @@ export const App: React.FC = () => {
               active={isActive}
               visible={isVisible}
               paneId={pane.id}
+              sessionWorktreeId={sessionWorktreeId}
               onNotification={setNotification}
-              onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
+              onUserInput={(data) => {
+                if (sessionWorktreeId) {
+                  handleCodexUserInput(sessionWorktreeId, data);
+                }
+              }}
               onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
               onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
               initialScrollState={codexScrollStateRef.current[`${worktree.id}:${pane.id}`]}
@@ -1501,8 +1545,13 @@ export const App: React.FC = () => {
               active={isActive}
               visible={isVisible}
               paneId={pane.id}
+              sessionWorktreeId={sessionWorktreeId}
               onNotification={setNotification}
-              onUserInput={(data) => handleCodexUserInput(worktree.id, data)}
+              onUserInput={(data) => {
+                if (sessionWorktreeId) {
+                  handleCodexUserInput(sessionWorktreeId, data);
+                }
+              }}
               onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
               onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
               initialScrollState={codexScrollStateRef.current[`${worktree.id}:${pane.id}`]}
@@ -1521,9 +1570,9 @@ export const App: React.FC = () => {
       isTerminalCodex,
       markPaneBootstrapped,
       markPaneUnbootstrapped,
-      setNotification,
-      state.projects,
-      state.worktrees
+      codexSessions,
+      resolveSessionWorktreeId,
+      setNotification
     ]
   );
 
@@ -1651,6 +1700,9 @@ export const App: React.FC = () => {
                   {state.projects.map((project) => {
                     const rootId = `project-root:${project.id}`;
                     const worktrees = state.worktrees.filter((w) => w.projectId === project.id);
+                    const defaultSession = project.defaultWorktreeId
+                      ? codexSessions.get(project.defaultWorktreeId)
+                      : undefined;
                     return (
                       <div key={project.id} style={{ padding: '6px 8px', borderBottom: '1px solid #333' }}>
                         <div>
@@ -1658,7 +1710,7 @@ export const App: React.FC = () => {
                           <span style={{ marginLeft: 8, opacity: 0.8 }}>root</span>
                         </div>
                         <div style={{ fontSize: '0.85em', opacity: 0.9 }}>
-                          resume: {project.codexResumeCommand ?? '—'}
+                          resume: {formatResumeCommand(defaultSession?.codexSessionId)}
                         </div>
                         <div style={{ marginTop: 4 }}>
                           {worktrees.map((w) => {
@@ -1670,7 +1722,7 @@ export const App: React.FC = () => {
                                   <span style={{ marginLeft: 8, opacity: 0.8 }}>{w.branch}</span>
                                 </div>
                                 <div style={{ fontSize: '0.85em', opacity: 0.9 }}>
-                                  sessionId: {session?.codexSessionId ?? '—'} · resume: {w.codexResumeCommand ?? '—'}
+                                  sessionId: {session?.codexSessionId ?? '—'} · resume: {formatResumeCommand(session?.codexSessionId)}
                                 </div>
                               </div>
                             );

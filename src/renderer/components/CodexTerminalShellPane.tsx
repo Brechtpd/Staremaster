@@ -7,6 +7,7 @@ import type { DerivedCodexSession } from '../codex-model';
 interface CodexTerminalShellPaneProps {
   api: RendererApi;
   worktree: WorktreeDescriptor;
+  sessionWorktreeId: string | null;
   session: DerivedCodexSession | undefined;
   active: boolean;
   visible: boolean;
@@ -21,105 +22,8 @@ interface CodexTerminalShellPaneProps {
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
 
-const CODEX_RESUME_REGEX = /codex resume --yolo (\S+)/i;
-const ANSI_ESCAPE = '\u001b';
-const ANSI_CSI_REGEX = new RegExp(`${ANSI_ESCAPE}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
-const ANSI_OSC_LINK_REGEX = new RegExp(`${ANSI_ESCAPE}\\]8;;.*?\u0007`, 'g');
-const ANSI_OSC_TERMINATOR_REGEX = new RegExp(`${ANSI_ESCAPE}\\\\`, 'g');
-
-const stripControlCharacters = (value: string, replacement: string = ' '): string => {
-  if (!value) {
-    return '';
-  }
-  let result = '';
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0x20) {
-      result += value[index];
-    } else if (replacement) {
-      result += replacement;
-    }
-  }
-  return result;
-};
-
-const stripAnsiSequences = (input: string): string =>
-  input
-    .replace(ANSI_OSC_LINK_REGEX, '')
-    .replace(ANSI_OSC_TERMINATOR_REGEX, '')
-    .replace(ANSI_CSI_REGEX, '');
-
-const extractResumeCommand = (chunk: string): string | null => {
-  const cleaned = stripAnsiSequences(chunk);
-  const match = cleaned.match(CODEX_RESUME_REGEX);
-  return match ? `codex resume --yolo ${match[1]}` : null;
-};
-
-const SESSION_ID_FLAG_PREFIXES = ['--session', '--session-id', '--resume-id', '--yolo'];
-
-const sanitizeResumeCommand = (command: string | null | undefined): string | null => {
-  if (!command) {
-    return null;
-  }
-  const trimmed = command.trim();
-  if (!/^codex\s+resume\b/i.test(trimmed)) return null;
-  const sessionId = extractSessionIdFromCommand(trimmed);
-  return sessionId ? `codex resume --yolo ${sessionId}` : null;
-};
-
-const extractSessionIdFromCommand = (command?: string | null): string | null => {
-  if (!command) {
-    return null;
-  }
-  const sanitized = stripControlCharacters(stripAnsiSequences(command), ' ');
-  const collapsed = sanitized.replace(/\s+/g, ' ').trim();
-  if (!collapsed.toLowerCase().includes('codex resume')) {
-    return null;
-  }
-  const tokens = collapsed.split(' ');
-  let fallback: string | null = null;
-
-  const stripTrailing = (value: string) => value.replace(/[.,;:]+$/, '');
-  const isSessionFlag = (flag: string) => SESSION_ID_FLAG_PREFIXES.some((prefix) => flag.startsWith(prefix));
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (!token) {
-      continue;
-    }
-    if (token.startsWith('--')) {
-      const equalsIndex = token.indexOf('=');
-      const flag = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
-      if (equalsIndex !== -1 && equalsIndex < token.length - 1) {
-        const value = stripTrailing(token.slice(equalsIndex + 1));
-        if (isSessionFlag(flag) && value) {
-          return value;
-        }
-        if (value) {
-          fallback = value;
-        }
-        continue;
-      }
-      const next = tokens[index + 1];
-      if (next && !next.startsWith('--')) {
-        const value = stripTrailing(next);
-        if (isSessionFlag(flag) && value) {
-          return value;
-        }
-        if (value) {
-          fallback = value;
-        }
-      }
-      continue;
-    }
-    const value = stripTrailing(token);
-    if (value && value.toLowerCase() !== 'codex' && value.toLowerCase() !== 'resume') {
-      fallback = value;
-    }
-  }
-
-  return fallback;
-};
+const buildResumeCommand = (sessionId: string | null | undefined): string | null =>
+  sessionId ? `codex resume --yolo ${sessionId}` : null;
 
 const isScrolledToBottom = (terminal: CodexTerminalHandle | null): boolean => {
   if (!terminal) {
@@ -131,6 +35,7 @@ const isScrolledToBottom = (terminal: CodexTerminalHandle | null): boolean => {
 export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   api,
   worktree,
+  sessionWorktreeId,
   session,
   active,
   visible,
@@ -157,37 +62,77 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   const wasAtBottomRef = useRef<boolean>(true);
   const errorRef = useRef<string | null>(null);
   const pendingStartRef = useRef<Promise<void> | null>(null);
-  const resumeCommandRef = useRef<string | null>(sanitizeResumeCommand(worktree.codexResumeCommand));
-  const lastPersistedCommandRef = useRef<string | null>(sanitizeResumeCommand(worktree.codexResumeCommand));
   const initialScrollRestoredRef = useRef<boolean>(false);
   const scrollChangeCallbackRef = useRef<typeof onScrollStateChange>(onScrollStateChange);
-  const [resumeCommandDisplay, setResumeCommandDisplay] = useState<string | null>(
-    sanitizeResumeCommand(worktree.codexResumeCommand)
-  );
-  const sessionIdDisplay = session?.codexSessionId ?? extractSessionIdFromCommand(resumeCommandDisplay);
-  const [rescanBusy, setRescanBusy] = useState(false);
+  const [latestSessionId, setLatestSessionId] = useState<string | null>(session?.codexSessionId ?? null);
+  const resolvedWorktreeId = sessionWorktreeId ?? (worktree.id.startsWith('project-root:') ? null : worktree.id);
+  const codexUnavailable = resolvedWorktreeId == null;
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
+  const [sessionPickerLoading, setSessionPickerLoading] = useState(false);
+  const [sessionPickerError, setSessionPickerError] = useState<string | null>(null);
+  const [sessionChoices, setSessionChoices] = useState<Array<{ id: string; mtimeMs: number }>>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const autoPickerPromptedRef = useRef(false);
+  const displayedSessionId = session?.codexSessionId ?? latestSessionId;
+  const resumeCommandDisplay = buildResumeCommand(displayedSessionId);
+
+  const closeSessionPicker = useCallback(() => {
+    setSessionPickerOpen(false);
+  }, []);
+
+  const openSessionPicker = useCallback(async () => {
+    if (!resolvedWorktreeId) {
+      return;
+    }
+    setSessionPickerLoading(true);
+    setSessionPickerError(null);
+    try {
+      const options = await api.listCodexSessions(resolvedWorktreeId);
+      setSessionChoices(options);
+      setSelectedSessionId(options[0]?.id ?? null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to list Codex sessions';
+      setSessionPickerError(message);
+      setSessionChoices([]);
+      setSelectedSessionId(null);
+    } finally {
+      setSessionPickerLoading(false);
+      setSessionPickerOpen(true);
+    }
+  }, [api, resolvedWorktreeId]);
+
+  const handleConfirmSession = useCallback(async () => {
+    if (!resolvedWorktreeId) {
+      return;
+    }
+    try {
+      const chosen = selectedSessionId ?? undefined;
+      const result = await api.refreshCodexSessionId(resolvedWorktreeId, chosen);
+      setLatestSessionId(result);
+      closeSessionPicker();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update Codex session';
+      onNotification(message);
+    }
+  }, [api, closeSessionPicker, onNotification, resolvedWorktreeId, selectedSessionId]);
+
+  const handleStartNewSession = useCallback(async () => {
+    if (!resolvedWorktreeId) {
+      return;
+    }
+    try {
+      await api.refreshCodexSessionId(resolvedWorktreeId, null);
+      setLatestSessionId(null);
+      closeSessionPicker();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to clear Codex session';
+      onNotification(message);
+    }
+  }, [api, closeSessionPicker, onNotification, resolvedWorktreeId]);
 
   useEffect(() => {
     scrollChangeCallbackRef.current = onScrollStateChange;
   }, [onScrollStateChange]);
-
-  const persistResumeCommand = useCallback(
-    (command: string | null) => {
-      const sanitized = sanitizeResumeCommand(command);
-      if (lastPersistedCommandRef.current === sanitized) {
-        return;
-      }
-      lastPersistedCommandRef.current = sanitized;
-      resumeCommandRef.current = sanitized;
-      const updates: Array<Promise<void>> = [api.setCodexResumeCommand(worktree.id, sanitized)];
-      void Promise.all(updates).catch((error) => {
-        const message = error instanceof Error ? error.message : 'Failed to persist Codex resume command';
-        onNotification(message);
-      });
-      setResumeCommandDisplay(sanitized);
-    },
-    [api, onNotification, worktree.id]
-  );
 
   useEffect(() => {
     paneIdRef.current = paneId;
@@ -196,6 +141,14 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
+
+  useEffect(() => {
+    if (!resolvedWorktreeId || session?.codexSessionId || autoPickerPromptedRef.current || !visible) {
+      return;
+    }
+    autoPickerPromptedRef.current = true;
+    void openSessionPicker();
+  }, [openSessionPicker, resolvedWorktreeId, session?.codexSessionId, visible]);
 
   useEffect(() => {
     if (initialScrollRestoredRef.current) {
@@ -209,64 +162,35 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   }, [initialScrollState]);
 
   useEffect(() => {
-    const normalized = sanitizeResumeCommand(worktree.codexResumeCommand);
-    if (normalized !== worktree.codexResumeCommand) {
-      persistResumeCommand(normalized);
-      return;
+    if (session?.codexSessionId) {
+      setLatestSessionId(session.codexSessionId);
+    } else if (worktree.id !== previousWorktreeIdRef.current) {
+      setLatestSessionId(null);
     }
-    resumeCommandRef.current = normalized;
-    lastPersistedCommandRef.current = normalized;
-    setResumeCommandDisplay(normalized);
-  }, [persistResumeCommand, worktree.codexResumeCommand]);
+  }, [session?.codexSessionId, worktree.id]);
 
   useEffect(() => {
+    if (!resolvedWorktreeId || session?.codexSessionId) {
+      return;
+    }
     let cancelled = false;
     api
-      .refreshCodexResumeCommand(worktree.id)
-      .then((command) => {
-        if (cancelled) {
-          return;
+      .refreshCodexSessionId(resolvedWorktreeId)
+      .then((id) => {
+        if (!cancelled && id) {
+          setLatestSessionId(id);
         }
-        const normalized = sanitizeResumeCommand(command);
-        if (normalized) {
-          persistResumeCommand(normalized);
-          return;
-        }
-        const existing = worktree.codexResumeCommand ?? null;
-        if (existing) {
-          lastPersistedCommandRef.current = null;
-          persistResumeCommand(sanitizeResumeCommand(existing));
-          return;
-        }
-        resumeCommandRef.current = null;
-        lastPersistedCommandRef.current = null;
-        setResumeCommandDisplay(null);
       })
       .catch((error) => {
         if (!cancelled) {
-          const message = error instanceof Error ? error.message : 'Failed to refresh Codex resume command';
+          const message = error instanceof Error ? error.message : 'Failed to refresh Codex session id';
           onNotification(message);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [
-    api,
-    onNotification,
-    persistResumeCommand,
-    worktree.codexResumeCommand,
-    worktree.id
-  ]);
-
-  useEffect(() => {
-    const codexSessionId = session?.codexSessionId;
-    if (!codexSessionId) {
-      return;
-    }
-    const command = `codex resume --yolo ${codexSessionId}`;
-    persistResumeCommand(command);
-  }, [persistResumeCommand, session?.codexSessionId]);
+  }, [api, onNotification, resolvedWorktreeId, session?.codexSessionId]);
 
   const handleTerminalScroll = useCallback(
     ({ position, atBottom }: { position: number; atBottom: boolean }) => {
@@ -397,16 +321,16 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
     if (status === 'running' || pendingStartRef.current) {
       return;
     }
-    setStatusWithSideEffects('starting');
-    const startupCommand = session?.codexSessionId
-      ? `codex resume --yolo ${session.codexSessionId}`
-      : resumeCommandRef.current ?? 'codex --yolo';
-    if (startupCommand.startsWith('codex resume --yolo')) {
-      persistResumeCommand(startupCommand);
+    if (!resolvedWorktreeId) {
+      onNotification('No linked worktree available to start Codex terminal.');
+      return;
     }
+    setStatusWithSideEffects('starting');
+    const startupSessionId = session?.codexSessionId ?? latestSessionId;
+    const startupCommand = buildResumeCommand(startupSessionId) ?? 'codex --yolo';
     startRef.current = Date.now();
     const startPromise = api
-      .startWorktreeTerminal(worktree.id, {
+      .startWorktreeTerminal(resolvedWorktreeId, {
         startupCommand,
         paneId: paneIdRef.current,
         respondToCursorProbe: true
@@ -433,7 +357,18 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       });
     pendingStartRef.current = startPromise;
     await startPromise;
-  }, [active, api, onBootstrapped, onNotification, persistResumeCommand, session?.codexSessionId, setStatusWithSideEffects, status, syncInputState, worktree.id]);
+  }, [
+    active,
+    api,
+    onBootstrapped,
+    onNotification,
+    latestSessionId,
+    resolvedWorktreeId,
+    session?.codexSessionId,
+    setStatusWithSideEffects,
+    status,
+    syncInputState
+  ]);
 
   useEffect(() => {
     if (!visible) {
@@ -458,11 +393,16 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   }, [onBootstrapped, status]);
 
   useEffect(() => {
+    if (!resolvedWorktreeId) {
+      return () => {
+        // noop unsubscribe
+      };
+    }
+
     const unsubscribeOutput = api.onTerminalOutput((payload) => {
-      if (payload.worktreeId !== worktree.id) {
+      if (payload.worktreeId !== resolvedWorktreeId) {
         return;
       }
-      // Strict pane filtering
       const currentPane = paneIdRef.current;
       if (currentPane !== undefined) {
         if (payload.paneId !== currentPane) {
@@ -471,17 +411,11 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       } else if (payload.paneId !== undefined) {
         return;
       }
-      const chunk = payload.chunk;
-
-      const candidate = extractResumeCommand(chunk);
-      if (candidate && candidate !== lastPersistedCommandRef.current) {
-        persistResumeCommand(candidate);
-      }
-      writeChunk(chunk);
+      writeChunk(payload.chunk);
     });
 
     const unsubscribeExit = api.onTerminalExit((payload) => {
-      if (payload.worktreeId !== worktree.id) {
+      if (payload.worktreeId !== resolvedWorktreeId) {
         return;
       }
       setStatusWithSideEffects('exited');
@@ -489,21 +423,17 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       setLastExit({ code: payload.exitCode, signal: payload.signal });
       pendingStartRef.current = null;
       bootstrappedRef.current = false;
-      const hadError = (payload.exitCode ?? 0) !== 0 || Boolean(payload.signal);
-      if (hadError && lastPersistedCommandRef.current) {
-        persistResumeCommand(null);
-        api
-          .refreshCodexResumeCommand(worktree.id)
-          .then((command) => {
-            if (command) {
-              persistResumeCommand(command);
-            }
-          })
-          .catch((error) => {
-            const message = error instanceof Error ? error.message : 'Failed to refresh Codex resume command';
-            onNotification(message);
-          });
-      }
+      void api
+        .refreshCodexSessionId(resolvedWorktreeId)
+        .then((id) => {
+          if (id) {
+            setLatestSessionId(id);
+          }
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : 'Failed to refresh Codex session id';
+          onNotification(message);
+        });
       onUnbootstrapped?.();
     });
 
@@ -511,7 +441,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       unsubscribeOutput();
       unsubscribeExit();
     };
-  }, [api, onNotification, onUnbootstrapped, persistResumeCommand, setStatusWithSideEffects, worktree.id, writeChunk]);
+  }, [api, onNotification, onUnbootstrapped, resolvedWorktreeId, setStatusWithSideEffects, writeChunk]);
 
   useEffect(() => {
     if (active && visible && status === 'running') {
@@ -536,50 +466,34 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
 
   const handleTerminalData = useCallback(
     (data: string) => {
-      if (!data || status !== 'running' || !active || !visible) {
+      if (!data || status !== 'running' || !active || !visible || !resolvedWorktreeId) {
         return;
       }
       onUserInput?.(data);
-    api
-      .sendTerminalInput(worktree.id, data, { paneId: paneIdRef.current })
+      api
+        .sendTerminalInput(resolvedWorktreeId, data, { paneId: paneIdRef.current })
         .catch((error) => {
           const message = error instanceof Error ? error.message : 'Failed to send Codex terminal input';
           errorRef.current = message;
           onNotification(message);
         });
     },
-    [active, api, onNotification, onUserInput, status, visible, worktree.id]
+    [active, api, onNotification, onUserInput, resolvedWorktreeId, status, visible]
   );
 
   const handleResize = useCallback(
     ({ cols, rows }: { cols: number; rows: number }) => {
-    api
-      .resizeTerminal({ worktreeId: worktree.id, cols, rows, paneId: paneIdRef.current })
+      if (!resolvedWorktreeId) {
+        return;
+      }
+      api
+        .resizeTerminal({ worktreeId: resolvedWorktreeId, cols, rows, paneId: paneIdRef.current })
         .catch((error) => {
           console.warn('[codex-terminal] failed to resize pty', error);
         });
     },
-    [api, worktree.id]
+    [api, resolvedWorktreeId]
   );
-
-  const handleRescanResume = useCallback(async () => {
-    setRescanBusy(true);
-    try {
-      await api.refreshCodexResumeFromLogs(worktree.id);
-      const updated = sanitizeResumeCommand(await api.refreshCodexResumeCommand(worktree.id));
-      resumeCommandRef.current = updated;
-      lastPersistedCommandRef.current = updated;
-      setResumeCommandDisplay(updated);
-      if (updated !== worktree.codexResumeCommand) {
-        persistResumeCommand(updated);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to rescan Codex resume command';
-      onNotification(message);
-    } finally {
-      setRescanBusy(false);
-    }
-  }, [api, onNotification, persistResumeCommand, worktree.codexResumeCommand, worktree.id]);
 
   const attachTerminalRef = useCallback(
     (instance: CodexTerminalHandle | null) => {
@@ -610,11 +524,14 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
           <button
             type="button"
             onClick={() => void ensureTerminalStarted()}
-            disabled={status === 'starting'}
+            disabled={status === 'starting' || codexUnavailable}
           >
             {status === 'starting' ? 'Starting…' : 'Start Codex Terminal'}
           </button>
         </div>
+      ) : null}
+      {codexUnavailable ? (
+        <p className="terminal-hint">No linked worktree available for this tab.</p>
       ) : null}
       {lastExit ? (
         <p className="terminal-hint">
@@ -633,13 +550,70 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
       />
       {descriptorPid ? (
         <footer className="terminal-footer">
-          <span>PID: {descriptorPid}</span>
-          <span>Session ID: {sessionIdDisplay ?? '—'}</span>
-          <span>Resume: {resumeCommandDisplay ?? 'Unavailable'}</span>
-          <button type="button" onClick={handleRescanResume} disabled={rescanBusy}>
-            {rescanBusy ? 'Rescanning…' : 'Rescan Resume'}
+          <div className="terminal-footer__details">
+            <span>PID: {descriptorPid}</span>
+            <span>Session ID: {displayedSessionId ?? '—'}</span>
+            <span>Resume: {resumeCommandDisplay ?? 'Unavailable'}</span>
+          </div>
+          <button type="button" onClick={() => void openSessionPicker()} disabled={codexUnavailable}>
+            Switch Session
           </button>
         </footer>
+      ) : null}
+      {sessionPickerOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={closeSessionPicker}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="codex-terminal-session-picker-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="codex-terminal-session-picker-title">Select Codex Session</h2>
+            {sessionPickerLoading ? <p>Loading…</p> : null}
+            {sessionPickerError ? <p className="modal-error">{sessionPickerError}</p> : null}
+            {!sessionPickerLoading && !sessionPickerError ? (
+              sessionChoices.length > 0 ? (
+                <ul className="session-picker__list">
+                  {sessionChoices.map((choice) => (
+                    <li key={choice.id}>
+                      <label>
+                        <input
+                          type="radio"
+                          name="codex-terminal-session-choice"
+                          value={choice.id}
+                          checked={selectedSessionId === choice.id}
+                          onChange={() => setSelectedSessionId(choice.id)}
+                        />
+                        <span className="session-picker__id">{choice.id}</span>
+                        <span className="session-picker__timestamp">
+                          {new Date(choice.mtimeMs).toLocaleString()}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>No previous Codex sessions found for this worktree.</p>
+              )
+            ) : null}
+            <div className="modal-actions">
+              <button
+                type="button"
+                onClick={handleConfirmSession}
+                disabled={sessionPickerLoading || (!sessionChoices.length && selectedSessionId == null)}
+              >
+                Use Selected Session
+              </button>
+              <button type="button" onClick={handleStartNewSession} disabled={sessionPickerLoading}>
+                Start New Session
+              </button>
+              <button type="button" onClick={closeSessionPicker} disabled={sessionPickerLoading}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </section>
   );

@@ -23,9 +23,9 @@ This document describes the current architecture of the Staremaster Electron app
 ### App State and Persistence
 
 - `state.json` lives in Electron `userData` and is managed by `ProjectStore`.
-  - Projects: `id`, `root`, `name`, timestamps; `defaultWorktreeId`; `codexResumeCommand` for the project-root alias.
-  - Worktrees: `id`, `projectId`, `path`, `branch`, `featureName`, status; `codexStatus`, `codexResumeCommand`.
-  - Sessions: last known Codex sessions per worktree id.
+  - Projects: `id`, `root`, `name`, timestamps; `defaultWorktreeId` and `lastCodexWorktreeId`.
+  - Worktrees: `id`, `projectId`, `path`, `branch`, `featureName`, status; `codexStatus`, `lastError`.
+  - Sessions: last known Codex sessions per worktree id (including captured Codex session ids).
 - Codex logs are written to `<userData>/codex-logs/<worktreeId>.log`.
 - Terminal history is persisted to `<userData>/terminal-logs/<worktreeId>[:paneId].jsonl` (see TerminalService), and also kept in memory with limits.
 
@@ -52,11 +52,11 @@ This document describes the current architecture of the Staremaster Electron app
 ### CodexSessionManager (`src/main/services/CodexSessionManager.ts`)
 
 - Manages Codex processes (pty under the hood) and owns Codex-specific behavior:
-  - Robust resume command detection from stdout: strips ANSI, tolerates varied flags/orders/ids.
-  - Filesystem fallback: scans `~/.codex/sessions` (with day offsets, realpath match) and `~/.codex/history.jsonl` (accepts `session_id` or `id`).
-  - Persists detected resume commands to both canonical worktree and its `project-root:<id>` alias.
+  - Launches Codex sessions (fresh or resume) and promotes status transitions.
+  - Captures Codex session ids exclusively by polling `~/.codex/sessions`, matching by canonical `cwd`.
+  - Persists captured ids to the session store and updates the project default worktree when new ids appear.
   - Writes Codex logs to `<userData>/codex-logs`.
-  - Does not clear persisted resume on non-zero exit (we keep stale candidates and rely on next resume attempt).
+  - On resume failure, automatically falls back to a fresh `codex --yolo` start.
 
 ## IPC Layer (`src/main/ipc/registerIpcHandlers.ts`)
 
@@ -66,7 +66,7 @@ This document describes the current architecture of the Staremaster Electron app
 - Codex terminal gating: Codex terminal events use a tracked Set of pane keys (`<worktreeId>:<paneId>`). Only keys added via `codexTerminalStart` get codexTerminalOutput/Exit forwarded.
   - Note: Exit payloads don’t carry `paneId`; gating cleanup is partial today (see Known Gaps).
 - Codex manager events: Forward Codex stdout/status to the renderer; (see Known Gaps for alias mirroring).
-- Diagnostics: Adds `codex:refresh-resume-logs` to rescan stored logs and backfill resume commands.
+- Diagnostics: adds `codex:refresh-session-id` for targeted rescan of `~/.codex/sessions`.
 
 ## Renderer
 
@@ -81,24 +81,20 @@ This document describes the current architecture of the Staremaster Electron app
 - Manager-driven Codex UI (not a shell):
   - Start/stop/input via Codex IPC.
   - Hydration: fetch `getCodexLog(worktree.id)` and stream Codex output/status events.
-  - Footer shows derived Session ID and resume command; a “Rescan Resume” button calls `refreshCodexResumeFromLogs/Command` and updates local display.
+- Footer shows derived Session ID and resume command; a “Switch Session” button opens a picker of detected Codex sessions (with an option to start a fresh one) and updates the display once confirmed.
 
 ### CodexTerminalShellPane (`src/renderer/components/CodexTerminalShellPane.tsx`)
 
 - Terminal-driven Codex UI using the unified TerminalService:
   - Starts a pty with a Codex startup command (resume or fresh) and sets up snapshot/delta hydration.
-  - Footer shows PID, Session ID (derived), and resume command with a “Rescan Resume” button.
+- Footer shows PID, Session ID (derived), and resume command with a “Switch Session” button tied to the same session picker used in the renderer Codex panel.
   - Input/resize is sent to terminal IPC.
 
 ## Resume Handling Summary
 
-- Multiple capture paths:
-  - Stdout detection (Codex manager, and opportunistically on terminal output in main).
-  - Log file parsing via the codex log directory.
-  - `~/.codex` sessions/history scanning.
-- Persistence targets (always both):
-  - Canonical `worktree.id` entry and `project-root:<projectId>` alias.
-- Default worktree: The project’s `defaultWorktreeId` is updated to the latest known resume target when new candidates are found.
+- Source of truth: Codex session ids are resolved by scanning `~/.codex/sessions`, matching on canonical worktree `cwd` (with day-window lookbacks).
+- Persistence targets: captured ids are stored in the session list (`worktreeId` keyed) and the project’s `defaultWorktreeId` is updated when a new id is recorded.
+- Renderer derives `codex resume --yolo <id>` on demand from the stored session id; no resume commands are persisted in state.
 
 ## Terminal History and Hydration
 

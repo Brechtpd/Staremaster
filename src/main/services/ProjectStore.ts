@@ -141,15 +141,6 @@ export class ProjectStore {
     await this.save();
   }
 
-  async updateCodexResumeCommand(targetId: string, command: string | null): Promise<void> {
-    if (targetId.startsWith('project-root:')) {
-      const projectId = targetId.slice('project-root:'.length);
-      await this.patchProject(projectId, { codexResumeCommand: command ?? undefined });
-    } else {
-      await this.patchWorktree(targetId, { codexResumeCommand: command ?? undefined });
-    }
-  }
-
   async setProjectDefaultWorktree(projectId: string, worktreeId: string | null): Promise<void> {
     await this.patchProject(projectId, { defaultWorktreeId: worktreeId ?? undefined });
   }

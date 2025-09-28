@@ -19,9 +19,8 @@ const IPCChannels = {
   codexStatus: 'codex:status',
   codexLog: 'codex:log',
   codexSummarize: 'codex:summarize',
-  codexSetResume: 'codex:set-resume',
-  codexRefreshResume: 'codex:refresh-resume',
-  codexRefreshResumeLogs: 'codex:refresh-resume-logs',
+  codexRefreshSessionId: 'codex:refresh-session-id',
+  codexListSessions: 'codex:list-sessions',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   terminalStart: 'terminal:start',
@@ -60,12 +59,9 @@ const api: RendererApi = {
   getCodexLog: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexLog, { worktreeId }),
   summarizeCodexOutput: (worktreeId, text) =>
     ipcRenderer.invoke(IPCChannels.codexSummarize, { worktreeId, text }),
-  setCodexResumeCommand: (worktreeId, command) =>
-    ipcRenderer.invoke(IPCChannels.codexSetResume, { worktreeId, command }),
-  refreshCodexResumeCommand: (worktreeId) =>
-    ipcRenderer.invoke(IPCChannels.codexRefreshResume, { worktreeId }),
-  refreshCodexResumeFromLogs: (worktreeId) =>
-    ipcRenderer.invoke(IPCChannels.codexRefreshResumeLogs, { worktreeId }),
+  refreshCodexSessionId: (worktreeId, sessionId) =>
+    ipcRenderer.invoke(IPCChannels.codexRefreshSessionId, { worktreeId, sessionId }),
+  listCodexSessions: (worktreeId) => ipcRenderer.invoke(IPCChannels.codexListSessions, { worktreeId }),
   startWorktreeTerminal: (worktreeId, options) =>
     ipcRenderer.invoke(IPCChannels.terminalStart, {
       worktreeId,

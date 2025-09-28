@@ -521,8 +521,10 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
       />
       {descriptor ? (
         <footer className="terminal-footer">
-          <span>Shell: {descriptor.shell}</span>
-          {descriptor.pid > 0 ? <span>PID: {descriptor.pid}</span> : null}
+          <div className="terminal-footer__details">
+            <span>Shell: {descriptor.shell}</span>
+            {descriptor.pid > 0 ? <span>PID: {descriptor.pid}</span> : null}
+          </div>
         </footer>
       ) : null}
     </section>

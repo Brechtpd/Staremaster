@@ -56,17 +56,6 @@ afterAll(() => {
 });
 
 let lastOnData: ((data: string) => void) | null = null;
-let lastTerminalHandle: {
-  write: ReturnType<typeof vi.fn>;
-  clear: ReturnType<typeof vi.fn>;
-  focus: ReturnType<typeof vi.fn>;
-  setStdinDisabled: ReturnType<typeof vi.fn>;
-  refreshLayout: ReturnType<typeof vi.fn>;
-  scrollToBottom: ReturnType<typeof vi.fn>;
-  scrollToLine: ReturnType<typeof vi.fn>;
-  getScrollPosition: ReturnType<typeof vi.fn>;
-} | null = null;
-
 vi.mock('../../../src/renderer/components/CodexTerminal', () => {
   const MockTerminal = React.forwardRef(
     (
@@ -91,7 +80,6 @@ vi.mock('../../../src/renderer/components/CodexTerminal', () => {
       };
       React.useImperativeHandle(ref, () => handle);
       lastOnData = props.onData;
-      lastTerminalHandle = handle;
       return <div data-testid="mock-codex-terminal" />;
     }
   );
@@ -135,9 +123,8 @@ const createRendererApi = () => {
     getGitStatus: vi.fn(),
     getGitDiff: vi.fn(),
     summarizeCodexOutput: vi.fn(),
-    setCodexResumeCommand: vi.fn(),
-    refreshCodexResumeCommand: vi.fn(),
-    refreshCodexResumeFromLogs: vi.fn(),
+    refreshCodexSessionId: vi.fn(async () => null),
+    listCodexSessions: vi.fn(async () => []),
     startWorktreeTerminal: vi.fn(),
     stopWorktreeTerminal: vi.fn(),
     sendTerminalInput: vi.fn(),
@@ -160,7 +147,6 @@ const createRendererApi = () => {
 
 beforeEach(() => {
   lastOnData = null;
-  lastTerminalHandle = null;
 });
 
 describe('CodexPane', () => {
@@ -172,7 +158,8 @@ describe('CodexPane', () => {
     };
     const session: DerivedCodexSession = {
       status: 'idle',
-      signature: 'sig-idle'
+      signature: 'sig-idle',
+      codexSessionId: 'cached-session-id'
     };
 
     render(
@@ -180,6 +167,7 @@ describe('CodexPane', () => {
         api={api}
         bridge={api}
         worktree={worktree}
+        sessionWorktreeId="wt-main"
         session={session}
         active
         visible
@@ -189,7 +177,7 @@ describe('CodexPane', () => {
     );
 
     await waitFor(() => expect(startCodex).toHaveBeenCalledTimes(1));
-    expect(startCodex).toHaveBeenCalledWith('project-root:proj-1');
+    expect(startCodex).toHaveBeenCalledWith('wt-main');
   });
 
   it('sends input through the session worktree id when the terminal emits data', async () => {
@@ -200,7 +188,8 @@ describe('CodexPane', () => {
     };
     const session: DerivedCodexSession = {
       status: 'running',
-      signature: 'sig-running'
+      signature: 'sig-running',
+      codexSessionId: 'cached-session-id'
     };
 
     render(
@@ -208,6 +197,7 @@ describe('CodexPane', () => {
         api={api}
         bridge={null}
         worktree={worktree}
+        sessionWorktreeId="wt-main"
         session={session}
         active
         visible
@@ -223,12 +213,16 @@ describe('CodexPane', () => {
     });
 
     await waitFor(() => expect(sendCodexInput).toHaveBeenCalledTimes(1));
-    expect(sendCodexInput).toHaveBeenCalledWith('project-root:proj-1', 'ls\n');
+    expect(sendCodexInput).toHaveBeenCalledWith('wt-main', 'ls\n');
   });
 
   it('hydrates using the session worktree id when resuming without an active session id', async () => {
     const { api, getCodexLog } = createRendererApi();
     getCodexLog.mockResolvedValueOnce('cached output');
+    const refreshSessionId = api.refreshCodexSessionId as ReturnType<typeof vi.fn>;
+    refreshSessionId.mockResolvedValue('hydrated-session-id');
+    const listSessions = api.listCodexSessions as ReturnType<typeof vi.fn>;
+    listSessions.mockResolvedValue([]);
     const session: DerivedCodexSession = {
       status: 'idle',
       signature: 'sig-hydrate'
@@ -239,6 +233,7 @@ describe('CodexPane', () => {
         api={api}
         bridge={api}
         worktree={baseWorktree}
+        sessionWorktreeId="wt-main"
         session={session}
         active
         visible
@@ -247,20 +242,23 @@ describe('CodexPane', () => {
       />
     );
 
-    await waitFor(() => expect(getCodexLog).toHaveBeenCalledWith('project-root:proj-1'));
-    expect(lastTerminalHandle?.clear).toHaveBeenCalled();
+    await waitFor(() => expect(getCodexLog).toHaveBeenCalledWith('wt-main'));
+    const cancelButton = await screen.findByRole('button', { name: 'Cancel' });
+    await act(async () => {
+      fireEvent.click(cancelButton);
+    });
+    await screen.findByText('Session ID: hydrated-session-id');
   });
 
   it('updates the footer immediately after a manual resume rescan', async () => {
     const { api } = createRendererApi();
-    const refreshLogs = api.refreshCodexResumeFromLogs as ReturnType<typeof vi.fn>;
-    const refreshCommand = api.refreshCodexResumeCommand as ReturnType<typeof vi.fn>;
-    refreshLogs.mockResolvedValueOnce(undefined);
-    refreshCommand.mockResolvedValueOnce('codex resume --yolo fresh-session-id');
+    const refreshSessionId = api.refreshCodexSessionId as ReturnType<typeof vi.fn>;
+    refreshSessionId.mockResolvedValue('fresh-session-id');
+    const listSessions = api.listCodexSessions as ReturnType<typeof vi.fn>;
+    listSessions.mockResolvedValue([{ id: 'fresh-session-id', mtimeMs: Date.now() }]);
 
     const worktree: WorktreeDescriptor = {
-      ...baseWorktree,
-      codexResumeCommand: null
+      ...baseWorktree
     };
 
     const session: DerivedCodexSession = {
@@ -273,6 +271,7 @@ describe('CodexPane', () => {
         api={api}
         bridge={null}
         worktree={worktree}
+        sessionWorktreeId="wt-main"
         session={session}
         active
         visible
@@ -281,17 +280,20 @@ describe('CodexPane', () => {
       />
     );
 
-    const button = screen.getByRole('button', { name: 'Rescan Resume' });
+    const button = screen.getByRole('button', { name: 'Switch Session' });
     await act(async () => {
       fireEvent.click(button);
     });
 
-    await waitFor(() => expect(refreshLogs).toHaveBeenCalledWith('project-root:proj-1'));
-    await waitFor(() => expect(refreshCommand).toHaveBeenCalledWith('project-root:proj-1'));
+    await waitFor(() => expect(listSessions).toHaveBeenCalledWith('wt-main'));
 
-    await waitFor(() => {
-      expect(screen.getByText('Resume: codex resume --yolo fresh-session-id')).toBeInTheDocument();
-      expect(screen.getByText('Session ID: fresh-session-id')).toBeInTheDocument();
+    const useButton = await screen.findByRole('button', { name: 'Use Selected Session' });
+    await act(async () => {
+      fireEvent.click(useButton);
     });
+
+    await waitFor(() => expect(refreshSessionId).toHaveBeenCalledWith('wt-main', 'fresh-session-id'));
+    await screen.findByText('Resume: codex resume --yolo fresh-session-id');
+    await screen.findByText('Session ID: fresh-session-id');
   });
 });

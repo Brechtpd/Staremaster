@@ -31,6 +31,7 @@ interface CodexPaneProps {
   api: RendererApi;
   bridge: RendererApi | null;
   worktree: WorktreeDescriptor;
+  sessionWorktreeId: string | null;
   session: DerivedCodexSession | undefined;
   active: boolean;
   visible: boolean;
@@ -43,27 +44,8 @@ interface CodexPaneProps {
   onScrollStateChange?(worktreeId: string, state: { position: number; atBottom: boolean }): void;
 }
 
-const CODEX_RESUME_REGEX = /codex resume --yolo (\S+)/i;
-
-const sanitizeResumeCommand = (command: string | null | undefined): string | null => {
-  if (!command) return null;
-  const trimmed = command.trim();
-  if (!/^codex\s+resume\b/i.test(trimmed)) return null;
-  const sessionId = extractSessionIdFromCommand(trimmed);
-  return sessionId ? `codex resume --yolo ${sessionId}` : null;
-};
-
-const extractSessionIdFromCommand = (command?: string | null): string | null => {
-  if (!command) {
-    return null;
-  }
-  const match = CODEX_RESUME_REGEX.exec(command);
-  if (!match) {
-    return null;
-  }
-  const parts = match[0].trim().split(' ');
-  return parts[parts.length - 1] ?? null;
-};
+const buildResumeCommand = (sessionId: string | null | undefined): string | null =>
+  sessionId ? `codex resume --yolo ${sessionId}` : null;
 
 const stripCodexLogAnnotations = (log: string): string => {
   const annotationPattern = /^\[[^\]]+]\s+Session\s+(started|exited|stopping\b).*$/;
@@ -164,6 +146,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   api,
   bridge,
   worktree,
+  sessionWorktreeId,
   session,
   active,
   visible,
@@ -201,22 +184,101 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   const sessionSignature = session?.signature ?? 'none';
   const derivedError = session?.lastError;
   const hasCodexSessionId = Boolean(session?.codexSessionId);
-  const [resumeCommandDisplay, setResumeCommandDisplay] = useState<string | null>(
-    sanitizeResumeCommand(worktree.codexResumeCommand)
-  );
-  const [sessionIdDisplay, setSessionIdDisplay] = useState<string | null>(
-    session?.codexSessionId ?? extractSessionIdFromCommand(worktree.codexResumeCommand ?? null)
-  );
+  const [latestSessionId, setLatestSessionId] = useState<string | null>(session?.codexSessionId ?? null);
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
+  const [sessionPickerLoading, setSessionPickerLoading] = useState(false);
+  const [sessionPickerError, setSessionPickerError] = useState<string | null>(null);
+  const [sessionChoices, setSessionChoices] = useState<Array<{ id: string; mtimeMs: number }>>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const resolvedWorktreeId = sessionWorktreeId ?? (worktree.id.startsWith('project-root:') ? null : worktree.id);
+  const codexUnavailable = resolvedWorktreeId == null;
+  const autoPickerPromptedRef = useRef(false);
+  useEffect(() => {
+    if (session?.codexSessionId) {
+      setLatestSessionId(session.codexSessionId);
+    } else if (worktree.id !== previousWorktreeIdRef.current) {
+      setLatestSessionId(null);
+    }
+  }, [session?.codexSessionId, worktree.id]);
 
   useEffect(() => {
-    setResumeCommandDisplay(sanitizeResumeCommand(worktree.codexResumeCommand));
-  }, [worktree.codexResumeCommand]);
+    if (!resolvedWorktreeId || session?.codexSessionId) {
+      return;
+    }
+    let cancelled = false;
+    api
+      .refreshCodexSessionId(resolvedWorktreeId)
+      .then((id) => {
+        if (!cancelled && id) {
+          setLatestSessionId(id);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : 'Failed to refresh Codex session id';
+          onNotification(message);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, onNotification, resolvedWorktreeId, session?.codexSessionId]);
+  const displayedSessionId = session?.codexSessionId ?? latestSessionId;
+  const resumeCommandDisplay = buildResumeCommand(displayedSessionId);
 
-  useEffect(() => {
-    const derivedSessionId = session?.codexSessionId ?? extractSessionIdFromCommand(resumeCommandDisplay);
-    setSessionIdDisplay(derivedSessionId ?? null);
-  }, [resumeCommandDisplay, session?.codexSessionId]);
-  const [rescanBusy, setRescanBusy] = useState(false);
+  const closeSessionPicker = useCallback(() => {
+    setSessionPickerOpen(false);
+  }, []);
+
+  const openSessionPicker = useCallback(async () => {
+    if (!resolvedWorktreeId) {
+      return;
+    }
+    setSessionPickerLoading(true);
+    setSessionPickerError(null);
+    try {
+      const options = await api.listCodexSessions(resolvedWorktreeId);
+      setSessionChoices(options);
+      setSelectedSessionId(options[0]?.id ?? null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to list Codex sessions';
+      setSessionPickerError(message);
+      setSessionChoices([]);
+      setSelectedSessionId(null);
+    } finally {
+      setSessionPickerLoading(false);
+      setSessionPickerOpen(true);
+    }
+  }, [api, resolvedWorktreeId]);
+
+  const handleConfirmSession = useCallback(async () => {
+    if (!resolvedWorktreeId) {
+      return;
+    }
+    try {
+      const chosen = selectedSessionId ?? undefined;
+      const result = await api.refreshCodexSessionId(resolvedWorktreeId, chosen);
+      setLatestSessionId(result);
+      closeSessionPicker();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update Codex session';
+      onNotification(message);
+    }
+  }, [api, closeSessionPicker, onNotification, resolvedWorktreeId, selectedSessionId]);
+
+  const handleStartNewSession = useCallback(async () => {
+    if (!resolvedWorktreeId) {
+      return;
+    }
+    try {
+      await api.refreshCodexSessionId(resolvedWorktreeId, null);
+      setLatestSessionId(null);
+      closeSessionPicker();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to clear Codex session';
+      onNotification(message);
+    }
+  }, [api, closeSessionPicker, onNotification, resolvedWorktreeId]);
 
   useEffect(() => () => {
     cancelledRef.current = true;
@@ -227,6 +289,14 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
+
+  useEffect(() => {
+    if (!resolvedWorktreeId || session?.codexSessionId || autoPickerPromptedRef.current || !visible) {
+      return;
+    }
+    autoPickerPromptedRef.current = true;
+    void openSessionPicker();
+  }, [openSessionPicker, resolvedWorktreeId, session?.codexSessionId, visible]);
 
   useEffect(() => {
     scrollChangeCallbackRef.current = onScrollStateChange;
@@ -266,7 +336,13 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
           const t = terminalRef.current;
           if (!t) return;
           if (!wasAtBottomRef.current && scrollPositionRef.current > 0) {
-            t.scrollToLine(scrollPositionRef.current);
+            const current = t.getScrollPosition();
+            const delta = scrollPositionRef.current - current;
+            if (delta !== 0 && typeof t.scrollLines === 'function') {
+              t.scrollLines(delta);
+            } else {
+              t.scrollToLine(scrollPositionRef.current);
+            }
           } else {
             t.scrollToBottom();
           }
@@ -274,9 +350,12 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         });
       }
     }
-  }, [worktree.id]);
+  }, [initialScrollState, worktree.id]);
 
   const tryFlushInputs = useCallback(() => {
+    if (!resolvedWorktreeId) {
+      return;
+    }
     if (pendingInputsRef.current.length === 0) {
       return;
     }
@@ -294,7 +373,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     pendingInputsRef.current = '';
 
     inflightInputRef.current = api
-      .sendCodexInput(worktree.id, payload)
+      .sendCodexInput(resolvedWorktreeId, payload)
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : 'Failed to send input to Codex';
         onNotification(message);
@@ -309,7 +388,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
           tryFlushInputsRef.current();
         }
       });
-  }, [api, onNotification, session?.status, worktree.id]);
+  }, [api, onNotification, resolvedWorktreeId, session?.status]);
 
   useEffect(() => {
     tryFlushInputsRef.current = tryFlushInputs;
@@ -322,6 +401,16 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
           worktreeId: worktree.id,
           paneId: paneId ?? 'default'
         });
+        return;
+      }
+      if (!resolvedWorktreeId) {
+        console.log('[renderer] codex-pane start skipped (no canonical worktree)', {
+          worktreeId: worktree.id,
+          paneId: paneId ?? 'default'
+        });
+        if (!options?.forceStart) {
+          onNotification('No linked worktree available for this project. Create or select a worktree to run Codex.');
+        }
         return;
       }
       const currentStatus: CodexUiStatus = session?.status ?? 'idle';
@@ -355,12 +444,12 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       }
       lastStartAttemptRef.current = Date.now();
       console.log('[renderer] codex-pane start', {
-        worktreeId: worktree.id,
+        worktreeId: resolvedWorktreeId,
         paneId: paneId ?? 'default',
         options
       });
       onNotification(null);
-      const startPromise = api.startCodex(worktree.id);
+      const startPromise = api.startCodex(resolvedWorktreeId);
       pendingStartRef.current = startPromise;
       try {
         await startPromise;
@@ -372,7 +461,15 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         tryFlushInputsRef.current();
       }
     },
-    [api, bridge, onNotification, paneId, session?.status, worktree.id]
+    [
+      api,
+      bridge,
+      onNotification,
+      paneId,
+      resolvedWorktreeId,
+      session?.status,
+      worktree.id
+    ]
   );
 
   useEffect(() => {
@@ -429,18 +526,19 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         bootstrappedRef.current = true;
         onBootstrapped?.();
       }
-    } else {
+    } else if (bootstrappedRef.current) {
       bootstrappedRef.current = false;
+      onUnbootstrapped?.();
     }
-  }, [onBootstrapped, status]);
+  }, [onBootstrapped, onUnbootstrapped, status]);
 
   useEffect(() => {
-    if (!bridge) {
+    if (!bridge || !resolvedWorktreeId) {
       return;
     }
 
     const unsubscribeOutput = bridge.onCodexOutput((payload) => {
-      if (payload.worktreeId !== worktree.id) {
+      if (payload.worktreeId !== resolvedWorktreeId) {
         return;
       }
       const terminal = terminalRef.current;
@@ -456,7 +554,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     });
 
     const unsubscribeStatus = bridge.onCodexStatus((payload) => {
-      if (payload.worktreeId !== worktree.id) {
+      if (payload.worktreeId !== resolvedWorktreeId) {
         return;
       }
       if (payload.status === 'error' && payload.error) {
@@ -471,10 +569,10 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       unsubscribeOutput();
       unsubscribeStatus();
     };
-  }, [bridge, onNotification, worktree.id]);
+  }, [bridge, onNotification, resolvedWorktreeId]);
 
   useEffect(() => {
-    if (!visible || !bridge) {
+    if (!visible || !bridge || !resolvedWorktreeId) {
       return;
     }
 
@@ -523,7 +621,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
 
       let content = '';
       try {
-        const log = await bridge.getCodexLog(worktree.id);
+        const log = await bridge.getCodexLog(resolvedWorktreeId);
         if (cancelled) {
           return;
         }
@@ -579,12 +677,12 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     };
   }, [
     bridge,
+    hasCodexSessionId,
     onNotification,
+    resolvedWorktreeId,
     session?.status,
     sessionSignature,
-    visible,
-    hasCodexSessionId,
-    worktree.id
+    visible
   ]);
 
   useEffect(() => {
@@ -615,7 +713,13 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     }
     needsInitialRefreshRef.current = false;
     if (!wasAtBottomRef.current && scrollPositionRef.current > 0) {
-      terminal.scrollToLine(scrollPositionRef.current);
+      const current = terminal.getScrollPosition();
+      const delta = scrollPositionRef.current - current;
+      if (delta !== 0 && typeof terminal.scrollLines === 'function') {
+        terminal.scrollLines(delta);
+      } else {
+        terminal.scrollToLine(scrollPositionRef.current);
+      }
     } else {
       terminal.scrollToBottom();
       wasAtBottomRef.current = true;
@@ -630,21 +734,21 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
     if (cb) {
       cb(worktree.id, { position: terminal.getScrollPosition(), atBottom: wasAtBottomRef.current });
     }
-  }, [active, status, visible]);
+  }, [active, status, visible, worktree.id]);
 
   useEffect(() => {
     if (!visible) {
       return;
     }
-    if (canAutoStart(status)) {
+    if (canAutoStart(status) && resolvedWorktreeId) {
       console.log('[renderer] codex-pane auto-start', {
-        worktreeId: worktree.id,
+        worktreeId: resolvedWorktreeId,
         paneId: paneId ?? 'default',
         status
       });
       void startSessionRef.current({ throttled: true });
     }
-  }, [paneId, status, visible, worktree.id]);
+  }, [paneId, resolvedWorktreeId, status, visible, worktree.id]);
 
   return (
     <section className={`terminal-pane${visible ? '' : ' terminal-pane--inactive'}`}>
@@ -656,53 +760,81 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
       />
       {status !== 'running' ? (
         <p className="terminal-hint">
-          {status === 'error'
-            ? 'Codex session failed. Resolve the issue and retry.'
-            : status === 'starting'
-              ? 'Starting Codex…'
-              : status === 'resuming'
-                ? 'Resuming Codex…'
-                : 'Codex session is not running.'}
+          {codexUnavailable
+            ? 'No worktree available for this project tab.'
+            : status === 'error'
+              ? 'Codex session failed. Resolve the issue and retry.'
+              : status === 'starting'
+                ? 'Starting Codex…'
+                : status === 'resuming'
+                  ? 'Resuming Codex…'
+                  : 'Codex session is not running.'}
         </p>
       ) : null}
       <footer className="terminal-footer">
-        <span>Session ID: {sessionIdDisplay ?? '—'}</span>
-        <span>Resume: {resumeCommandDisplay ?? 'Unavailable'}</span>
-        <button
-          type="button"
-          onClick={async () => {
-            setRescanBusy(true);
-            try {
-              await api.refreshCodexResumeFromLogs(worktree.id);
-              const updated = sanitizeResumeCommand(await api.refreshCodexResumeCommand(worktree.id));
-              if (updated) {
-                setResumeCommandDisplay(updated);
-                setSessionIdDisplay(session?.codexSessionId ?? extractSessionIdFromCommand(updated));
-                await api.setCodexResumeCommand(worktree.id, updated);
-                return;
-              }
-              const fallback = sanitizeResumeCommand(worktree.codexResumeCommand ?? resumeCommandDisplay);
-              if (fallback) {
-                await api.setCodexResumeCommand(worktree.id, fallback);
-                setResumeCommandDisplay(fallback);
-                setSessionIdDisplay(session?.codexSessionId ?? extractSessionIdFromCommand(fallback));
-                return;
-              }
-              await api.setCodexResumeCommand(worktree.id, null);
-              setResumeCommandDisplay(null);
-              setSessionIdDisplay(session?.codexSessionId ?? null);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : 'Failed to rescan Codex resume command';
-              onNotification(message);
-            } finally {
-              setRescanBusy(false);
-            }
-          }}
-          disabled={rescanBusy}
-        >
-          {rescanBusy ? 'Rescanning…' : 'Rescan Resume'}
+        <div className="terminal-footer__details">
+          <span>Session ID: {displayedSessionId ?? '—'}</span>
+          <span>Resume: {resumeCommandDisplay ?? 'Unavailable'}</span>
+        </div>
+        <button type="button" onClick={() => void openSessionPicker()} disabled={codexUnavailable}>
+          Switch Session
         </button>
       </footer>
+      {sessionPickerOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={closeSessionPicker}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="codex-session-picker-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="codex-session-picker-title">Select Codex Session</h2>
+            {sessionPickerLoading ? <p>Loading…</p> : null}
+            {sessionPickerError ? <p className="modal-error">{sessionPickerError}</p> : null}
+            {!sessionPickerLoading && !sessionPickerError ? (
+              sessionChoices.length > 0 ? (
+                <ul className="session-picker__list">
+                  {sessionChoices.map((choice) => (
+                    <li key={choice.id}>
+                      <label>
+                        <input
+                          type="radio"
+                          name="codex-session-choice"
+                          value={choice.id}
+                          checked={selectedSessionId === choice.id}
+                          onChange={() => setSelectedSessionId(choice.id)}
+                        />
+                        <span className="session-picker__id">{choice.id}</span>
+                        <span className="session-picker__timestamp">
+                          {new Date(choice.mtimeMs).toLocaleString()}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>No previous Codex sessions found for this worktree.</p>
+              )
+            ) : null}
+            <div className="modal-actions">
+              <button
+                type="button"
+                onClick={handleConfirmSession}
+                disabled={sessionPickerLoading || (!sessionChoices.length && selectedSessionId == null)}
+              >
+                Use Selected Session
+              </button>
+              <button type="button" onClick={handleStartNewSession} disabled={sessionPickerLoading}>
+                Start New Session
+              </button>
+              <button type="button" onClick={closeSessionPicker} disabled={sessionPickerLoading}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 };

@@ -128,8 +128,7 @@ export class WorktreeService extends EventEmitter {
         createdAt: current?.createdAt ?? new Date().toISOString(),
         status: 'ready',
         codexStatus: current?.codexStatus ?? 'idle',
-        lastError: current?.lastError,
-        codexResumeCommand: current?.codexResumeCommand
+        lastError: current?.lastError
       };
       await this.store.upsertWorktree(descriptor);
       this.emit('worktree-updated', descriptor);
@@ -138,15 +137,16 @@ export class WorktreeService extends EventEmitter {
     const latestState = this.store.getState();
     const project = latestState.projects.find((item) => item.id === projectId);
     const existingDefaultId = project?.defaultWorktreeId;
-    const existingDefaultStillValid = existingDefaultId
-      ? latestState.worktrees.some((item) => item.id === existingDefaultId)
-      : false;
+    const candidates = latestState.worktrees.filter((item) => item.projectId === projectId);
+    const existingDefaultStillValid = Boolean(existingDefaultId && candidates.some((item) => item.id === existingDefaultId));
     if (!existingDefaultStillValid) {
-      const fallback = latestState.worktrees.find((item) => item.projectId === projectId)?.id ?? null;
-      const nextDefault = fallback ?? undefined;
-      if (nextDefault !== existingDefaultId) {
+      const newest = candidates
+        .slice()
+        .sort((a, b) => Date.parse(b.createdAt ?? '0') - Date.parse(a.createdAt ?? '0'))[0];
+      const nextDefault = newest?.id;
+      if ((nextDefault ?? undefined) !== (existingDefaultId ?? undefined)) {
         await this.store.patchProject(projectId, {
-          defaultWorktreeId: nextDefault
+          defaultWorktreeId: nextDefault ?? undefined
         });
       }
     }
@@ -208,32 +208,6 @@ export class WorktreeService extends EventEmitter {
 
     await this.refreshProjectWorktrees(projectId);
     return descriptor;
-  }
-
-  async setCodexResumeCommand(worktreeId: string, command: string | null): Promise<void> {
-    if (worktreeId.startsWith('project-root:')) {
-      const projectId = worktreeId.slice('project-root:'.length);
-      await this.store.patchProject(projectId, { codexResumeCommand: command ?? undefined });
-    } else {
-      await this.store.patchWorktree(worktreeId, { codexResumeCommand: command ?? undefined });
-    }
-    const state = this.store.getState();
-    const descriptor = state.worktrees.find((item) => item.id === worktreeId);
-    if (descriptor) {
-      this.emit('worktree-updated', descriptor);
-    }
-    this.emit('state-changed', state);
-  }
-
-  async getCodexResumeCommand(worktreeId: string): Promise<string | null> {
-    const state = this.store.getState();
-    if (worktreeId.startsWith('project-root:')) {
-      const projectId = worktreeId.slice('project-root:'.length);
-      const project = state.projects.find((item) => item.id === projectId);
-      return project?.codexResumeCommand ?? null;
-    }
-    const descriptor = state.worktrees.find((item) => item.id === worktreeId);
-    return descriptor?.codexResumeCommand ?? null;
   }
 
   async removeProject(projectId: string): Promise<void> {

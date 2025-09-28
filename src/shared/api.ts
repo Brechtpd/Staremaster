@@ -35,9 +35,8 @@ export interface RendererApi {
   getGitDiff(request: GitDiffRequest): Promise<GitDiffResponse>;
   getCodexLog(worktreeId: string): Promise<string>;
   summarizeCodexOutput(worktreeId: string, text: string): Promise<string>;
-  setCodexResumeCommand(worktreeId: string, command: string | null): Promise<void>;
-  refreshCodexResumeCommand(worktreeId: string): Promise<string | null>;
-  refreshCodexResumeFromLogs(worktreeId?: string): Promise<void>;
+  refreshCodexSessionId(worktreeId: string, sessionId?: string | null): Promise<string | null>;
+  listCodexSessions(worktreeId: string): Promise<Array<{ id: string; mtimeMs: number }>>;
   startWorktreeTerminal(
     worktreeId: string,
     options?: { paneId?: string; startupCommand?: string; respondToCursorProbe?: boolean }

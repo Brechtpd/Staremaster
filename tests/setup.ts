@@ -57,9 +57,8 @@ beforeEach(() => {
     }),
     getCodexLog: vi.fn().mockResolvedValue(''),
     summarizeCodexOutput: vi.fn().mockResolvedValue(''),
-    setCodexResumeCommand: vi.fn().mockResolvedValue(undefined),
-    refreshCodexResumeCommand: vi.fn().mockResolvedValue(null),
-    refreshCodexResumeFromLogs: vi.fn().mockResolvedValue(undefined),
+    refreshCodexSessionId: vi.fn().mockResolvedValue(null),
+    listCodexSessions: vi.fn().mockResolvedValue([]),
     startWorktreeTerminal: vi.fn().mockResolvedValue({
       sessionId: 'terminal-1',
       worktreeId: 'mock',
