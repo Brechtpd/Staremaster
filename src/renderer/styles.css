@@ -501,6 +501,7 @@ button {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .terminal-pane--inactive {
@@ -550,6 +551,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  width: 100%;
+  align-items: stretch;
 }
 
 .orchestrator-pane__card {
@@ -897,6 +900,7 @@ button {
 
 .orchestrator-pane__card--graph {
   width: 100%;
+  align-self: stretch;
   overflow: hidden;
 }
 
@@ -921,6 +925,12 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.agent-flow__node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .agent-flow__node-indicator {
@@ -955,6 +965,45 @@ button {
 .agent-flow__node-title {
   font-weight: 600;
   color: #0f172a;
+}
+
+.agent-flow__node-status {
+  font-size: 12px;
+  color: #1f2937;
+  opacity: 0.92;
+}
+
+.agent-flow__node-summary {
+  font-size: 12px;
+  color: #475569;
+}
+
+.agent-flow__node-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.agent-flow__node-action {
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  background: rgba(241, 245, 249, 0.85);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.agent-flow__node-action:hover {
+  background: rgba(191, 219, 254, 0.65);
+  border-color: rgba(59, 130, 246, 0.55);
+  transform: translateY(-1px);
+}
+
+.agent-flow__node-action:active {
+  transform: translateY(0);
 }
 
 .agent-flow__node--pending {
@@ -1081,6 +1130,7 @@ button {
   gap: 12px;
   min-height: 0;
   overflow: auto;
+  width: 100%;
 }
 
 
@@ -1089,6 +1139,7 @@ button {
   min-height: 0;
   display: flex;
   overflow: hidden;
+  width: 100%;
 }
 .pane-strip {
   display: flex;
@@ -1268,6 +1319,7 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  width: 100%;
 }
 
 .modal-backdrop {

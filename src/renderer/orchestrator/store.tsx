@@ -716,10 +716,12 @@ export interface AgentGraphNodeView {
   label: string;
   state: AgentGraphNodeState;
   status?: string;
+  statusDetail?: string;
   subtitle?: string;
   detail?: string;
   summary?: string;
   artifactPath?: string;
+  conversationPath?: string;
 }
 
 export interface AgentGraphEdgeView {
@@ -767,15 +769,35 @@ export const deriveAgentGraphView = ({ tasks, workers, agentStates }: AgentGraph
     return 'idle';
   };
 
-  const truncate = (value: string | undefined, limit = 160): string | undefined => {
-    if (!value) {
-      return undefined;
-    }
-    if (value.length <= limit) {
-      return value;
-    }
-    return `${value.slice(0, limit).trim()}…`;
-  };
+const truncate = (value: string | undefined, limit = 160): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  if (value.length <= limit) {
+    return value;
+  }
+  return `${value.slice(0, limit).trim()}…`;
+};
+
+const summarize = (value: string | undefined, limit = 45): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const plain = value
+    .replace(/\r?\n+/g, ' ')
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    .replace(/[*_`]/g, '')
+    .replace(/^\s*[-•]\s*/, '')
+    .trim();
+  if (!plain) {
+    return undefined;
+  }
+  const words = plain.split(/\s+/).filter(Boolean);
+  const maxWords = 12;
+  const snippet = words.slice(0, maxWords).join(' ');
+  const result = snippet.trim();
+  return result.length > limit ? `${result.slice(0, limit - 1).trim()}…` : result;
+};
 
   const nodes: AgentGraphNodeView[] = AGENT_GRAPH_ROLES.map((role) => {
     const state = agentStates?.[role] ?? fallbackStateForRole(role);
@@ -786,8 +808,20 @@ export const deriveAgentGraphView = ({ tasks, workers, agentStates }: AgentGraph
     const worker = workers.find((item) => item.role === role && item.state === 'working');
     const subtitle = truncate(activeTask?.title ?? (roleTasks.length > 0 ? `${roleTasks.length} task(s)` : undefined), 80);
     let status: string | undefined;
+    let statusDetail: string | undefined;
     if (state === 'active') {
       status = truncate(worker?.description ?? (activeTask ? `Running ${activeTask.title}` : 'Running task'), 80);
+      if (worker?.startedAt) {
+        const elapsedMs = Date.now() - new Date(worker.startedAt).getTime();
+        if (elapsedMs > 0) {
+          const minutes = Math.floor(elapsedMs / 60_000);
+          const seconds = Math.floor((elapsedMs % 60_000) / 1_000)
+            .toString()
+            .padStart(2, '0');
+          const durationLabel = `${minutes}m ${seconds}s`;
+          statusDetail = truncate(`${worker.description ?? activeTask?.title ?? 'Working'} (${durationLabel})`, 120);
+        }
+      }
     } else if (state === 'pending') {
       status = truncate(roleTasks.length > 0 ? `${roleTasks.length} task(s) queued` : 'Awaiting upstream', 60);
     } else if (state === 'done') {
@@ -799,12 +833,15 @@ export const deriveAgentGraphView = ({ tasks, workers, agentStates }: AgentGraph
     const summaries = roleTasks
       .filter((task) => task.summary && (task.status === 'done' || task.status === 'approved'))
       .map((task) => task.summary as string);
-    const summary = truncate(summaries[0]);
+    const summary = summarize(summaries[0]);
 
     const artifacts = roleTasks
       .filter((task) => task.artifacts.length > 0 && (task.status === 'done' || task.status === 'approved'))
       .map((task) => task.artifacts[0]);
     const artifactPath = artifacts[0];
+    const conversationPath = roleTasks
+      .filter((task) => task.conversationPath)
+      .map((task) => task.conversationPath as string)[0];
 
     const detail = roleTasks.length === 0 && state === 'pending' ? 'Waiting on upstream' : undefined;
 
@@ -814,8 +851,10 @@ export const deriveAgentGraphView = ({ tasks, workers, agentStates }: AgentGraph
       state,
       subtitle,
       status,
+      statusDetail,
       summary,
       artifactPath,
+      conversationPath,
       detail
     } satisfies AgentGraphNodeView;
   });

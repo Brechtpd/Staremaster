@@ -58,6 +58,14 @@ const ROLE_HANDLES: Record<WorkerRole, { source?: { position: Position; id: stri
 
 const AgentNode: React.FC<NodeProps<AgentNodeInternalData>> = ({ id, data }) => {
   const handleConfig = ROLE_HANDLES[id as WorkerRole] ?? {};
+  const showArtifact = data.artifactPath && (data.state === 'done' || data.state === 'active');
+  const showConversation = data.conversationPath && (data.state === 'done' || data.state === 'active');
+
+  const handleOpen = (event: React.MouseEvent<HTMLButtonElement>, path: string) => {
+    event.stopPropagation();
+    event.preventDefault();
+    data.onOpenArtifact?.(path);
+  };
   return (
     <div className={`agent-flow__node agent-flow__node--${data.state}`}>
       {handleConfig.target ? (
@@ -70,7 +78,38 @@ const AgentNode: React.FC<NodeProps<AgentNodeInternalData>> = ({ id, data }) => 
         />
       ) : null}
       <span className="agent-flow__node-indicator" />
-      <span className="agent-flow__node-title">{data.label}</span>
+      <div className="agent-flow__node-body">
+        <span className="agent-flow__node-title">{data.label}</span>
+        {data.statusDetail ? <span className="agent-flow__node-status">{data.statusDetail}</span> : null}
+        {!data.statusDetail && data.status ? (
+          <span className="agent-flow__node-status">{data.status}</span>
+        ) : null}
+        {data.summary ? <span className="agent-flow__node-summary">{data.summary}</span> : null}
+        {showArtifact || showConversation ? (
+          <div className="agent-flow__node-actions">
+            {showArtifact ? (
+              <button
+                type="button"
+                className="agent-flow__node-action"
+                onClick={(event) => handleOpen(event, data.artifactPath!)}
+                title={data.artifactPath!}
+              >
+                View output
+              </button>
+            ) : null}
+            {showConversation ? (
+              <button
+                type="button"
+                className="agent-flow__node-action"
+                onClick={(event) => handleOpen(event, data.conversationPath!)}
+                title={data.conversationPath!}
+              >
+                Open log
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       {handleConfig.source ? (
         <Handle
           type="source"
