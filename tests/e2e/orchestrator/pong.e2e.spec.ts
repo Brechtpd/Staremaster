@@ -8,7 +8,6 @@ import { TaskClaimStore } from '../../../src/main/orchestrator/task-claim-store'
 import type { ExecutionContext, ExecutionResult, ExecutionArtifact } from '../../../src/main/orchestrator/codex-executor';
 import { TesterExecutor } from '../../../src/main/orchestrator/tester-executor';
 import { CodexCliExecutor } from '../../../src/main/orchestrator/codex-executor';
-import { ImplementerExecutor } from '../../../src/main/orchestrator/implementer-executor';
 
 const cargoAvailable = (() => {
   try {

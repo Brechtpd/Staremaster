@@ -13,6 +13,7 @@ const sendMock = vi.fn();
 
 vi.mock('electron', () => {
   const ipcHandlers = new Map<string, unknown>();
+  const openPath = vi.fn(async () => '');
   return {
     ipcMain: {
       handle: vi.fn((channel: string, handler: unknown) => {
@@ -25,11 +26,14 @@ vi.mock('electron', () => {
     dialog: {
       showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] }))
     },
+    shell: {
+      openPath
+    },
     BrowserWindow: class {}
   };
 });
 
-const { ipcMain } = await import('electron');
+const { ipcMain, shell } = await import('electron');
 
 // Lazy import after mocks so the module picks up our stubs.
 const { registerIpcHandlers } = await import('../../../../src/main/ipc/registerIpcHandlers');
@@ -111,6 +115,8 @@ class OrchestratorStub extends EventEmitter {
   }));
   approveTask = vi.fn(async () => {});
   addComment = vi.fn(async () => {});
+  stopWorkers = vi.fn(async () => {});
+  stopRun = vi.fn(async () => {});
   handleWorktreeRemoved = vi.fn();
   dispose = vi.fn();
 
@@ -137,6 +143,9 @@ describe('registerIpcHandlers codex routing', () => {
 
   beforeEach(() => {
     sendMock.mockClear();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    handleMock.mockClear();
+    (shell.openPath as unknown as Mock).mockClear();
   });
 
   const createHarness = () => {
@@ -232,5 +241,44 @@ describe('registerIpcHandlers codex routing', () => {
     const result = await listHandler?.({}, { worktreeId: 'project-root:proj' });
     expect(codexManager.listCodexSessionCandidates).toHaveBeenCalledWith('wt-main');
     expect(result).toEqual([{ id: 'abc', mtimeMs: 1 }]);
+  });
+
+  it('opens orchestrator paths relative to the worktree root', async () => {
+    const { worktreeService } = createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const openHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.orchestratorOpenPath)?.[1] as
+      | ((event: unknown, payload: { worktreeId: string; relativePath: string }) => Promise<string | void>)
+      | undefined;
+    expect(openHandler).toBeDefined();
+    worktreeService.getWorktreePath.mockReturnValue('/repo/worktrees/wt-main');
+    const result = await openHandler?.({}, { worktreeId: 'project-root:proj', relativePath: 'codex-runs/run-7/out/result.md' });
+    expect(shell.openPath).toHaveBeenCalledWith('/repo/worktrees/wt-main/codex-runs/run-7/out/result.md');
+    expect(result).toBe('');
+  });
+
+  it('passes through absolute orchestrator paths without alteration', async () => {
+    const { worktreeService } = createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const openHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.orchestratorOpenPath)?.[1] as
+      | ((event: unknown, payload: { worktreeId: string; relativePath: string }) => Promise<string | void>)
+      | undefined;
+    expect(openHandler).toBeDefined();
+    (shell.openPath as unknown as Mock).mockResolvedValueOnce('');
+    worktreeService.getWorktreePath.mockReturnValue('/repo/worktrees/wt-main');
+    const result = await openHandler?.({}, { worktreeId: 'wt-main', relativePath: '/tmp/custom/output.md' });
+    expect(shell.openPath).toHaveBeenCalledWith('/tmp/custom/output.md');
+    expect(result).toBe('');
+  });
+
+  it('throws when attempting to open a path for an unknown worktree', async () => {
+    createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const openHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.orchestratorOpenPath)?.[1] as
+      | ((event: unknown, payload: { worktreeId: string; relativePath: string }) => Promise<string | void>)
+      | undefined;
+    expect(openHandler).toBeDefined();
+    await expect(openHandler?.({}, { worktreeId: 'missing', relativePath: 'out.md' })).rejects.toThrow(
+      /Unknown worktree/
+    );
   });
 });

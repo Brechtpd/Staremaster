@@ -93,12 +93,7 @@ export class CodexCliExecutor implements CodexExecutor {
     return await new Promise<ExecutionResult>((resolve, reject) => {
       const child = spawn(this.options.bin, args, {
         cwd: context.task.cwd ? path.join(context.worktreePath, context.task.cwd) : context.worktreePath,
-        env: {
-          ...process.env,
-          CODEX_RUN_ID: context.runId,
-          CODEX_ORCHESTRATOR_ROLE: context.role,
-          CODEX_ORCHESTRATOR_TASK_ID: context.task.id
-        }
+        env: this.buildEnv(context)
       });
 
       let stdout = '';
@@ -175,6 +170,25 @@ export class CodexCliExecutor implements CodexExecutor {
         child.stdin.end();
       }
     });
+  }
+
+  private buildEnv(context: ExecutionContext): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      CODEX_RUN_ID: context.runId,
+      CODEX_ORCHESTRATOR_ROLE: context.role,
+      CODEX_ORCHESTRATOR_TASK_ID: context.task.id
+    };
+    if (!env.CODEX_THINKING_MODE) {
+      env.CODEX_THINKING_MODE = 'low';
+    }
+    if (!env.CODEX_COMPLEXITY) {
+      env.CODEX_COMPLEXITY = 'low';
+    }
+    if (!env.CODEX_REASONING_EFFORT) {
+      env.CODEX_REASONING_EFFORT = 'low';
+    }
+    return env;
   }
 
   private resolveProfile(role: WorkerRole): string | null {

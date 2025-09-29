@@ -118,7 +118,7 @@ export type OrchestratorEvent =
   | {
       kind: 'snapshot';
       worktreeId: string;
-      snapshot: OrchestratorSnapshot;
+      snapshot: OrchestratorSnapshot | null;
     }
   | {
       kind: 'run-status';

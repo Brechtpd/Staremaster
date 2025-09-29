@@ -69,6 +69,11 @@ export type OrchestratorWorkerRequest =
     }
   | {
       id: string;
+      type: 'stop-run';
+      worktreeId: string;
+    }
+  | {
+      id: string;
       type: 'dispose';
     };
 

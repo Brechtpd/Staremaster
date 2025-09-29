@@ -20,6 +20,12 @@ interface OrchestratorWorktreeState {
   workers: WorkerStatus[];
   conversations: ConversationEntry[];
   workerLogs: Record<string, string>;
+  activity: Array<{
+    id: string;
+    occurredAt: string;
+    kind: string;
+    message: string;
+  }>;
   ready: boolean;
   lastEventAt?: string;
   error?: string;
@@ -73,6 +79,7 @@ const DEFAULT_WORKTREE_STATE: OrchestratorWorktreeState = {
   workers: [],
   conversations: [],
   workerLogs: {},
+  activity: [],
   ready: false
 };
 
@@ -124,12 +131,22 @@ const ensureMetadata = (
   return next;
 };
 
+const pushActivity = (
+  existing: Array<{ id: string; occurredAt: string; kind: string; message: string }>,
+  entry: { kind: string; message: string }
+) => {
+  const now = new Date().toISOString();
+  const next = [...existing, { id: `${now}-${Math.random().toString(36).slice(2, 8)}`, occurredAt: now, ...entry }];
+  return next.slice(-200);
+};
+
 const cloneState = (value: OrchestratorWorktreeState): OrchestratorWorktreeState => ({
   ...value,
   tasks: value.tasks.slice(),
   workers: value.workers.slice(),
   conversations: value.conversations.slice(),
   workerLogs: { ...value.workerLogs },
+  activity: value.activity.slice(),
   metadata: cloneMetadata(value.metadata)
 });
 
@@ -189,11 +206,31 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
         base.lastEventAt = action.snapshot.lastEventAt;
         base.error = undefined;
         base.metadata = ensureMetadata(action.snapshot.metadata);
+        base.activity = pushActivity(base.activity, {
+          kind: 'snapshot',
+          message: `Snapshot received (${action.snapshot.run.status})`
+        });
+      }
+      if (!action.snapshot) {
+        base.run = null;
+        base.tasks = [];
+        base.workers = [];
+        base.workerLogs = {};
+        base.activity = pushActivity(base.activity, {
+          kind: 'snapshot',
+          message: 'Run cleared'
+        });
+        base.lastEventAt = undefined;
+        base.metadata = ensureMetadata();
       }
       nextWorktrees[action.worktreeId] = base;
       let nextPersisted = state.persistedRuns;
       if (action.snapshot) {
         nextPersisted = { ...state.persistedRuns, [action.worktreeId]: { run: action.snapshot.run, updatedAt: action.snapshot.run.updatedAt } };
+      } else if (state.persistedRuns[action.worktreeId]) {
+        const updated = { ...state.persistedRuns };
+        delete updated[action.worktreeId];
+        nextPersisted = updated;
       }
       return {
         worktrees: nextWorktrees,
@@ -208,12 +245,29 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
       switch (event.kind) {
         case 'snapshot': {
           current.ready = true;
-          current.run = event.snapshot.run;
-          current.tasks = event.snapshot.tasks.slice();
-          current.workers = event.snapshot.workers.slice();
-          current.lastEventAt = event.snapshot.lastEventAt;
-          current.error = undefined;
-          current.metadata = ensureMetadata(event.snapshot.metadata);
+          if (event.snapshot) {
+            current.run = event.snapshot.run;
+            current.tasks = event.snapshot.tasks.slice();
+            current.workers = event.snapshot.workers.slice();
+            current.lastEventAt = event.snapshot.lastEventAt;
+            current.error = undefined;
+            current.metadata = ensureMetadata(event.snapshot.metadata);
+            current.activity = pushActivity(current.activity, {
+              kind: 'snapshot',
+              message: `Snapshot updated (${event.snapshot.run.status})`
+            });
+          } else {
+            current.run = null;
+            current.tasks = [];
+            current.workers = [];
+            current.workerLogs = {};
+            current.lastEventAt = new Date().toISOString();
+            current.metadata = ensureMetadata();
+            current.activity = pushActivity(current.activity, {
+              kind: 'stop',
+              message: 'Run stopped'
+            });
+          }
           mutated = true;
           break;
         }
@@ -222,12 +276,20 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
           current.run = event.run;
           current.lastEventAt = event.run.updatedAt;
           current.error = undefined;
+           current.activity = pushActivity(current.activity, {
+             kind: 'run-status',
+             message: `Run status → ${event.run.status}`
+           });
           mutated = true;
           break;
         }
         case 'tasks-updated': {
           current.tasks = event.tasks.slice();
           current.lastEventAt = new Date().toISOString();
+          current.activity = pushActivity(current.activity, {
+            kind: 'tasks',
+            message: `Tasks updated (${event.tasks.length})`
+          });
           mutated = true;
           break;
         }
@@ -238,6 +300,10 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
             if (filtered.length !== current.tasks.length) {
               current.tasks = filtered;
               current.lastEventAt = new Date().toISOString();
+              current.activity = pushActivity(current.activity, {
+                kind: 'tasks',
+                message: `Removed ${event.taskIds.length} task(s)`
+              });
               mutated = true;
             }
           }
@@ -245,11 +311,14 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
         }
         case 'workers-updated': {
           const map = new Map(current.workers.map((worker) => [worker.id, worker]));
+          const messages: string[] = [];
           for (const worker of event.workers) {
             map.set(worker.id, worker);
             if (worker.logTail) {
               current.workerLogs[worker.id] = worker.logTail;
             }
+            const taskMessage = worker.taskId ? ` (${worker.taskId})` : '';
+            messages.push(`${worker.id} → ${worker.state}${taskMessage}`);
           }
           current.workers = Array.from(map.values()).sort((a, b) => a.id.localeCompare(b.id));
           current.lastEventAt = new Date().toISOString();
@@ -261,6 +330,12 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
             current.metadata.implementerLockHeldBy =
               implementerUpdate.state === 'working' ? implementerUpdate.id : null;
           }
+          if (messages.length > 0) {
+            current.activity = pushActivity(current.activity, {
+              kind: 'workers',
+              message: messages.join(', ')
+            });
+          }
           mutated = true;
           break;
         }
@@ -269,18 +344,30 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
           const appended = (existingLog + event.chunk).slice(-4000);
           current.workerLogs = { ...current.workerLogs, [event.workerId]: appended };
           current.lastEventAt = event.timestamp;
+          current.activity = pushActivity(current.activity, {
+            kind: 'worker-log',
+            message: `${event.workerId}: ${event.chunk.trim().slice(0, 120)}`
+          });
           mutated = true;
           break;
         }
         case 'conversation-appended': {
           current.conversations = [...current.conversations, event.entry].slice(-200);
           current.lastEventAt = event.entry.createdAt;
+          current.activity = pushActivity(current.activity, {
+            kind: 'conversation',
+            message: `${event.entry.author} on ${event.entry.taskId}`
+          });
           mutated = true;
           break;
         }
         case 'error': {
           current.error = event.message;
           current.lastEventAt = event.occurredAt;
+          current.activity = pushActivity(current.activity, {
+            kind: 'error',
+            message: event.message
+          });
           mutated = true;
           break;
         }
@@ -294,6 +381,10 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
       let nextPersisted = state.persistedRuns;
       if (current.run) {
         nextPersisted = { ...state.persistedRuns, [worktreeId]: { run: current.run, updatedAt: current.run.updatedAt } };
+      } else if (state.persistedRuns[worktreeId]) {
+        const updated = { ...state.persistedRuns };
+        delete updated[worktreeId];
+        nextPersisted = updated;
       }
       return {
         worktrees: nextWorktrees,
@@ -350,6 +441,8 @@ interface OrchestratorContextValue {
   startWorkers: (worktreeId: string, configs?: WorkerSpawnConfig[]) => Promise<void>;
   stopWorkers: (worktreeId: string, roles?: WorkerRole[]) => Promise<void>;
   configureWorkers: (worktreeId: string, configs: WorkerSpawnConfig[]) => Promise<void>;
+  stopRun: (worktreeId: string) => Promise<void>;
+  openPath: (worktreeId: string, relativePath: string) => Promise<void>;
 }
 
 const OrchestratorContext = createContext<OrchestratorContextValue | null>(null);
@@ -525,6 +618,28 @@ export const OrchestratorProvider: React.FC<OrchestratorProviderProps> = ({ api,
     [api]
   );
 
+  const stopRun = useCallback(
+    async (worktreeId: string) => {
+      if (!api.stopOrchestratorRun) {
+        dispatch({ type: 'hydrate', worktreeId, snapshot: null });
+        return;
+      }
+      await api.stopOrchestratorRun(worktreeId);
+      dispatch({ type: 'hydrate', worktreeId, snapshot: null });
+    },
+    [api]
+  );
+
+  const openPath = useCallback(
+    async (worktreeId: string, relativePath: string) => {
+      if (!api.openOrchestratorPath) {
+        return;
+      }
+      await api.openOrchestratorPath(worktreeId, relativePath);
+    },
+    [api]
+  );
+
   const value = useMemo<OrchestratorContextValue>(
     () => ({
       state,
@@ -535,9 +650,11 @@ export const OrchestratorProvider: React.FC<OrchestratorProviderProps> = ({ api,
       commentOnTask,
       startWorkers,
       stopWorkers,
-      configureWorkers
+      configureWorkers,
+      stopRun,
+      openPath
     }),
-    [approveTask, commentOnTask, configureWorkers, ensureWorktree, startRun, startWorkers, state, stopWorkers, submitFollowUp]
+    [approveTask, commentOnTask, configureWorkers, ensureWorktree, startRun, startWorkers, state, stopRun, stopWorkers, submitFollowUp, openPath]
   );
 
   return <OrchestratorContext.Provider value={value}>{children}</OrchestratorContext.Provider>;
@@ -552,18 +669,17 @@ export const useOrchestratorStore = (): OrchestratorContextValue => {
 };
 
 export const useOrchestratorWorktree = (
-  worktreeId: string | null | undefined,
-  options?: { ensure?: boolean }
+  worktreeId: string | null | undefined
 ): OrchestratorWorktreeState | undefined => {
   const { state, ensureWorktree } = useOrchestratorStore();
   const effectiveId = worktreeId ?? '';
 
   useEffect(() => {
-    if (!effectiveId || options?.ensure === false) {
+    if (!effectiveId) {
       return;
     }
     ensureWorktree(effectiveId);
-  }, [effectiveId, ensureWorktree, options?.ensure]);
+  }, [effectiveId, ensureWorktree]);
 
   if (!effectiveId) {
     return undefined;

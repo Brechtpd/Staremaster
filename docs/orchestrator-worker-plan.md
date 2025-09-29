@@ -20,6 +20,7 @@
 ## 🔄 Phase 5 – End-to-End Validation
 - Added unit suites for `TaskClaimStore`, per-role worker loops, the worker supervisor scaling logic, and bridge-level coverage for `startWorkers` error propagation/resume flows. A gated real-Codex smoke (`RUN_REAL_CODEX_E2E=1`) now drives the entire pipeline (analyst → reviewer) through the Codex CLI; deterministic fallbacks remain for CI. Additional env toggles (`RUN_REAL_CODEX_IMPLEMENTER`, `RUN_REAL_CODEX_TESTER`, `RUN_REAL_CODEX_REVIEWER`) allow overriding individual stages.
 - Worker bridge tests simulate worker restarts/errors to verify pending request rejection and automatic respawn logic.
+- Workflow expansion now runs synchronously so downstream tasks (consensus → splitter → implementation/test/review) seed immediately after upstream completions.
 
 ## 🔜 Phase 6 – Cleanup & Documentation
 - Pending: purge `CODEX_ORCHESTRATOR_BIN`, refresh README/TASKS.md, finalize docs once phases 2–5 complete.
@@ -27,4 +28,5 @@
 
 **Next Steps**
 1. Capture UI screenshots for the configuration grid and fold them into README/onboarding docs.
-2. Consider adding lightweight telemetry around executor failures (optional post-MVP).
+2. Monitor the new artifact/log quick-open UX (now with external open-path handling) and polish styling once screenshots are ready.
+3. Consider adding lightweight telemetry around executor failures (optional post-MVP).

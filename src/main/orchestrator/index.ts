@@ -158,7 +158,7 @@ export class OrchestratorCoordinator {
     if (!record) {
       throw new Error(`Task ${taskId} not found for approval`);
     }
-    this.mergeTaskUpdate(state, record, worktreeId);
+    await this.mergeTaskUpdate(state, record, worktreeId);
   }
 
   async addComment(worktreeId: string, input: OrchestratorCommentInput): Promise<void> {
@@ -181,6 +181,15 @@ export class OrchestratorCoordinator {
     }
     void this.stopTaskWatcher(worktreeId);
     this.runs.delete(worktreeId);
+  }
+
+  async stopRun(worktreeId: string): Promise<void> {
+    if (!this.runs.has(worktreeId)) {
+      return;
+    }
+    await this.stopTaskWatcher(worktreeId);
+    this.runs.delete(worktreeId);
+    this.bus.publish({ kind: 'snapshot', worktreeId, snapshot: null });
   }
 
   dispose(): void {
@@ -261,26 +270,28 @@ export class OrchestratorCoordinator {
     return state;
   }
 
-  private mergeTaskUpdate(
+  private async mergeTaskUpdate(
     state: RunState,
     record: TaskRecord,
     worktreeId: string,
     options?: { publishSnapshot?: boolean }
-  ): void {
+  ): Promise<void> {
     const index = state.tasks.findIndex((task) => task.id === record.id);
     if (index >= 0) {
       state.tasks[index] = record;
     } else {
       state.tasks.push(record);
     }
-    state.lastEventAt = new Date().toISOString();
-    this.scheduler.notifyTasksUpdated(worktreeId, state.tasks);
-    void this.ensureWorkflowExpansion(worktreeId, state).catch((error) => {
+    try {
+      state.tasks = await this.ensureWorkflowExpansion(worktreeId, state);
+    } catch (error) {
       console.warn('[orchestrator] workflow expansion failed', {
         worktreeId,
         message: (error as Error).message
       });
-    });
+    }
+    state.lastEventAt = new Date().toISOString();
+    this.scheduler.notifyTasksUpdated(worktreeId, state.tasks);
     if (options?.publishSnapshot !== false) {
       this.bus.publish({ kind: 'snapshot', worktreeId, snapshot: this.cloneSnapshot(state) });
     }
@@ -297,10 +308,18 @@ export class OrchestratorCoordinator {
         tasksRoot: state.paths.tasksRoot,
         conversationRoot: state.paths.conversationRoot
       },
-      (tasks) => {
+      async (tasks) => {
         state.tasks = tasks;
+        try {
+          state.tasks = await this.ensureWorkflowExpansion(worktreeId, state);
+        } catch (error) {
+          console.warn('[orchestrator] workflow expansion failed', {
+            worktreeId,
+            message: (error as Error).message
+          });
+        }
         state.lastEventAt = new Date().toISOString();
-        this.scheduler.notifyTasksUpdated(worktreeId, tasks);
+        this.scheduler.notifyTasksUpdated(worktreeId, state.tasks);
         this.bus.publish({ kind: 'snapshot', worktreeId, snapshot: this.cloneSnapshot(state) });
       }
     );
@@ -348,25 +367,13 @@ export class OrchestratorCoordinator {
     state.lastEventAt = new Date().toISOString();
   }
 
-  private async ensureWorkflowExpansion(worktreeId: string, state: RunState): Promise<void> {
-    const mutated = await this.taskStore.ensureWorkflowExpansion({
+  private async ensureWorkflowExpansion(worktreeId: string, state: RunState): Promise<TaskRecord[]> {
+    return await this.taskStore.ensureWorkflowExpansion({
       worktreePath: state.worktreePath,
       tasksRoot: state.paths.tasksRoot,
       conversationRoot: state.paths.conversationRoot,
       runId: state.run.runId,
       tasks: state.tasks
     });
-    if (mutated) {
-      // Reload tasks so snapshots include the freshly created entries immediately.
-      const refreshed = await this.taskStore.loadTasks({
-        worktreePath: state.worktreePath,
-        tasksRoot: state.paths.tasksRoot,
-        conversationRoot: state.paths.conversationRoot
-      });
-      state.tasks = refreshed;
-      state.lastEventAt = new Date().toISOString();
-      this.scheduler.notifyTasksUpdated(worktreeId, state.tasks);
-      this.bus.publish({ kind: 'snapshot', worktreeId, snapshot: this.cloneSnapshot(state) });
-    }
   }
 }

@@ -30,7 +30,7 @@ describe('OrchestratorCoordinator', () => {
     expect(snapshot?.tasks.length).toBeGreaterThanOrEqual(2);
     expect(snapshot?.tasks.every((task) => task.kind === 'analysis')).toBe(true);
     expect(snapshot?.metadata?.workerCounts?.implementer).toBe(1);
-    expect(snapshot?.metadata?.modelPriority?.reviewer?.[0]).toBe('gpt-5-codex-high');
+    expect(snapshot?.metadata?.modelPriority?.reviewer?.[0]).toBe('gpt-5-codex');
 
     const runsDir = path.join(tempDir, 'codex-runs');
     const runFolders = await readdir(runsDir);

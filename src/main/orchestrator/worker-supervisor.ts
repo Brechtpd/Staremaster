@@ -7,7 +7,7 @@ import { ImplementerExecutor } from './implementer-executor';
 import { TesterExecutor } from './tester-executor';
 import { ReviewerExecutor } from './reviewer-executor';
 import type { WorkerRole, WorkerStatus } from '@shared/orchestrator';
-import { WORKER_ROLES, type WorkerSpawnConfig } from '@shared/orchestrator-config';
+import { AVAILABLE_MODELS, WORKER_ROLES, type WorkerSpawnConfig } from '@shared/orchestrator-config';
 import { RoleWorker, type WorktreeRuntimeContext } from './role-worker';
 
 interface WorktreeContext extends WorktreeRuntimeContext {}
@@ -61,7 +61,7 @@ export class WorkerSupervisor {
       const config = grouped.get(role);
       const desiredCount = Math.max(0, config?.count ?? 0);
       const models = (config?.modelPriority ?? []).filter(Boolean);
-      const fallbackModel = models[0] ?? 'gpt-5-codex-high';
+      const fallbackModel = models[0] ?? AVAILABLE_MODELS[0] ?? 'gpt-5-codex';
 
       for (let index = 1; index <= desiredCount; index += 1) {
         const workerId = `${role}-${index}`;

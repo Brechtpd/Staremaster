@@ -28,12 +28,7 @@ export class TesterExecutor implements CodexExecutor {
     return await new Promise<ExecutionResult>((resolve, reject) => {
       const child = spawn(this.shell, ['-lc', command], {
         cwd,
-        env: {
-          ...process.env,
-          CODEX_ORCHESTRATOR_ROLE: context.role,
-          CODEX_ORCHESTRATOR_TASK_ID: context.task.id,
-          CODEX_ORCHESTRATOR_RUN_ID: context.runId
-        }
+        env: this.buildEnv(context)
       });
 
       let stdout = '';
@@ -67,5 +62,23 @@ export class TesterExecutor implements CodexExecutor {
       });
     });
   }
-}
 
+  private buildEnv(context: ExecutionContext): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      CODEX_ORCHESTRATOR_ROLE: context.role,
+      CODEX_ORCHESTRATOR_TASK_ID: context.task.id,
+      CODEX_ORCHESTRATOR_RUN_ID: context.runId
+    };
+    if (!env.CODEX_THINKING_MODE) {
+      env.CODEX_THINKING_MODE = 'low';
+    }
+    if (!env.CODEX_COMPLEXITY) {
+      env.CODEX_COMPLEXITY = 'low';
+    }
+    if (!env.CODEX_REASONING_EFFORT) {
+      env.CODEX_REASONING_EFFORT = 'low';
+    }
+    return env;
+  }
+}

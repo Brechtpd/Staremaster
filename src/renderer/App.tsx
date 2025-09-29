@@ -1280,7 +1280,7 @@ export const App: React.FC = () => {
     };
   }, [bridge]);
 
-  const runAction = async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+  const runAction = useCallback(async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true);
     setNotification(null);
     try {
@@ -1293,7 +1293,7 @@ export const App: React.FC = () => {
     } finally {
       setBusy(false);
     }
-  };
+  }, []);
 
   const handleAddProject = async () => {
     await runAction(async () => {

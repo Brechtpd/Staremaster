@@ -183,4 +183,8 @@ export class WorkerOrchestratorBridge {
   async stopWorkers(worktreeId: string, roles: WorkerRole[]): Promise<void> {
     await this.sendRequest('stop-workers', { type: 'stop-workers', worktreeId, roles });
   }
+
+  async stopRun(worktreeId: string): Promise<void> {
+    await this.sendRequest('stop-run', { type: 'stop-run', worktreeId });
+  }
 }

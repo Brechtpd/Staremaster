@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import type { WorkerRole, WorkerStatus } from '@shared/orchestrator';
+import { Buffer } from 'node:buffer';
+import type { TaskStatus, WorkerRole, WorkerStatus } from '@shared/orchestrator';
 import { OrchestratorEventBus } from './event-bus';
 import { TaskClaimStore, type ClaimedTask } from './task-claim-store';
 import type { CodexExecutor, ExecutionResult } from './codex-executor';
@@ -153,13 +154,17 @@ export class RoleWorker extends EventEmitter {
     this.controller = new AbortController();
     const { signal } = this.controller;
     const onLog = (chunk: string, source: 'stdout' | 'stderr') => {
-      this.appendLog(chunk);
+      const normalized = this.normalizeLogChunk(chunk);
+      if (!normalized) {
+        return;
+      }
+      this.appendLog(normalized);
       this.bus.publish({
         kind: 'worker-log',
         worktreeId: this.context.worktreeId,
         workerId: this.id,
         role: this.role,
-        chunk,
+        chunk: normalized,
         source,
         timestamp: new Date().toISOString()
       });
@@ -194,10 +199,15 @@ export class RoleWorker extends EventEmitter {
   private async handleSuccess(claim: ClaimedTask, result: ExecutionResult): Promise<void> {
     try {
       const artifacts = await this.persistArtifacts(result);
-      const updated = await this.claimStore.markDone(claim, {
+      const statusOverride = this.determineStatusOverride(result);
+      const updates: { summary: string; artifacts: string[]; status?: TaskStatus } = {
         summary: result.summary,
         artifacts
-      });
+      };
+      if (statusOverride) {
+        updates.status = statusOverride;
+      }
+      const updated = await this.claimStore.markDone(claim, updates);
       if (updated) {
         this.bus.publish({
           kind: 'workers-updated',
@@ -275,5 +285,159 @@ export class RoleWorker extends EventEmitter {
       this.heartbeatTimer = setTimeout(tick, HEARTBEAT_INTERVAL_MS);
     };
     this.heartbeatTimer = setTimeout(tick, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private determineStatusOverride(result: ExecutionResult): TaskStatus | undefined {
+    if (this.role !== 'reviewer') {
+      return undefined;
+    }
+    const text = (result.summary ?? '').toLowerCase();
+    if (!text) {
+      return 'approved';
+    }
+    const changePhrases = [
+      'requesting changes',
+      'changes requested',
+      'request changes',
+      'needs changes',
+      'requires changes',
+      'blocked'
+    ];
+    if (changePhrases.some((phrase) => text.includes(phrase))) {
+      return 'changes_requested';
+    }
+    return 'approved';
+  }
+
+  private normalizeLogChunk(raw: string): string {
+    if (!raw) {
+      return '';
+    }
+    const lines = raw.split(/\r?\n/);
+    const formatted: string[] = [];
+    for (const line of lines) {
+      if (!line) {
+        continue;
+      }
+      const trimmed = line.trim();
+      if (!trimmed) {
+        formatted.push('');
+        continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch (error) {
+        formatted.push(line);
+        continue;
+      }
+      if (!parsed || typeof parsed !== 'object') {
+        formatted.push(line);
+        continue;
+      }
+      const envelope = parsed as { msg?: Record<string, unknown> };
+      const msg = envelope.msg;
+      if (!msg || typeof msg !== 'object') {
+        formatted.push(line);
+        continue;
+      }
+      const type = typeof msg.type === 'string' ? msg.type : '';
+      switch (type) {
+        case 'agent_reasoning': {
+          const text = typeof msg.text === 'string' ? msg.text : '';
+          if (text) {
+            formatted.push(`🧠 ${text}`);
+          }
+          break;
+        }
+        case 'agent_message': {
+          const text = typeof msg.text === 'string' ? msg.text : '';
+          if (text) {
+            formatted.push(text);
+          }
+          break;
+        }
+        case 'exec_command_begin': {
+          let command = '';
+          if (Array.isArray(msg.command)) {
+            command = (msg.command as unknown[]).map(String).join(' ');
+          } else if (typeof msg.command === 'string') {
+            command = msg.command;
+          }
+          const cwd = typeof msg.cwd === 'string' && msg.cwd ? ` (cwd: ${msg.cwd})` : '';
+          formatted.push(command ? `$ ${command}${cwd}` : '▶ command started');
+          break;
+        }
+        case 'exec_command_output_delta': {
+          const chunk = typeof msg.chunk === 'string' ? msg.chunk : '';
+          const decoded = this.decodeMaybeBase64(chunk);
+          if (decoded) {
+            formatted.push(decoded);
+          }
+          break;
+        }
+        case 'exec_command_output': {
+          const chunk = typeof msg.chunk === 'string' ? msg.chunk : '';
+          const decoded = this.decodeMaybeBase64(chunk);
+          if (decoded) {
+            formatted.push(decoded);
+          }
+          break;
+        }
+        case 'exec_command_end': {
+          const stdout = typeof msg.stdout === 'string' ? msg.stdout : '';
+          const stderr = typeof msg.stderr === 'string' ? msg.stderr : '';
+          if (stdout) {
+            formatted.push(stdout);
+          }
+          if (stderr) {
+            formatted.push(stderr);
+          }
+          const exitCode = (msg.exit_code ?? msg.exitCode) as number | string | undefined;
+          formatted.push(`✔ command finished${exitCode !== undefined ? ` (code ${exitCode})` : ''}`);
+          break;
+        }
+        case 'token_count': {
+          break;
+        }
+        default: {
+          if (typeof msg.text === 'string') {
+            formatted.push(msg.text);
+          } else if (typeof msg.chunk === 'string') {
+            formatted.push(this.decodeMaybeBase64(msg.chunk as string));
+          } else {
+            formatted.push(line);
+          }
+        }
+      }
+    }
+    const result = formatted.join('\n').trimEnd();
+    return result ? `${result}\n` : '';
+  }
+
+  private decodeMaybeBase64(value: string): string {
+    if (!value) {
+      return '';
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return '';
+    }
+    const base64Pattern = /^[A-Za-z0-9+/=\s]+$/;
+    if (trimmed.length % 4 === 0 && base64Pattern.test(trimmed)) {
+      try {
+        const buffer = Buffer.from(trimmed, 'base64');
+        if (buffer.length === 0) {
+          return '';
+        }
+        const decoded = buffer.toString('utf8');
+        if (!decoded.includes('\uFFFD')) {
+          return decoded;
+        }
+      } catch (error) {
+        return value;
+      }
+    }
+    return value;
   }
 }

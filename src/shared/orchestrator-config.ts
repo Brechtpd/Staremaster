@@ -18,24 +18,16 @@ export const WORKER_ROLES: WorkerRole[] = [
   'reviewer'
 ];
 
-export const AVAILABLE_MODELS = [
-  'gpt-5-codex-low',
-  'gpt-5-codex-medium',
-  'gpt-5-codex-high',
-  'gpt-5-minimal',
-  'gpt-5-low',
-  'gpt-5-medium',
-  'gpt-5-high'
-] as const;
+export const AVAILABLE_MODELS = ['gpt-5-codex'] as const;
 
 export const DEFAULT_PRIORITY: ModelPriorityConfig = {
-  analyst_a: ['gpt-5-codex-high', 'gpt-5-codex-medium', 'gpt-5-codex-low', 'gpt-5-medium'],
-  analyst_b: ['gpt-5-codex-high', 'gpt-5-codex-medium', 'gpt-5-codex-low', 'gpt-5-medium'],
-  consensus_builder: ['gpt-5-codex-high', 'gpt-5-codex-medium', 'gpt-5-codex-low', 'gpt-5-medium'],
-  splitter: ['gpt-5-codex-high', 'gpt-5-codex-medium', 'gpt-5-codex-low', 'gpt-5-medium'],
-  implementer: ['gpt-5-codex-high', 'gpt-5-codex-medium', 'gpt-5-codex-low', 'gpt-5-high'],
-  tester: ['gpt-5-codex-high', 'gpt-5-codex-medium', 'gpt-5-codex-low', 'gpt-5-medium'],
-  reviewer: ['gpt-5-codex-high', 'gpt-5-codex-medium', 'gpt-5-codex-low', 'gpt-5-high']
+  analyst_a: ['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex'],
+  analyst_b: ['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex'],
+  consensus_builder: ['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex'],
+  splitter: ['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex'],
+  implementer: ['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex'],
+  tester: ['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex'],
+  reviewer: ['gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex', 'gpt-5-codex']
 };
 
 export const DEFAULT_COUNTS: WorkerCountConfig = {

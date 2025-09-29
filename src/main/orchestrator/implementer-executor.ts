@@ -32,16 +32,32 @@ export class ImplementerExecutor implements CodexExecutor {
 
   private async runPatch(context: ExecutionContext): Promise<ExecutionResult> {
     const cwd = this.resolveCwd(context);
-    const args = ['patch', '--apply'];
+    const args = ['patch', '--apply', '--yolo', '--sandbox-mode', 'workspace-write'];
     return await new Promise<ExecutionResult>((resolve, reject) => {
+      const env = {
+        ...process.env,
+        CODEX_ORCHESTRATOR_ROLE: context.role,
+        CODEX_ORCHESTRATOR_TASK_ID: context.task.id,
+        CODEX_ORCHESTRATOR_RUN_ID: context.runId,
+        CODEX_SANDBOX_MODE: 'workspace-write'
+      } as NodeJS.ProcessEnv;
+
+      if (!env.CODEX_THINKING_MODE) {
+        env.CODEX_THINKING_MODE = 'low';
+      }
+      if (!env.CODEX_COMPLEXITY) {
+        env.CODEX_COMPLEXITY = 'low';
+      }
+      if (!env.CODEX_REASONING_EFFORT) {
+        env.CODEX_REASONING_EFFORT = 'low';
+      }
+      if (!env.CODEX_UNSAFE_ALLOW_NO_SANDBOX) {
+        env.CODEX_UNSAFE_ALLOW_NO_SANDBOX = '1';
+      }
+
       const child = spawn(this.codexBin, args, {
         cwd,
-        env: {
-          ...process.env,
-          CODEX_ORCHESTRATOR_ROLE: context.role,
-          CODEX_ORCHESTRATOR_TASK_ID: context.task.id,
-          CODEX_ORCHESTRATOR_RUN_ID: context.runId
-        }
+        env
       });
 
       let stdout = '';

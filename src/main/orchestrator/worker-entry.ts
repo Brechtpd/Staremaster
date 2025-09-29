@@ -167,6 +167,12 @@ const handleRequest = async (request: OrchestratorWorkerRequest) => {
         sendResponse({ id: request.id, ok: true });
         break;
       }
+      case 'stop-run': {
+        await supervisor.stopAll(request.worktreeId);
+        await coordinator.stopRun(request.worktreeId);
+        sendResponse({ id: request.id, ok: true });
+        break;
+      }
       case 'dispose': {
         supervisor.dispose();
         coordinator.dispose();

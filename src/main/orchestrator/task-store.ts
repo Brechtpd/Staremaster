@@ -95,11 +95,11 @@ export class TaskStore {
   async watchTasks(
     worktreeId: string,
     options: LoadTaskOptions,
-    onChange: (tasks: TaskRecord[]) => void
+    onChange: (tasks: TaskRecord[]) => void | Promise<void>
   ): Promise<() => Promise<void>> {
     const emitSnapshot = async () => {
       const records = await this.loadTasks(options);
-      onChange(records);
+      await onChange(records);
     };
 
     await emitSnapshot();
@@ -240,12 +240,32 @@ export class TaskStore {
     conversationRoot: string;
     runId: string;
     tasks: TaskRecord[];
-  }): Promise<boolean> {
-    let mutated = false;
+  }): Promise<TaskRecord[]> {
     let workingTasks = params.tasks.slice();
 
-    const ensure = async (producer: () => Promise<TaskRecord[] | TaskRecord | null>): Promise<void> => {
-      const result = await producer();
+    const reloadTasks = async () => {
+      workingTasks = await this.loadTasks({
+        worktreePath: params.worktreePath,
+        tasksRoot: params.tasksRoot,
+        conversationRoot: params.conversationRoot
+      });
+    };
+
+    if (
+      await this.applyReviewFeedback({
+        worktreePath: params.worktreePath,
+        tasksRoot: params.tasksRoot,
+        conversationRoot: params.conversationRoot,
+        tasks: workingTasks
+      })
+    ) {
+      await reloadTasks();
+    }
+
+    const ensure = async (
+      producer: (tasks: TaskRecord[]) => Promise<TaskRecord[] | TaskRecord | null>
+    ): Promise<void> => {
+      const result = await producer(workingTasks);
       if (!result) {
         return;
       }
@@ -253,32 +273,31 @@ export class TaskStore {
       if (list.length === 0) {
         return;
       }
-      mutated = true;
       workingTasks = workingTasks.concat(list);
     };
 
-    await ensure(() =>
+    await ensure((tasks) =>
       this.ensureConsensusTask({
         ...params,
-        tasks: workingTasks
+        tasks
       })
     );
 
-    await ensure(() =>
+    await ensure((tasks) =>
       this.ensureSplitterTask({
         ...params,
-        tasks: workingTasks
+        tasks
       })
     );
 
-    await ensure(() =>
+    await ensure((tasks) =>
       this.ensureImplementationTasks({
         ...params,
-        tasks: workingTasks
+        tasks
       })
     );
 
-    return mutated;
+    return workingTasks;
   }
 
   async readTaskEntries(options: LoadTaskOptions): Promise<TaskEntry[]> {
@@ -458,6 +477,100 @@ export class TaskStore {
     }
 
     return created;
+  }
+
+  private async applyReviewFeedback(params: {
+    worktreePath: string;
+    tasksRoot: string;
+    conversationRoot: string;
+    tasks: TaskRecord[];
+  }): Promise<boolean> {
+    let mutated = false;
+    for (const task of params.tasks) {
+      if (task.kind !== 'review' || task.status !== 'changes_requested') {
+        continue;
+      }
+      if (
+        await this.reopenTasksForReview({
+          worktreePath: params.worktreePath,
+          tasksRoot: params.tasksRoot,
+          conversationRoot: params.conversationRoot,
+          review: task
+        })
+      ) {
+        mutated = true;
+      }
+    }
+    return mutated;
+  }
+
+  private async reopenTasksForReview(params: {
+    worktreePath: string;
+    tasksRoot: string;
+    conversationRoot: string;
+    review: TaskRecord;
+  }): Promise<boolean> {
+    let mutated = false;
+    const now = new Date().toISOString();
+    const resetTask = async (taskId: string): Promise<void> => {
+      const updated = await this.withTaskPayload(
+        params.worktreePath,
+        params.tasksRoot,
+        params.conversationRoot,
+        taskId,
+        async (payload, meta) => {
+          const currentStatus = typeof payload.status === 'string' ? payload.status : undefined;
+          if (currentStatus === 'ready' || currentStatus === 'in_progress') {
+            return null;
+          }
+          payload.status = 'ready';
+          if (Array.isArray(payload.approvals) && payload.approvals.length > 0) {
+            payload.approvals = [];
+          }
+          if ('last_claimed_by' in payload) {
+            delete payload.last_claimed_by;
+          }
+          payload.updated_at = now;
+          await this.writeTaskFile(meta.filePath, payload);
+          return this.toTaskRecord(payload, meta);
+        }
+      );
+      if (updated) {
+        mutated = true;
+      }
+    };
+
+    for (const dependencyId of params.review.dependsOn ?? []) {
+      await resetTask(dependencyId);
+    }
+
+    const reviewReset = await this.withTaskPayload(
+      params.worktreePath,
+      params.tasksRoot,
+      params.conversationRoot,
+      params.review.id,
+      async (payload, meta) => {
+        if (payload.status === 'ready') {
+          return null;
+        }
+        payload.status = 'ready';
+        if (Array.isArray(payload.approvals) && payload.approvals.length > 0) {
+          payload.approvals = [];
+        }
+        if ('last_claimed_by' in payload) {
+          delete payload.last_claimed_by;
+        }
+        payload.updated_at = now;
+        await this.writeTaskFile(meta.filePath, payload);
+        return this.toTaskRecord(payload, meta);
+      }
+    );
+
+    if (reviewReset) {
+      mutated = true;
+    }
+
+    return mutated;
   }
 
   private async writeTaskIfMissing(params: {

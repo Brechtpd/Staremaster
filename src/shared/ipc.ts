@@ -7,7 +7,50 @@ import type {
   WorkerRole
 } from './orchestrator';
 
-export const IPCChannels = {
+type IpcChannelMap = {
+  getState: 'project:get-state';
+  addProject: 'project:add';
+  removeProject: 'project:remove';
+  createWorktree: 'worktree:create';
+  mergeWorktree: 'worktree:merge';
+  removeWorktree: 'worktree:remove';
+  openWorktreeInVSCode: 'worktree:open-vscode';
+  openWorktreeInGitGui: 'worktree:open-git-gui';
+  openWorktreeInFileManager: 'worktree:open-file-manager';
+  startCodex: 'codex:start';
+  stopCodex: 'codex:stop';
+  sendCodexInput: 'codex:input';
+  stateUpdates: 'state:update';
+  codexOutput: 'codex:output';
+  codexStatus: 'codex:status';
+  codexLog: 'codex:log';
+  codexSummarize: 'codex:summarize';
+  codexRefreshSessionId: 'codex:refresh-session-id';
+  codexListSessions: 'codex:list-sessions';
+  gitStatus: 'git:status';
+  gitDiff: 'git:diff';
+  terminalStart: 'terminal:start';
+  terminalStop: 'terminal:stop';
+  terminalInput: 'terminal:input';
+  terminalResize: 'terminal:resize';
+  terminalOutput: 'terminal:output';
+  terminalExit: 'terminal:exit';
+  terminalSnapshot: 'terminal:snapshot';
+  terminalDelta: 'terminal:delta';
+  orchestratorSnapshot: 'orchestrator:snapshot';
+  orchestratorStart: 'orchestrator:start';
+  orchestratorFollowUp: 'orchestrator:follow-up';
+  orchestratorApprove: 'orchestrator:approve';
+  orchestratorComment: 'orchestrator:comment';
+  orchestratorEvent: 'orchestrator:event';
+  orchestratorStartWorkers: 'orchestrator:start-workers';
+  orchestratorStopWorkers: 'orchestrator:stop-workers';
+  orchestratorConfigureWorkers: 'orchestrator:configure-workers';
+  orchestratorStopRun: 'orchestrator:stop-run';
+  orchestratorOpenPath: 'orchestrator:open-path';
+};
+
+export const IPCChannels: IpcChannelMap = {
   getState: 'project:get-state',
   addProject: 'project:add',
   removeProject: 'project:remove',
@@ -45,8 +88,12 @@ export const IPCChannels = {
   orchestratorEvent: 'orchestrator:event',
   orchestratorStartWorkers: 'orchestrator:start-workers',
   orchestratorStopWorkers: 'orchestrator:stop-workers',
-  orchestratorConfigureWorkers: 'orchestrator:configure-workers'
-} as const;
+  orchestratorConfigureWorkers: 'orchestrator:configure-workers',
+  orchestratorStopRun: 'orchestrator:stop-run',
+  orchestratorOpenPath: 'orchestrator:open-path'
+};
+
+export const ORCHESTRATOR_OPEN_PATH_CHANNEL = IPCChannels.orchestratorOpenPath;
 
 type ValueOf<T> = T[keyof T];
 

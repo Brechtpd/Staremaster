@@ -13,21 +13,34 @@ import type {
   WorkerRole,
   WorkerStatus
 } from '@shared/orchestrator';
-import { AVAILABLE_MODELS, DEFAULT_COUNTS, DEFAULT_PRIORITY, WORKER_ROLES, type WorkerSpawnConfig } from '@shared/orchestrator-config';
+import { AVAILABLE_MODELS, DEFAULT_COUNTS, DEFAULT_PRIORITY, type WorkerSpawnConfig } from '@shared/orchestrator-config';
 
 const EMPTY_TASKS: TaskRecord[] = [];
 const EMPTY_WORKERS: WorkerStatus[] = [];
 const MAX_WORKERS = 4;
 
-const ROLE_LABELS: Record<WorkerRole, string> = {
-  analyst_a: 'Analyst A',
-  analyst_b: 'Analyst B',
-  consensus_builder: 'Consensus Builder',
-  splitter: 'Splitter',
-  implementer: 'Implementer',
-  tester: 'Tester',
-  reviewer: 'Reviewer'
-};
+interface WorkerTypeDefinition {
+  id: string;
+  label: string;
+  roles: WorkerRole[];
+  maxWorkers: number;
+}
+
+const WORKER_TYPES: WorkerTypeDefinition[] = [
+  { id: 'analyst', label: 'Analyst', roles: ['analyst_a', 'analyst_b'], maxWorkers: 4 },
+  { id: 'consensus', label: 'Consensus Builder', roles: ['consensus_builder'], maxWorkers: 2 },
+  { id: 'splitter', label: 'Splitter', roles: ['splitter'], maxWorkers: 2 },
+  { id: 'implementer', label: 'Implementer', roles: ['implementer'], maxWorkers: 2 },
+  { id: 'tester', label: 'Tester', roles: ['tester'], maxWorkers: 2 },
+  { id: 'reviewer', label: 'Reviewer', roles: ['reviewer'], maxWorkers: 4 }
+];
+
+const ROLE_TO_TYPE = new Map<WorkerRole, WorkerTypeDefinition>();
+for (const definition of WORKER_TYPES) {
+  for (const role of definition.roles) {
+    ROLE_TO_TYPE.set(role, definition);
+  }
+}
 
 const formatRelativeTime = (iso?: string | null): string => {
   if (!iso) {
@@ -53,6 +66,14 @@ const formatRelativeTime = (iso?: string | null): string => {
   return new Date(timestamp).toLocaleString();
 };
 
+const formatFileLabel = (relativePath: string): string => {
+  const segments = relativePath.split(/[\\/]+/).filter(Boolean);
+  if (segments.length === 0) {
+    return relativePath;
+  }
+  return segments[segments.length - 1];
+};
+
 interface OrchestratorPaneProps {
   worktreeId: string;
   active: boolean;
@@ -71,43 +92,60 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
   onUnbootstrapped
 }) => {
   const status = useOrchestratorStatus(visible ? worktreeId : undefined);
-  const orchestratorState = useOrchestratorWorktree(worktreeId, { ensure: visible });
+  const orchestratorState = useOrchestratorWorktree(worktreeId);
   const {
     startRun,
     submitFollowUp,
     approveTask,
     commentOnTask,
-    configureWorkers: configureWorkersApi
+    startWorkers: startWorkersApi,
+    configureWorkers: configureWorkersApi,
+    stopRun: stopRunApi,
+    openPath: openPathApi
   } = useOrchestratorStore();
   const run = orchestratorState?.run ?? null;
   const tasks = orchestratorState?.tasks ?? EMPTY_TASKS;
   const workers = orchestratorState?.workers ?? EMPTY_WORKERS;
   const conversations = orchestratorState?.conversations ?? [];
   const metadata = orchestratorState?.metadata;
-  type RoleSettings = { count: number; modelPriority: string[] };
+
+  type WorkerTypeSettings = { count: number; modelPriority: string[] };
+
+  const normalizePriority = useCallback((input: string[] | undefined) => {
+    const priority = [...(input?.filter(Boolean) ?? [])];
+    if (priority.length === 0) {
+      priority.push(AVAILABLE_MODELS[0]);
+    }
+    while (priority.length < MAX_WORKERS) {
+      priority.push(priority[priority.length - 1] ?? AVAILABLE_MODELS[0]);
+    }
+    return priority.slice(0, MAX_WORKERS);
+  }, []);
 
   const initialSettings = useMemo(() => {
-    const map: Record<WorkerRole, RoleSettings> = {} as Record<WorkerRole, RoleSettings>;
-    for (const role of WORKER_ROLES) {
-      const baseCount = metadata?.workerCounts?.[role] ?? DEFAULT_COUNTS[role] ?? 0;
-      const priority = [...(metadata?.modelPriority?.[role] ?? DEFAULT_PRIORITY[role] ?? [])];
-      while (priority.length < MAX_WORKERS) {
-        priority.push(priority[priority.length - 1] ?? AVAILABLE_MODELS[2]);
-      }
-      map[role] = {
-        count: Math.min(MAX_WORKERS, Math.max(0, baseCount)),
-        modelPriority: priority.slice(0, MAX_WORKERS)
+    const map: Record<string, WorkerTypeSettings> = {};
+    for (const definition of WORKER_TYPES) {
+      const totalCount = definition.roles.reduce(
+        (acc, role) => acc + (metadata?.workerCounts?.[role] ?? DEFAULT_COUNTS[role] ?? 0),
+        0
+      );
+      const sourceRole = definition.roles[0];
+      const basePriority = metadata?.modelPriority?.[sourceRole] ?? DEFAULT_PRIORITY[sourceRole] ?? AVAILABLE_MODELS;
+      map[definition.id] = {
+        count: Math.min(definition.maxWorkers, Math.max(0, totalCount)),
+        modelPriority: normalizePriority(basePriority)
       };
     }
     return map;
-  }, [metadata]);
+  }, [metadata, normalizePriority]);
 
-  const [workerSettings, setWorkerSettings] = useState<Record<WorkerRole, RoleSettings>>(initialSettings);
+  const [workerTypeSettings, setWorkerTypeSettings] = useState<Record<string, WorkerTypeSettings>>(initialSettings);
 
   useEffect(() => {
-    setWorkerSettings(initialSettings);
+    setWorkerTypeSettings(initialSettings);
   }, [initialSettings]);
   const workerLogs = useOrchestratorWorkerLogs(worktreeId);
+  const activity = orchestratorState?.activity ?? [];
   const taskMap = useMemo(() => {
     const map = new Map<string, TaskRecord>();
     for (const task of tasks) {
@@ -116,13 +154,28 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     return map;
   }, [tasks]);
   const [description, setDescription] = useState('');
-  const [guidance, setGuidance] = useState('');
   const [autoStartWorkers, setAutoStartWorkers] = useState(true);
   const [followUpMessage, setFollowUpMessage] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [workersPending, setWorkersPending] = useState(false);
+
+  const openRelativePath = useCallback(
+    async (relativePath: string) => {
+      if (!relativePath || !openPathApi) {
+        return;
+      }
+      try {
+        const result = await openPathApi(worktreeId, relativePath);
+        if (typeof result === 'string' && result.trim().length > 0) {
+          setError(result.trim());
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    },
+    [openPathApi, setError, worktreeId]
+  );
 
   useEffect(() => {
     if (status.ready) {
@@ -139,10 +192,6 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     setError(null);
     setInfo(null);
   }, [visible, run?.runId]);
-
-  useEffect(() => {
-    setWorkersPending(false);
-  }, [run?.runId]);
 
   const groupedTasks = useMemo(() => {
     const byStatus = new Map<string, TaskRecord[]>();
@@ -161,28 +210,54 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     return [...workers].sort((a, b) => a.role.localeCompare(b.role));
   }, [workers]);
 
-  const handleCountChange = useCallback((role: WorkerRole, rawValue: number) => {
-    const normalized = Number.isFinite(rawValue) ? Math.min(MAX_WORKERS, Math.max(0, Math.round(rawValue))) : 0;
-    setWorkerSettings((previous) => {
-      const current = previous[role] ?? { count: 0, modelPriority: [...AVAILABLE_MODELS.slice(0, MAX_WORKERS)] };
+  const activeWorkers = useMemo(() => {
+    return sortedWorkers.filter((worker) => worker.state === 'working');
+  }, [sortedWorkers]);
+
+  const workerGroups = useMemo(() => {
+    const groups = new Map<string, WorkerStatus[]>();
+    for (const worker of activeWorkers) {
+      const typeId = ROLE_TO_TYPE.get(worker.role)?.id ?? worker.role;
+      const bucket = groups.get(typeId) ?? [];
+      bucket.push(worker);
+      groups.set(typeId, bucket);
+    }
+    return Array.from(groups.entries());
+  }, [activeWorkers]);
+
+  const handleCountChange = useCallback((typeId: string, rawValue: number, maxWorkers: number) => {
+    const normalized = Number.isFinite(rawValue)
+      ? Math.min(maxWorkers, Math.max(0, Math.round(rawValue)))
+      : 0;
+    setWorkerTypeSettings((previous) => {
+      const definition = WORKER_TYPES.find((type) => type.id === typeId);
+      const current = previous[typeId] ?? {
+        count: 0,
+        modelPriority: normalizePriority(
+          definition ? DEFAULT_PRIORITY[definition.roles[0]] : undefined
+        )
+      };
       if (current.count === normalized) {
         return previous;
       }
       return {
         ...previous,
-        [role]: {
+        [typeId]: {
           ...current,
           count: normalized
         }
       };
     });
-  }, []);
+  }, [normalizePriority]);
 
-  const handleModelPriorityChange = useCallback((role: WorkerRole, index: number, model: string) => {
-    setWorkerSettings((previous) => {
-      const current = previous[role] ?? {
+  const handleModelPriorityChange = useCallback((typeId: string, index: number, model: string) => {
+    setWorkerTypeSettings((previous) => {
+      const definition = WORKER_TYPES.find((type) => type.id === typeId);
+      const current = previous[typeId] ?? {
         count: 0,
-        modelPriority: [...AVAILABLE_MODELS.slice(0, MAX_WORKERS)]
+        modelPriority: normalizePriority(
+          definition ? DEFAULT_PRIORITY[definition.roles[0]] : undefined
+        )
       };
       const nextPriority = current.modelPriority.slice(0, MAX_WORKERS);
       if (nextPriority[index] === model) {
@@ -194,38 +269,72 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
       nextPriority[index] = model;
       return {
         ...previous,
-        [role]: {
+        [typeId]: {
           ...current,
           modelPriority: nextPriority
         }
       };
     });
-  }, []);
+  }, [normalizePriority]);
+
+  const buildConfigPayload = useCallback((): WorkerSpawnConfig[] => {
+    const configs: WorkerSpawnConfig[] = [];
+    for (const definition of WORKER_TYPES) {
+      const settings = workerTypeSettings[definition.id] ?? {
+        count: Math.min(definition.maxWorkers, 0),
+        modelPriority: normalizePriority(DEFAULT_PRIORITY[definition.roles[0]])
+      };
+      const normalizedPriority = normalizePriority(settings.modelPriority);
+      const allocations = definition.roles.map(() => 0);
+      let remaining = Math.min(definition.maxWorkers, Math.max(0, settings.count));
+      let index = 0;
+      while (remaining > 0 && definition.roles.length > 0) {
+        if (allocations[index] < MAX_WORKERS) {
+          allocations[index] += 1;
+          remaining -= 1;
+        }
+        index = (index + 1) % definition.roles.length;
+      }
+      definition.roles.forEach((role, roleIndex) => {
+        configs.push({
+          role,
+          count: allocations[roleIndex],
+          modelPriority: normalizedPriority
+        });
+      });
+    }
+    return configs;
+  }, [normalizePriority, workerTypeSettings]);
 
   const handleStart = useCallback(async () => {
     if (!description.trim()) {
       setError('Describe the task before starting a run.');
       return;
     }
+    const configs = buildConfigPayload();
     const payload: OrchestratorBriefingInput = {
       description: description.trim(),
-      guidance: guidance.trim() || undefined,
-      autoStartWorkers
+      autoStartWorkers: false
     };
     setPending(true);
     setError(null);
     setInfo(null);
     try {
       await startRun(worktreeId, payload);
-      setInfo('Run seeded. Launch workers below to begin drafting.');
+      await configureWorkersApi(worktreeId, configs);
+      if (autoStartWorkers) {
+        await startWorkersApi(worktreeId, configs);
+        setInfo('Run seeded and workers launching.');
+      } else {
+        setInfo('Run seeded. Launch workers below when ready.');
+      }
       setDescription('');
-      setGuidance('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setPending(false);
     }
-  }, [autoStartWorkers, description, guidance, startRun, worktreeId]);
+  }, [autoStartWorkers, buildConfigPayload, configureWorkersApi, description, startRun, startWorkersApi, worktreeId]);
 
   const handleFollowUp = useCallback(async () => {
     if (!followUpMessage.trim()) {
@@ -300,76 +409,19 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     [commentOnTask, worktreeId]
   );
 
-  const buildConfigPayload = useCallback((): WorkerSpawnConfig[] => {
-    return WORKER_ROLES.map((role) => {
-      const selected = (workerSettings[role]?.modelPriority ?? []).slice(0, MAX_WORKERS).filter(Boolean);
-      const defaults = DEFAULT_PRIORITY[role] ?? [];
-      while (selected.length < MAX_WORKERS && selected.length < defaults.length) {
-        selected.push(defaults[selected.length]);
-      }
-      while (selected.length < MAX_WORKERS) {
-        const fallbackIndex = Math.min(selected.length, AVAILABLE_MODELS.length - 1);
-        selected.push(AVAILABLE_MODELS[fallbackIndex]);
-      }
-      return {
-        role,
-        count: Math.min(MAX_WORKERS, Math.max(0, workerSettings[role]?.count ?? 0)),
-        modelPriority: selected
-      };
-    });
-  }, [workerSettings]);
-
-  const handleApplyConfiguration = useCallback(
-    async (message: string) => {
-      setWorkersPending(true);
-      setError(null);
-      setInfo(null);
-      try {
-        const configs = buildConfigPayload();
-        await configureWorkersApi(worktreeId, configs);
-        setInfo(message);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
-      } finally {
-        setWorkersPending(false);
-      }
-    },
-    [buildConfigPayload, configureWorkersApi, worktreeId]
-  );
-
-  const handleApplyOnly = useCallback(async () => {
-    await handleApplyConfiguration('Worker configuration applied.');
-  }, [handleApplyConfiguration]);
-
-  const handleStartWorkers = useCallback(async () => {
-    await handleApplyConfiguration('Worker configuration applied. Workers launching...');
-  }, [handleApplyConfiguration]);
-
-  const handleStopWorkers = useCallback(async () => {
-    setWorkersPending(true);
+  const handleStopRun = useCallback(async () => {
+    setPending(true);
     setError(null);
-    setInfo(null);
     try {
-      const zeroConfigs = buildConfigPayload().map((config) => ({ ...config, count: 0 }));
-      await configureWorkersApi(worktreeId, zeroConfigs);
-      setWorkerSettings((prev) => {
-        const next = { ...prev };
-        for (const role of WORKER_ROLES) {
-          next[role] = {
-            count: 0,
-            modelPriority:
-              (prev[role]?.modelPriority ?? DEFAULT_PRIORITY[role] ?? AVAILABLE_MODELS.slice(0, MAX_WORKERS)).slice(0, MAX_WORKERS)
-          };
-        }
-        return next;
-      });
-      setInfo('Worker shutdown requested.');
+      await stopRunApi(worktreeId);
+      setInfo('Orchestrator run stopped.');
+      setFollowUpMessage('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setWorkersPending(false);
+      setPending(false);
     }
-  }, [buildConfigPayload, configureWorkersApi, worktreeId]);
+  }, [stopRunApi, worktreeId]);
 
   const renderTasks = () => {
     if (groupedTasks.length === 0) {
@@ -387,46 +439,80 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
               }
               return dependency.status !== 'done' && dependency.status !== 'approved';
             });
+            const artifactPaths = (task.artifacts ?? []).filter((artifact) => Boolean(artifact));
+            const quickOpenTargets: Array<{ key: string; label: string; path: string }> = [];
+            for (const artifact of artifactPaths) {
+              const label = formatFileLabel(artifact);
+              quickOpenTargets.push({
+                key: `artifact-${task.id}-${artifact}`,
+                label,
+                path: artifact
+              });
+            }
+            if (task.conversationPath) {
+              quickOpenTargets.push({
+                key: `conversation-${task.id}`,
+                label: 'Conversation log',
+                path: task.conversationPath
+              });
+            }
             return (
               <li key={task.id}>
                 <div className="orchestrator-pane__task" data-status={task.status}>
-                <div>
-                  <strong>{task.title}</strong>
-                  <span className="orchestrator-pane__meta">[{task.role}]</span>
-                </div>
-                <div className="orchestrator-pane__meta">{task.artifacts[0] ?? task.prompt.slice(0, 80)}</div>
-                {waitingOn.length > 0 ? (
-                  <div className="orchestrator-pane__meta orchestrator-pane__meta--warning">
-                    Waiting on {waitingOn.map((id) => taskMap.get(id)?.title ?? id).join(', ')}
+                  <div>
+                    <strong>{task.title}</strong>
+                    <span className="orchestrator-pane__meta">[{task.role}]</span>
                   </div>
-                ) : null}
-                {task.approvalsRequired > 0 ? (
-                  <div className="orchestrator-pane__meta">
-                    Approvals {task.approvals.length}/{task.approvalsRequired}
-                    {task.approvals.length > 0 ? ` (${task.approvals.join(', ')})` : ''}
+                  <div className="orchestrator-pane__meta orchestrator-pane__meta--muted">
+                    {task.prompt ? task.prompt.slice(0, 160) : 'No prompt available'}
                   </div>
-                ) : null}
-                <div className="orchestrator-pane__actions-row">
-                  {task.approvalsRequired > task.approvals.length ? (
+                  {quickOpenTargets.length > 0 ? (
+                    <div className="orchestrator-pane__artifact-row">
+                      {quickOpenTargets.map((target) => (
+                        <button
+                          key={target.key}
+                          type="button"
+                          className="orchestrator-pane__artifact-button"
+                          onClick={() => void openRelativePath(target.path)}
+                          title={target.path}
+                        >
+                          {target.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {waitingOn.length > 0 ? (
+                    <div className="orchestrator-pane__meta orchestrator-pane__meta--warning">
+                      Waiting on {waitingOn.map((id) => taskMap.get(id)?.title ?? id).join(', ')}
+                    </div>
+                  ) : null}
+                  {task.approvalsRequired > 0 ? (
+                    <div className="orchestrator-pane__meta">
+                      Approvals {task.approvals.length}/{task.approvalsRequired}
+                      {task.approvals.length > 0 ? ` (${task.approvals.join(', ')})` : ''}
+                    </div>
+                  ) : null}
+                  <div className="orchestrator-pane__actions-row">
+                    {task.approvalsRequired > task.approvals.length ? (
+                      <button
+                        type="button"
+                        className="orchestrator-pane__approve"
+                        onClick={() => handleApproveTask(task.id)}
+                        disabled={pending}
+                      >
+                        Approve…
+                      </button>
+                    ) : null}
                     <button
                       type="button"
-                      className="orchestrator-pane__approve"
-                      onClick={() => handleApproveTask(task.id)}
+                      className="orchestrator-pane__comment"
+                      onClick={() => handleCommentTask(task.id)}
                       disabled={pending}
                     >
-                      Approve…
+                      Comment…
                     </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="orchestrator-pane__comment"
-                    onClick={() => handleCommentTask(task.id)}
-                    disabled={pending}
-                  >
-                    Comment…
-                  </button>
+                  </div>
                 </div>
-              </div>
               </li>
             );
           })}
@@ -447,123 +533,149 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
       <section className="orchestrator-pane__section">
         <h3>Recent Comments</h3>
         <ul className="orchestrator-pane__list orchestrator-pane__list--conversations">
-          {latest.map((entry: ConversationEntry) => (
-            <li key={entry.id}>
-              <div className="orchestrator-pane__conversation">
-                <div>
-                  <strong>{entry.author}</strong>
-                  <span className="orchestrator-pane__meta">on task {entry.taskId}</span>
+          {latest.map((entry: ConversationEntry) => {
+            const conversationTask = taskMap.get(entry.taskId);
+            const conversationPath = conversationTask?.conversationPath;
+            return (
+              <li key={entry.id}>
+                <div className="orchestrator-pane__conversation">
+                  <div className="orchestrator-pane__conversation-header">
+                    <div>
+                      <strong>{entry.author}</strong>
+                      <span className="orchestrator-pane__meta">on task {entry.taskId}</span>
+                    </div>
+                    {conversationPath ? (
+                      <button
+                        type="button"
+                        className="orchestrator-pane__artifact-button orchestrator-pane__artifact-button--small"
+                        onClick={() => void openRelativePath(conversationPath)}
+                        title={conversationPath}
+                      >
+                        Open log
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="orchestrator-pane__meta">{new Date(entry.createdAt).toLocaleString()}</div>
+                  <p>{entry.message}</p>
                 </div>
-                <div className="orchestrator-pane__meta">{new Date(entry.createdAt).toLocaleString()}</div>
-                <p>{entry.message}</p>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       </section>
     );
   };
 
   const renderWorkers = () => {
+    if (activeWorkers.length === 0) {
+      return null;
+    }
     return (
-      <section className="orchestrator-pane__section orchestrator-pane__section--workers">
-        <div className="orchestrator-pane__section-header">
-          <h3>Workers</h3>
-        </div>
-        <div className="orchestrator-pane__worker-config">
-          <div className="orchestrator-pane__worker-grid">
-            {WORKER_ROLES.map((role) => {
-              const settings = workerSettings[role] ?? {
-                count: 0,
-                modelPriority: DEFAULT_PRIORITY[role]?.slice(0, MAX_WORKERS) ?? AVAILABLE_MODELS.slice(0, MAX_WORKERS)
-              };
-              return (
-                <div key={role} className="orchestrator-pane__worker-config-card">
-                  <header className="orchestrator-pane__worker-config-header">
-                    <div>
-                      <strong>{ROLE_LABELS[role]}</strong>
-                      <span className="orchestrator-pane__meta">role id: {role}</span>
-                    </div>
-                    <label className="orchestrator-pane__count-input">
-                      <span>Workers</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={MAX_WORKERS}
-                        value={settings.count}
-                        onChange={(event) => handleCountChange(role, Number.parseInt(event.target.value, 10))}
-                        disabled={workersPending || pending}
-                      />
-                    </label>
-                  </header>
-                  <div className="orchestrator-pane__priority-grid">
-                    {Array.from({ length: MAX_WORKERS }, (_, index) => {
-                      const value = settings.modelPriority[index] ?? DEFAULT_PRIORITY[role]?.[index] ?? AVAILABLE_MODELS[Math.min(index, AVAILABLE_MODELS.length - 1)];
-                      return (
-                        <label key={`${role}-model-${index}`} className="orchestrator-pane__priority-select">
-                          <span>Worker {index + 1}</span>
-                          <select
-                            value={value}
-                            onChange={(event) => handleModelPriorityChange(role, index, event.target.value)}
-                            disabled={workersPending || pending}
-                          >
-                            {AVAILABLE_MODELS.map((model) => (
-                              <option key={`${role}-model-option-${index}-${model}`} value={model}>
-                                {model}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      );
-                    })}
+      <section className="orchestrator-pane__card orchestrator-pane__card--activity">
+        <h3>Active agents</h3>
+        <div className="orchestrator-pane__worker-activity">
+          {workerGroups.map(([typeId, group]) => {
+            const definition = WORKER_TYPES.find((type) => type.id === typeId);
+            const label = definition?.label ?? typeId;
+            return (
+              <div key={typeId} className="orchestrator-pane__worker-group">
+                <header className="orchestrator-pane__worker-group-header">
+                  <div>
+                    <strong>{label}</strong>
+                    <span className="orchestrator-pane__meta">{group.length} active</span>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="orchestrator-pane__worker-controls">
-            <button type="button" onClick={handleApplyOnly} disabled={workersPending || pending}>
-              Apply configuration
-            </button>
-            <button type="button" onClick={handleStartWorkers} disabled={workersPending || pending}>
-              Apply &amp; start
-            </button>
-            <button type="button" onClick={handleStopWorkers} disabled={workersPending || pending}>
-              Stop all
-            </button>
-          </div>
+                  <span className="orchestrator-pane__meta">
+                    Roles: {definition ? definition.roles.join(', ') : group.map((worker) => worker.role).join(', ')}
+                  </span>
+                </header>
+                <ul className="orchestrator-pane__worker-list">
+                  {group.map((worker) => {
+                    const log = workerLogs[worker.id] ?? worker.logTail ?? '';
+                    const workerLabel = `${ROLE_TO_TYPE.get(worker.role)?.label ?? worker.role} · ${worker.id}`;
+                    const task = worker.taskId ? taskMap.get(worker.taskId) : undefined;
+                    const taskTitle = worker.taskId
+                      ? task?.title ?? `Task ${worker.taskId}`
+                      : 'No task assigned';
+                    const taskSummary = task?.prompt ? task.prompt.slice(0, 160) : null;
+                    const workerArtifacts = (task?.artifacts ?? []).filter(Boolean);
+                    const conversationPath = task?.conversationPath;
+                    return (
+                      <li key={worker.id}>
+                        <div className="orchestrator-pane__worker" data-state={worker.state}>
+                          <div className="orchestrator-pane__worker-header">
+                            <strong>{workerLabel}</strong>
+                            <span className="orchestrator-pane__chip">{worker.state.replace(/_/g, ' ')}</span>
+                          </div>
+                          <div className="orchestrator-pane__meta">
+                            Model {worker.model ?? 'default'} · Last heartbeat {formatRelativeTime(worker.lastHeartbeatAt)}
+                          </div>
+                          <div className="orchestrator-pane__meta">
+                            Working on: {taskTitle}
+                            {worker.pid ? ` · PID ${worker.pid}` : ''}
+                          </div>
+                          {taskSummary ? (
+                            <div className="orchestrator-pane__meta orchestrator-pane__meta--muted">{taskSummary}</div>
+                          ) : null}
+                          {worker.description ? (
+                            <div className="orchestrator-pane__meta orchestrator-pane__meta--emphasis">{worker.description}</div>
+                          ) : null}
+                          {workerArtifacts.length > 0 || conversationPath ? (
+                            <div className="orchestrator-pane__artifact-row">
+                              {workerArtifacts.map((artifact) => (
+                                <button
+                                  key={`${worker.id}-${artifact}`}
+                                  type="button"
+                                  className="orchestrator-pane__artifact-button orchestrator-pane__artifact-button--small"
+                                  onClick={() => void openRelativePath(artifact)}
+                                  title={artifact}
+                                >
+                                  {formatFileLabel(artifact)}
+                                </button>
+                              ))}
+                              {conversationPath ? (
+                                <button
+                                  type="button"
+                                  className="orchestrator-pane__artifact-button orchestrator-pane__artifact-button--small"
+                                  onClick={() => void openRelativePath(conversationPath)}
+                                  title={conversationPath}
+                                >
+                                  Conversation
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {log ? <pre className="orchestrator-pane__log">{log}</pre> : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })}
         </div>
-        {sortedWorkers.length === 0 ? (
-          <p className="orchestrator-pane__empty">
-            No workers reporting yet. Use “Apply & start” to launch the in-app Codex sessions.
-          </p>
+      </section>
+    );
+  };
+
+  const renderActivityLog = () => {
+    const recent = activity.slice(-25).reverse();
+    return (
+      <section className="orchestrator-pane__card orchestrator-pane__card--activity">
+        <h3>Activity</h3>
+        {recent.length === 0 ? (
+          <p className="orchestrator-pane__empty">No activity yet.</p>
         ) : (
-          <ul className="orchestrator-pane__list orchestrator-pane__list--workers">
-            {sortedWorkers.map((worker: WorkerStatus) => {
-              const log = workerLogs[worker.id] ?? worker.logTail ?? '';
-              return (
-                <li key={worker.id}>
-                  <div className="orchestrator-pane__worker" data-state={worker.state}>
-                    <div className="orchestrator-pane__worker-header">
-                      <strong>{worker.role}</strong>
-                      <span className="orchestrator-pane__chip">{worker.state.replace(/_/g, ' ')}</span>
-                    </div>
-                    <div className="orchestrator-pane__meta">
-                      Worker ID {worker.id} · Model {worker.model ?? 'default'} · Last heartbeat {formatRelativeTime(worker.lastHeartbeatAt)}
-                    </div>
-                    <div className="orchestrator-pane__meta">
-                      Last heartbeat {formatRelativeTime(worker.lastHeartbeatAt)}
-                      {worker.taskId ? ` · Task ${worker.taskId}` : ''}
-                      {worker.pid ? ` · PID ${worker.pid}` : ''}
-                    </div>
-                    {worker.description ? (
-                      <div className="orchestrator-pane__meta orchestrator-pane__meta--emphasis">{worker.description}</div>
-                    ) : null}
-                    {log ? <pre className="orchestrator-pane__log">{log}</pre> : null}
-                  </div>
-                </li>
-              );
-            })}
+          <ul className="orchestrator-pane__activity-list">
+            {recent.map((entry) => (
+              <li key={entry.id}>
+                <div className="orchestrator-pane__activity-row">
+                  <span className="orchestrator-pane__activity-timestamp">{formatRelativeTime(entry.occurredAt)}</span>
+                  <span className="orchestrator-pane__activity-kind">[{entry.kind}]</span>
+                  <span className="orchestrator-pane__activity-message">{entry.message}</span>
+                </div>
+              </li>
+            ))}
           </ul>
         )}
       </section>
@@ -584,8 +696,18 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
           <div className="orchestrator-pane__empty">Loading orchestrator state…</div>
         ) : run ? (
           <div className="orchestrator-pane__content">
-            <section className="orchestrator-pane__section">
-              <h3>Current Run</h3>
+            <section className="orchestrator-pane__card orchestrator-pane__card--summary">
+              <div className="orchestrator-pane__section-header">
+                <h3>Current run</h3>
+                <button
+                  type="button"
+                  className="orchestrator-pane__ghost-button"
+                  onClick={handleStopRun}
+                  disabled={pending}
+                >
+                  Stop run
+                </button>
+              </div>
               <dl className="orchestrator-pane__summary">
                 <div>
                   <dt>Run ID</dt>
@@ -600,8 +722,8 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
                   <dd>{formatRelativeTime(status.lastEventAt)}</dd>
                 </div>
                 <div>
-                  <dt>Workers reporting</dt>
-                  <dd>{sortedWorkers.length}</dd>
+                  <dt>Active workers</dt>
+                  <dd>{activeWorkers.length}</dd>
                 </div>
                 <div>
                   <dt>Implementer lock</dt>
@@ -623,6 +745,7 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
             {renderWorkers()}
             {renderTasks()}
             {renderConversations()}
+            {renderActivityLog()}
 
             <section className="orchestrator-pane__section">
               <h3>Follow-up</h3>
@@ -642,41 +765,91 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
           </div>
         ) : (
           <div className="orchestrator-pane__content">
-            <section className="orchestrator-pane__section">
+            <section className="orchestrator-pane__card orchestrator-pane__card--form">
               <h3>Kick off a new orchestrator run</h3>
               <label className="orchestrator-pane__label" htmlFor={`orchestrator-brief-${paneId}`}>
-                Task description
+                Task briefing
               </label>
               <textarea
                 id={`orchestrator-brief-${paneId}`}
-                rows={4}
+                rows={10}
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                placeholder="Summarise the task or epic you'd like Codex analysts to tackle"
+                placeholder="Describe the task, desired deliverables, and any key constraints"
+                className="orchestrator-pane__textarea"
                 disabled={pending}
               />
-              <label className="orchestrator-pane__label" htmlFor={`orchestrator-guidance-${paneId}`}>
-                Additional guidance (optional)
-              </label>
-              <textarea
-                id={`orchestrator-guidance-${paneId}`}
-                rows={3}
-                value={guidance}
-                onChange={(event) => setGuidance(event.target.value)}
-                placeholder="Call out constraints, reviewer expectations, or edge cases"
-                disabled={pending}
-              />
-              <label className="orchestrator-pane__checkbox">
-                <input
-                  type="checkbox"
-                  checked={autoStartWorkers}
-                  onChange={(event) => setAutoStartWorkers(event.target.checked)}
-                  disabled={pending}
-                />
-                Auto-start analyst workers after seeding tasks
-              </label>
-              <div className="orchestrator-pane__actions">
-                <button type="button" onClick={handleStart} disabled={pending}>
+              <div className="orchestrator-pane__worker-config">
+                <h4>Worker configuration</h4>
+                <div className="orchestrator-pane__worker-grid">
+                  {WORKER_TYPES.map((type) => {
+                    const settings = workerTypeSettings[type.id] ?? {
+                      count: 0,
+                      modelPriority: normalizePriority(DEFAULT_PRIORITY[type.roles[0]])
+                    };
+                    return (
+                      <div key={type.id} className="orchestrator-pane__worker-config-card">
+                        <header className="orchestrator-pane__worker-config-header">
+                          <div>
+                            <strong>{type.label}</strong>
+                            <span className="orchestrator-pane__meta">roles: {type.roles.join(', ')}</span>
+                          </div>
+                    <label className="orchestrator-pane__count-input">
+                      <span>Workers</span>
+                      <select
+                        value={settings.count}
+                        onChange={(event) => handleCountChange(type.id, Number.parseInt(event.target.value, 10), type.maxWorkers)}
+                        disabled={pending}
+                      >
+                        {Array.from({ length: type.maxWorkers + 1 }, (_, value) => (
+                          <option key={`${type.id}-count-${value}`} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                        </header>
+                        <div className="orchestrator-pane__priority-grid">
+                          {Array.from({ length: MAX_WORKERS }, (_, index) => {
+                            const fallbackPriority = normalizePriority(DEFAULT_PRIORITY[type.roles[0]]);
+                            const value =
+                              settings.modelPriority[index] ??
+                              fallbackPriority[index] ??
+                              AVAILABLE_MODELS[Math.min(index, AVAILABLE_MODELS.length - 1)];
+                            return (
+                              <label key={`${type.id}-model-${index}`} className="orchestrator-pane__priority-select">
+                                <span>Priority {index + 1}</span>
+                        <select
+                          value={value}
+                          onChange={(event) => handleModelPriorityChange(type.id, index, event.target.value)}
+                          disabled={pending}
+                        >
+                                  {AVAILABLE_MODELS.map((model) => (
+                                    <option key={`${type.id}-model-option-${index}-${model}`} value={model}>
+                                      {model}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="orchestrator-pane__form-footer">
+                <label className="orchestrator-pane__checkbox">
+                  <input
+                    type="checkbox"
+                    checked={autoStartWorkers}
+                    onChange={(event) => setAutoStartWorkers(event.target.checked)}
+                    disabled={pending}
+                  />
+                  Auto-start workers once tasks are seeded
+                </label>
+                <button type="button" onClick={handleStart} disabled={pending || !description.trim()}>
                   Start orchestrator run
                 </button>
               </div>

@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron';
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import {
   IPCChannels,
@@ -47,6 +47,7 @@ type OrchestratorBridge = {
   handleWorktreeRemoved(worktreeId: string): void;
   startWorkers(worktreeId: string, context: WorkerContextPayload, configs: WorkerSpawnConfig[]): Promise<void>;
   stopWorkers(worktreeId: string, roles: WorkerRole[]): Promise<void>;
+  stopRun(worktreeId: string): Promise<void>;
 };
 
 export const registerIpcHandlers = (
@@ -391,6 +392,29 @@ export const registerIpcHandlers = (
       const canonical = resolveCanonical(payload.worktreeId);
       const roles = payload.roles && payload.roles.length > 0 ? payload.roles : WORKER_ROLES;
       await orchestrator.stopWorkers(canonical, roles);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorStopRun,
+    async (_event, payload: { worktreeId: string }) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      await orchestrator.stopRun(canonical);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorOpenPath,
+    async (_event, payload: { worktreeId: string; relativePath: string }) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const worktreePath = worktreeService.getWorktreePath(canonical);
+      if (!worktreePath) {
+        throw new Error(`Unknown worktree ${canonical}`);
+      }
+      const targetPath = path.isAbsolute(payload.relativePath)
+        ? payload.relativePath
+        : path.join(worktreePath, payload.relativePath);
+      return await shell.openPath(targetPath);
     }
   );
 
