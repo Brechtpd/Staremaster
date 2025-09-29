@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  useAgentGraph,
   useOrchestratorStatus,
   useOrchestratorStore,
   useOrchestratorWorktree,
@@ -14,10 +15,12 @@ import type {
   WorkerStatus
 } from '@shared/orchestrator';
 import { AVAILABLE_MODELS, DEFAULT_COUNTS, DEFAULT_PRIORITY, type WorkerSpawnConfig } from '@shared/orchestrator-config';
+import { AgentFlowGraph } from './AgentFlowGraph';
 
 const EMPTY_TASKS: TaskRecord[] = [];
 const EMPTY_WORKERS: WorkerStatus[] = [];
 const MAX_WORKERS = 4;
+const GRAPH_ISOLATION_MODE = true;
 
 interface WorkerTypeDefinition {
   id: string;
@@ -146,6 +149,7 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
   }, [initialSettings]);
   const workerLogs = useOrchestratorWorkerLogs(worktreeId);
   const activity = orchestratorState?.activity ?? [];
+  const agentGraph = useAgentGraph(worktreeId);
   const taskMap = useMemo(() => {
     const map = new Map<string, TaskRecord>();
     for (const task of tasks) {
@@ -177,10 +181,16 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     [openPathApi, setError, worktreeId]
   );
 
+  const bootstrappedRef = useRef(false);
+
   useEffect(() => {
     if (status.ready) {
-      onBootstrapped();
-    } else {
+      if (!bootstrappedRef.current) {
+        bootstrappedRef.current = true;
+        onBootstrapped();
+      }
+    } else if (bootstrappedRef.current) {
+      bootstrappedRef.current = false;
       onUnbootstrapped();
     }
   }, [onBootstrapped, onUnbootstrapped, status.ready]);
@@ -696,72 +706,108 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
           <div className="orchestrator-pane__empty">Loading orchestrator state…</div>
         ) : run ? (
           <div className="orchestrator-pane__content">
-            <section className="orchestrator-pane__card orchestrator-pane__card--summary">
-              <div className="orchestrator-pane__section-header">
-                <h3>Current run</h3>
-                <button
-                  type="button"
-                  className="orchestrator-pane__ghost-button"
-                  onClick={handleStopRun}
-                  disabled={pending}
-                >
-                  Stop run
-                </button>
-              </div>
-              <dl className="orchestrator-pane__summary">
-                <div>
-                  <dt>Run ID</dt>
-                  <dd>{run.runId}</dd>
+            {GRAPH_ISOLATION_MODE ? null : (
+              <section className="orchestrator-pane__card orchestrator-pane__card--summary">
+                <div className="orchestrator-pane__section-header">
+                  <h3>Current run</h3>
+                  <button
+                    type="button"
+                    className="orchestrator-pane__ghost-button"
+                    onClick={handleStopRun}
+                    disabled={pending}
+                  >
+                    Stop run
+                  </button>
                 </div>
-                <div>
-                  <dt>Status</dt>
-                  <dd>{run.status}</dd>
-                </div>
-                <div>
-                  <dt>Last activity</dt>
-                  <dd>{formatRelativeTime(status.lastEventAt)}</dd>
-                </div>
-                <div>
-                  <dt>Active workers</dt>
-                  <dd>{activeWorkers.length}</dd>
-                </div>
-                <div>
-                  <dt>Implementer lock</dt>
-                  <dd>{metadata?.implementerLockHeldBy ? `held by ${metadata.implementerLockHeldBy}` : 'idle'}</dd>
-                </div>
-                <div>
-                  <dt>Description</dt>
-                  <dd>{run.description}</dd>
-                </div>
-                {run.guidance ? (
+                <dl className="orchestrator-pane__summary">
                   <div>
-                    <dt>Guidance</dt>
-                    <dd>{run.guidance}</dd>
+                    <dt>Run ID</dt>
+                    <dd>{run.runId}</dd>
                   </div>
-                ) : null}
-              </dl>
-            </section>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{run.status}</dd>
+                  </div>
+                  <div>
+                    <dt>Last activity</dt>
+                    <dd>{formatRelativeTime(status.lastEventAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>Active workers</dt>
+                    <dd>{activeWorkers.length}</dd>
+                  </div>
+                  <div>
+                    <dt>Implementer lock</dt>
+                    <dd>{metadata?.implementerLockHeldBy ? `held by ${metadata.implementerLockHeldBy}` : 'idle'}</dd>
+                  </div>
+                  <div>
+                    <dt>Description</dt>
+                    <dd>{run.description}</dd>
+                  </div>
+                  {run.guidance ? (
+                    <div>
+                      <dt>Guidance</dt>
+                      <dd>{run.guidance}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </section>
+            )}
 
-            {renderWorkers()}
-            {renderTasks()}
-            {renderConversations()}
-            {renderActivityLog()}
+            {agentGraph.nodes.length > 0 ? (
+              <section className="orchestrator-pane__card orchestrator-pane__card--graph">
+                <div className="orchestrator-pane__section-header">
+                  <h3>Workflow</h3>
+                  <div className="agent-flow__legend">
+                    <span className="agent-flow__legend-item agent-flow__legend-item--active">Active</span>
+                    <span className="agent-flow__legend-item agent-flow__legend-item--pending">Pending</span>
+                    <span className="agent-flow__legend-item agent-flow__legend-item--done">Done</span>
+                    <span className="agent-flow__legend-item agent-flow__legend-item--error">Needs attention</span>
+                  </div>
+                  {GRAPH_ISOLATION_MODE ? (
+                    <button
+                      type="button"
+                      className="orchestrator-pane__ghost-button"
+                      onClick={handleStopRun}
+                      disabled={pending}
+                    >
+                      Stop run
+                    </button>
+                  ) : null}
+                </div>
+                <AgentFlowGraph
+                  nodes={agentGraph.nodes}
+                  edges={agentGraph.edges}
+                  onOpenArtifact={(path) => void openRelativePath(path)}
+                  visible={visible}
+                />
+              </section>
+            ) : null}
 
-            <section className="orchestrator-pane__section">
-              <h3>Follow-up</h3>
-              <textarea
-                rows={3}
-                placeholder="Share follow-up instructions or clarifications"
-                value={followUpMessage}
-                onChange={(event) => setFollowUpMessage(event.target.value)}
-                disabled={pending}
-              />
-              <div className="orchestrator-pane__actions">
-                <button type="button" onClick={handleFollowUp} disabled={pending || !followUpMessage.trim()}>
-                  Send follow-up
-                </button>
-              </div>
-            </section>
+            {GRAPH_ISOLATION_MODE ? null : (
+              <>
+                {renderWorkers()}
+                {renderTasks()}
+                {renderConversations()}
+                {renderActivityLog()}
+
+                <section className="orchestrator-pane__section">
+                  <h3>Follow-up</h3>
+                  <textarea
+                    rows={3}
+                    placeholder="Share follow-up instructions or clarifications"
+                    value={followUpMessage}
+                    onChange={(event) => setFollowUpMessage(event.target.value)}
+                    disabled={pending}
+                  />
+                  <div className="orchestrator-pane__actions">
+                    <button type="button" onClick={handleFollowUp} disabled={pending || !followUpMessage.trim()}>
+                      Send follow-up
+                    </button>
+                  </div>
+                </section>
+              </>
+            )}
           </div>
         ) : (
           <div className="orchestrator-pane__content">

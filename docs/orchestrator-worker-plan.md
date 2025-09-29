@@ -29,4 +29,5 @@
 **Next Steps**
 1. Capture UI screenshots for the configuration grid and fold them into README/onboarding docs.
 2. Monitor the new artifact/log quick-open UX (now with external open-path handling) and polish styling once screenshots are ready.
-3. Consider adding lightweight telemetry around executor failures (optional post-MVP).
+3. Capture screenshots of the React Flow agent graph and add onboarding notes for the workflow legend.
+4. Consider adding lightweight telemetry around executor failures (optional post-MVP).

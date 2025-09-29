@@ -1,5 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import type { RendererApi } from '@shared/api';
+import type { AgentGraphNodeState } from '@shared/orchestrator';
+import { AGENT_GRAPH_EDGES, AGENT_GRAPH_ROLES } from '@shared/orchestrator-graph';
 import type {
   ConversationEntry,
   OrchestratorBriefingInput,
@@ -33,6 +35,7 @@ interface OrchestratorWorktreeState {
     implementerLockHeldBy: string | null;
     workerCounts?: Partial<Record<WorkerRole, number>>;
     modelPriority?: Partial<Record<WorkerRole, string[]>>;
+    agentStates?: Partial<Record<WorkerRole, AgentGraphNodeState>>;
   };
 }
 
@@ -696,6 +699,171 @@ export const useOrchestratorTasks = (worktreeId: string | null | undefined): Tas
 export const useOrchestratorWorkers = (worktreeId: string | null | undefined): WorkerStatus[] => {
   const state = useOrchestratorWorktree(worktreeId);
   return state?.workers ?? [];
+};
+
+const ROLE_LABELS: Record<WorkerRole, string> = {
+  analyst_a: 'Analyst A',
+  analyst_b: 'Analyst B',
+  consensus_builder: 'Consensus',
+  splitter: 'Splitter',
+  implementer: 'Implementer',
+  tester: 'Tester',
+  reviewer: 'Reviewer'
+};
+
+export interface AgentGraphNodeView {
+  id: WorkerRole;
+  label: string;
+  state: AgentGraphNodeState;
+  status?: string;
+  subtitle?: string;
+  detail?: string;
+  summary?: string;
+  artifactPath?: string;
+}
+
+export interface AgentGraphEdgeView {
+  id: string;
+  source: WorkerRole;
+  target: WorkerRole;
+  status: 'inactive' | 'pending' | 'active' | 'done' | 'error';
+}
+
+interface AgentGraphInput {
+  tasks: TaskRecord[];
+  workers: WorkerStatus[];
+  agentStates?: Partial<Record<WorkerRole, AgentGraphNodeState>>;
+}
+
+export const deriveAgentGraphView = ({ tasks, workers, agentStates }: AgentGraphInput): {
+  nodes: AgentGraphNodeView[];
+  edges: AgentGraphEdgeView[];
+} => {
+  const fallbackStateForRole = (role: WorkerRole): AgentGraphNodeState => {
+    const roleTasks = tasks.filter((task) => task.role === role);
+    const statuses = roleTasks.map((task) => task.status);
+    const hasBlocked = statuses.some((status) => status === 'blocked' || status === 'error');
+    const hasChangesRequested = statuses.some((status) => status === 'changes_requested');
+    const hasAwaitingReview = statuses.some((status) => status === 'awaiting_review');
+    const hasReady = statuses.some((status) => status === 'ready');
+    const hasInProgress = statuses.some((status) => status === 'in_progress');
+    const allDone = roleTasks.length > 0 && statuses.every((status) => status === 'done' || status === 'approved');
+    const workerBusy = workers.some((worker) => worker.role === role && worker.state === 'working');
+    const workerClaiming = workers.some((worker) => worker.role === role && worker.state === 'claiming');
+    const workerHasTask = workers.some((worker) => worker.role === role && Boolean(worker.taskId));
+
+    if (hasBlocked || hasChangesRequested) {
+      return 'error';
+    }
+    if (workerBusy || workerClaiming || hasInProgress || workerHasTask) {
+      return 'active';
+    }
+    if (hasReady || hasAwaitingReview) {
+      return 'pending';
+    }
+    if (roleTasks.length > 0) {
+      return allDone ? 'done' : 'pending';
+    }
+    return 'idle';
+  };
+
+  const truncate = (value: string | undefined, limit = 160): string | undefined => {
+    if (!value) {
+      return undefined;
+    }
+    if (value.length <= limit) {
+      return value;
+    }
+    return `${value.slice(0, limit).trim()}…`;
+  };
+
+  const nodes: AgentGraphNodeView[] = AGENT_GRAPH_ROLES.map((role) => {
+    const state = agentStates?.[role] ?? fallbackStateForRole(role);
+    const roleTasks = tasks.filter((task) => task.role === role);
+    const activeTask =
+      roleTasks.find((task) => task.status === 'in_progress') ??
+      roleTasks.find((task) => task.status === 'ready' || task.status === 'awaiting_review');
+    const worker = workers.find((item) => item.role === role && item.state === 'working');
+    const subtitle = truncate(activeTask?.title ?? (roleTasks.length > 0 ? `${roleTasks.length} task(s)` : undefined), 80);
+    let status: string | undefined;
+    if (state === 'active') {
+      status = truncate(worker?.description ?? (activeTask ? `Running ${activeTask.title}` : 'Running task'), 80);
+    } else if (state === 'pending') {
+      status = truncate(roleTasks.length > 0 ? `${roleTasks.length} task(s) queued` : 'Awaiting upstream', 60);
+    } else if (state === 'done') {
+      status = 'Completed';
+    } else if (state === 'error') {
+      status = 'Needs attention';
+    }
+
+    const summaries = roleTasks
+      .filter((task) => task.summary && (task.status === 'done' || task.status === 'approved'))
+      .map((task) => task.summary as string);
+    const summary = truncate(summaries[0]);
+
+    const artifacts = roleTasks
+      .filter((task) => task.artifacts.length > 0 && (task.status === 'done' || task.status === 'approved'))
+      .map((task) => task.artifacts[0]);
+    const artifactPath = artifacts[0];
+
+    const detail = roleTasks.length === 0 && state === 'pending' ? 'Waiting on upstream' : undefined;
+
+    return {
+      id: role,
+      label: ROLE_LABELS[role] ?? role,
+      state,
+      subtitle,
+      status,
+      summary,
+      artifactPath,
+      detail
+    } satisfies AgentGraphNodeView;
+  });
+
+  const stateByRole = new Map(nodes.map((node) => [node.id, node.state]));
+
+  const edges: AgentGraphEdgeView[] = AGENT_GRAPH_EDGES.map((edge) => {
+    const sourceState = stateByRole.get(edge.source) ?? 'idle';
+    let status: AgentGraphEdgeView['status'];
+    switch (sourceState) {
+      case 'active':
+        status = 'active';
+        break;
+      case 'done':
+        status = 'done';
+        break;
+      case 'error':
+        status = 'error';
+        break;
+      case 'pending':
+        status = 'pending';
+        break;
+      default:
+        status = 'inactive';
+    }
+    return {
+      id: `${edge.source}-${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      status
+    } satisfies AgentGraphEdgeView;
+  });
+
+  return { nodes, edges };
+};
+
+export const useAgentGraph = (
+  worktreeId: string | null | undefined
+): { nodes: AgentGraphNodeView[]; edges: AgentGraphEdgeView[] } => {
+  const worktree = useOrchestratorWorktree(worktreeId);
+  const tasks = worktree?.tasks ?? [];
+  const workers = worktree?.workers ?? [];
+  const agentStates = worktree?.metadata?.agentStates;
+
+  return useMemo(
+    () => deriveAgentGraphView({ tasks, workers, agentStates }),
+    [agentStates, tasks, workers]
+  );
 };
 
 export const useOrchestratorRun = (worktreeId: string | null | undefined): OrchestratorRunSummary | null => {

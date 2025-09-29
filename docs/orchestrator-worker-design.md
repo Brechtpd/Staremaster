@@ -67,6 +67,7 @@ Renderer Process
   - Heartbeats used to render "last active" timestamps.
   - A configuration grid lets operators set desired worker counts and per-worker model priority (four slots per role). Applying the configuration pushes `WorkerSpawnConfig` objects over IPC, and the pane immediately reflects assigned models and desired concurrency.
   - Auto-start toggles call the new `startRoleWorkers`/`stopRoleWorkers` APIs; pane includes "Apply configuration", "Apply & start", and "Stop all" controls alongside per-role log tails/heartbeats.
+  - A React Flow diagram renders the role graph (analysts → consensus → splitter → implementer → tester/reviewer), animating active paths and indicating pending/done/error states for quick triage.
 
 ## 4. Data Flow
 1. Renderer submits a briefing → IPC → `registerIpcHandlers` → Bridge `startRun`.

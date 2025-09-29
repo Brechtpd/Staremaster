@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type {
+  AgentGraphNodeState,
   OrchestratorBriefingInput,
   OrchestratorCommentInput,
   OrchestratorEvent,
@@ -15,6 +16,7 @@ import { OrchestratorEventBus } from './event-bus';
 import { TaskStore } from './task-store';
 import { OrchestratorScheduler } from './scheduler';
 import { DEFAULT_COUNTS, DEFAULT_PRIORITY, WORKER_ROLES, type WorkerSpawnConfig } from '@shared/orchestrator-config';
+import { AGENT_GRAPH_PARENTS, AGENT_GRAPH_ROLES } from '@shared/orchestrator-graph';
 
 type OrchestratorListener = Parameters<OrchestratorEventBus['subscribe']>[0];
 
@@ -216,7 +218,8 @@ export class OrchestratorCoordinator {
       metadata: {
         implementerLockHeldBy: state.implementerLockHeldBy ?? null,
         workerCounts: { ...state.desiredCounts },
-        modelPriority: { ...state.modelPriority }
+        modelPriority: { ...state.modelPriority },
+        agentStates: this.deriveAgentStates(state)
       }
     };
   }
@@ -375,5 +378,70 @@ export class OrchestratorCoordinator {
       runId: state.run.runId,
       tasks: state.tasks
     });
+  }
+
+  private deriveAgentStates(state: RunState): Record<WorkerRole, AgentGraphNodeState> {
+    const result: Partial<Record<WorkerRole, AgentGraphNodeState>> = {};
+    const tasksByRole = new Map<WorkerRole, TaskRecord[]>();
+    for (const task of state.tasks) {
+      if (!tasksByRole.has(task.role)) {
+        tasksByRole.set(task.role, []);
+      }
+      tasksByRole.get(task.role)!.push(task);
+    }
+
+    const workers = state.workers ?? [];
+
+    const resolveStateForRole = (role: WorkerRole): AgentGraphNodeState => {
+      const roleTasks = tasksByRole.get(role) ?? [];
+      const taskStatuses = roleTasks.map((task) => task.status);
+      const hasBlocked = taskStatuses.some((status) => status === 'blocked' || status === 'error');
+      const hasChangesRequested = taskStatuses.some((status) => status === 'changes_requested');
+      const hasAwaitingReview = taskStatuses.some((status) => status === 'awaiting_review');
+      const hasReady = taskStatuses.some((status) => status === 'ready');
+      const hasInProgress = taskStatuses.some((status) => status === 'in_progress');
+      const allDone =
+        roleTasks.length > 0 &&
+        taskStatuses.every((status) => status === 'done' || status === 'approved');
+      const workerBusy = workers.some((worker) => worker.role === role && worker.state === 'working');
+      const workerClaiming = workers.some((worker) => worker.role === role && worker.state === 'claiming');
+      const workerHasTask = workers.some((worker) => worker.role === role && Boolean(worker.taskId));
+
+      if (hasBlocked || hasChangesRequested) {
+        return 'error';
+      }
+      if (workerBusy || workerClaiming || hasInProgress || workerHasTask) {
+        return 'active';
+      }
+      if (hasReady || hasAwaitingReview) {
+        return 'pending';
+      }
+      if (roleTasks.length > 0) {
+        if (allDone) {
+          return 'done';
+        }
+        return 'pending';
+      }
+      return 'idle';
+    };
+
+    for (const role of AGENT_GRAPH_ROLES) {
+      let stateValue = resolveStateForRole(role);
+      if (stateValue === 'idle') {
+        const parents = AGENT_GRAPH_PARENTS[role] ?? [];
+        if (
+          parents.length > 0 &&
+          parents.every((parent) => {
+            const parentState = result[parent] ?? 'idle';
+            return parentState === 'done';
+          })
+        ) {
+          stateValue = 'pending';
+        }
+      }
+      result[role] = stateValue;
+    }
+
+    return result as Record<WorkerRole, AgentGraphNodeState>;
   }
 }

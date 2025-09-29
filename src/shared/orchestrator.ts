@@ -7,6 +7,8 @@ export type WorkerRole =
   | 'reviewer'
   | 'splitter';
 
+export type AgentGraphNodeState = 'idle' | 'pending' | 'active' | 'done' | 'error';
+
 export type TaskKind = 'analysis' | 'consensus' | 'impl' | 'test' | 'review';
 
 export type TaskStatus =
@@ -86,6 +88,7 @@ export interface OrchestratorSnapshot {
     implementerLockHeldBy: string | null;
     workerCounts: Partial<Record<WorkerRole, number>>;
     modelPriority: Partial<Record<WorkerRole, string[]>>;
+    agentStates?: Partial<Record<WorkerRole, AgentGraphNodeState>>;
   };
 }
 
