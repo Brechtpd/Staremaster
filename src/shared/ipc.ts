@@ -20,6 +20,7 @@ export const IPCChannels = {
   codexListSessions: 'codex:list-sessions',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
+  setThemePreference: 'preferences:set-theme',
   terminalStart: 'terminal:start',
   terminalStop: 'terminal:stop',
   terminalInput: 'terminal:input',
@@ -36,6 +37,12 @@ export type IpcChannel = ValueOf<typeof IPCChannels>;
 
 export type WorktreeStatus = 'idle' | 'creating' | 'ready' | 'merging' | 'removing' | 'error';
 export type CodexStatus = 'idle' | 'starting' | 'resuming' | 'running' | 'stopped' | 'error';
+
+export type ThemePreference = 'light' | 'dark';
+
+export interface AppPreferences {
+  theme: ThemePreference;
+}
 
 export interface ProjectDescriptor {
   id: string;
@@ -72,6 +79,7 @@ export interface AppState {
   projects: ProjectDescriptor[];
   worktrees: WorktreeDescriptor[];
   sessions: CodexSessionDescriptor[];
+  preferences: AppPreferences;
 }
 
 export interface CodexOutputPayload {

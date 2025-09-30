@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { RendererApi } from '@shared/api';
-import type { WorktreeDescriptor } from '@shared/ipc';
+import type { WorktreeDescriptor, ThemePreference } from '@shared/ipc';
 import {
   canAutoStart,
   DerivedCodexSession,
@@ -42,6 +42,7 @@ interface CodexPaneProps {
   onUnbootstrapped?(): void;
   initialScrollState?: { position: number; atBottom: boolean };
   onScrollStateChange?(worktreeId: string, state: { position: number; atBottom: boolean }): void;
+  theme: ThemePreference;
 }
 
 const buildResumeCommand = (sessionId: string | null | undefined): string | null =>
@@ -156,7 +157,8 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
   onBootstrapped,
   onUnbootstrapped,
   initialScrollState,
-  onScrollStateChange
+  onScrollStateChange,
+  theme
 }) => {
   const terminalRef = useRef<CodexTerminalHandle | null>(null);
   const hydratorRef = useRef<Hydrator | null>(null);
@@ -829,6 +831,7 @@ export const CodexPane: React.FC<CodexPaneProps> = ({
         ref={handleTerminalRef}
         onData={handleTerminalData}
         instanceId={paneId ? `${worktree.id}-codex-${paneId}` : `${worktree.id}-codex`}
+        theme={theme}
       />
       {status !== 'running' ? (
         <p className="terminal-hint">

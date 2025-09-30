@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AppState, WorktreeDescriptor, ProjectDescriptor } from '@shared/ipc';
+import type { AppState, WorktreeDescriptor, ProjectDescriptor, ThemePreference } from '@shared/ipc';
 import type { RendererApi } from '@shared/api';
 import { GitPanel } from './components/GitPanel';
 import { ResizableColumns } from './components/ResizableColumns';
@@ -16,7 +16,8 @@ import {
 const EMPTY_STATE: AppState = {
   projects: [],
   worktrees: [],
-  sessions: []
+  sessions: [],
+  preferences: { theme: 'light' }
 };
 
 const SIDEBAR_MIN_RATIO = 0.1;
@@ -313,6 +314,28 @@ export const App: React.FC = () => {
   const busyStatesRef = useRef<Array<{ id: string; busy: boolean; running: boolean }>>([]);
   const codexBusyFlagRef = useRef<Record<string, boolean>>({});
   const codexRunningFlagRef = useRef<Record<string, boolean>>({});
+  const appliedThemeRef = useRef<ThemePreference | null>(null);
+
+  const applyThemePreference = useCallback((nextTheme: ThemePreference) => {
+    if (typeof document === 'undefined') {
+      appliedThemeRef.current = nextTheme;
+      return;
+    }
+    if (appliedThemeRef.current === nextTheme) {
+      return;
+    }
+    appliedThemeRef.current = nextTheme;
+    const root = document.documentElement;
+    root.dataset.theme = nextTheme;
+    root.style.setProperty('color-scheme', nextTheme === 'dark' ? 'dark' : 'light');
+    if (document.body) {
+      document.body.dataset.theme = nextTheme;
+    }
+  }, []);
+
+  useEffect(() => {
+    applyThemePreference(state.preferences.theme);
+  }, [applyThemePreference, state.preferences.theme]);
   const isTerminalCodex = DEFAULT_CODEX_MODE === 'terminal';
   const filteredWorktrees = useMemo(() => {
     if (state.projects.length === 0) {
@@ -470,6 +493,7 @@ export const App: React.FC = () => {
 
   const applyState = useCallback(
     (nextState: AppState, preferredProjectId?: string | null, preferredWorktreeId?: string | null) => {
+      applyThemePreference(nextState.preferences.theme);
       if (stateInitializedRef.current) {
         const previousProjectIds = new Set(state.projects.map((project) => project.id));
         const newProjectIds = nextState.projects
@@ -517,7 +541,7 @@ export const App: React.FC = () => {
       setSelectedWorktreeId(resolvedWorktreeId);
       stateInitializedRef.current = true;
     },
-    [hiddenProjectIds, selectedProjectId, selectedWorktreeId, state.projects]
+    [applyThemePreference, hiddenProjectIds, selectedProjectId, selectedWorktreeId, state.projects]
   );
 
   useEffect(() => {
@@ -1245,20 +1269,39 @@ export const App: React.FC = () => {
     };
   }, [bridge]);
 
-  const runAction = async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
-    setBusy(true);
-    setNotification(null);
+  const runAction = useCallback(
+    async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+      setBusy(true);
+      setNotification(null);
+      try {
+        return await action();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unexpected error';
+        setNotification(message);
+        console.error(error);
+        return undefined;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [setBusy, setNotification]
+  );
+
+  const handleToggleTheme = useCallback(async () => {
+    const currentTheme = state.preferences.theme;
+    const nextTheme: ThemePreference = currentTheme === 'dark' ? 'light' : 'dark';
+    applyThemePreference(nextTheme);
     try {
-      return await action();
+      const updatedState = await api.setThemePreference(nextTheme);
+      applyState(updatedState, selectedProjectId, selectedWorktreeId);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unexpected error';
+      applyThemePreference(currentTheme);
+      const message =
+        error instanceof Error ? error.message : 'Failed to update theme preference';
       setNotification(message);
-      console.error(error);
-      return undefined;
-    } finally {
-      setBusy(false);
+      console.error('[theme] failed to update preference', error);
     }
-  };
+  }, [api, applyState, applyThemePreference, selectedProjectId, selectedWorktreeId, state.preferences.theme]);
 
   const handleAddProject = async () => {
     await runAction(async () => {
@@ -1535,6 +1578,7 @@ export const App: React.FC = () => {
               onScrollStateChange={(worktreeId, state) => {
                 codexScrollStateRef.current[`${worktreeId}:${pane.id}`] = state;
               }}
+              theme={state.preferences.theme}
             />
           ) : (
             <CodexPane
@@ -1558,6 +1602,7 @@ export const App: React.FC = () => {
               onScrollStateChange={(worktreeId, state) => {
                 codexScrollStateRef.current[`${worktreeId}:${pane.id}`] = state;
               }}
+              theme={state.preferences.theme}
             />
           )}
         </div>
@@ -1572,7 +1617,8 @@ export const App: React.FC = () => {
       markPaneUnbootstrapped,
       codexSessions,
       resolveSessionWorktreeId,
-      setNotification
+      setNotification,
+      state.preferences.theme
     ]
   );
 
@@ -1604,10 +1650,11 @@ export const App: React.FC = () => {
           onScrollStateChange={(worktreeId, state) => {
             terminalScrollStateRef.current[`${worktreeId}:${pane.id}`] = state;
           }}
+          theme={state.preferences.theme}
         />
       </div>
     ),
-    [api, markPaneBootstrapped, setNotification]
+    [api, markPaneBootstrapped, setNotification, state.preferences.theme]
   );
 
   busyStatesRef.current = busyStates;
@@ -1684,6 +1731,9 @@ export const App: React.FC = () => {
             <button type="button" onClick={handleAddProject} disabled={busy || !bridge}>
               Add project
             </button>
+            <button type="button" onClick={handleToggleTheme} disabled={!bridge}>
+              {state.preferences.theme === 'dark' ? 'Use light theme' : 'Use dark theme'}
+            </button>
             <button type="button" onClick={() => setShowDebugPanel((v) => !v)} disabled={!bridge}>
               {showDebugPanel ? 'Hide debug' : 'Debug'}
             </button>
@@ -1704,7 +1754,10 @@ export const App: React.FC = () => {
                       ? codexSessions.get(project.defaultWorktreeId)
                       : undefined;
                     return (
-                      <div key={project.id} style={{ padding: '6px 8px', borderBottom: '1px solid #333' }}>
+                      <div
+                        key={project.id}
+                        style={{ padding: '6px 8px', borderBottom: '1px solid var(--color-border-subtle)' }}
+                      >
                         <div>
                           <strong>{project.name}</strong>
                           <span style={{ marginLeft: 8, opacity: 0.8 }}>root</span>
@@ -2216,6 +2269,15 @@ const createRendererStub = (): RendererApi => {
       void text;
       throw new Error('Renderer API unavailable: summarizeCodexOutput');
     },
+    refreshCodexSessionId: async (worktreeId: string, sessionId?: string | null) => {
+      void worktreeId;
+      void sessionId;
+      return null;
+    },
+    listCodexSessions: async (worktreeId: string) => {
+      void worktreeId;
+      return [];
+    },
     startWorktreeTerminal: async (worktreeId: string) => {
       void worktreeId;
       throw new Error('Renderer API unavailable: startWorktreeTerminal');
@@ -2236,6 +2298,10 @@ const createRendererStub = (): RendererApi => {
     getTerminalSnapshot: async () => ({ content: '', lastEventId: 0 }),
     getTerminalDelta: async () => ({ chunks: [], lastEventId: 0 }),
     onTerminalOutput: () => noop,
-    onTerminalExit: () => noop
+    onTerminalExit: () => noop,
+    setThemePreference: async (theme) => {
+      void theme;
+      return state;
+    }
   };
 };

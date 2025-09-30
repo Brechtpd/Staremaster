@@ -25,6 +25,10 @@ afterEach(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (window as any).api;
   vi.useRealTimers();
+  document.documentElement.dataset.theme = 'light';
+  if (document.body) {
+    document.body.dataset.theme = 'light';
+  }
 });
 
 describe('App', () => {
@@ -63,7 +67,8 @@ describe('App', () => {
           codexStatus: 'idle'
         }
       ],
-      sessions: []
+      sessions: [],
+      preferences: { theme: 'light' }
     };
 
     (window.api.getState as vi.Mock).mockResolvedValue(populatedState);
@@ -99,7 +104,8 @@ describe('App with project state', () => {
           projectId: project.id
         }
       ],
-      sessions: []
+      sessions: [],
+      preferences: { theme: 'light' }
     };
 
     const openFolderMock = vi.fn();
@@ -140,7 +146,8 @@ describe('App with project state', () => {
       getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
       getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
-      onTerminalExit: vi.fn(() => () => {})
+      onTerminalExit: vi.fn(() => () => {}),
+      setThemePreference: vi.fn(async () => state)
     } as unknown as RendererApi;
 
     Object.defineProperty(window, 'api', {
@@ -162,6 +169,94 @@ describe('App with project state', () => {
     expect(openFolderMock).toHaveBeenCalledWith(worktree.id);
   });
 
+  it('toggles the theme preference via the sidebar control', async () => {
+    const now = new Date().toISOString();
+    const project = { id: 'proj-1', root: '/tmp/repo', name: 'Project', createdAt: now };
+    const worktree: WorktreeDescriptor = {
+      id: 'wt-1',
+      projectId: project.id,
+      featureName: 'feature-1',
+      branch: 'feature-1',
+      path: '/tmp/feature-1',
+      createdAt: now,
+      status: 'ready',
+      codexStatus: 'idle'
+    };
+
+    const initialState: AppState = {
+      projects: [project],
+      worktrees: [worktree],
+      sessions: [],
+      preferences: { theme: 'light' }
+    };
+
+    const darkState: AppState = {
+      ...initialState,
+      preferences: { theme: 'dark' }
+    };
+
+    const setThemePreference = vi.fn(async () => darkState);
+
+    const api = {
+      getState: vi.fn(async () => initialState),
+      addProject: vi.fn(async () => initialState),
+      removeProject: vi.fn(async () => initialState),
+      createWorktree: vi.fn(),
+      mergeWorktree: vi.fn(),
+      removeWorktree: vi.fn(),
+      openWorktreeInVSCode: vi.fn(),
+      openWorktreeInGitGui: vi.fn(),
+      openWorktreeInFileManager: vi.fn(),
+      startCodex: vi.fn(),
+      stopCodex: vi.fn(),
+      sendCodexInput: vi.fn(),
+      startWorktreeTerminal: vi.fn(async () => ({
+        sessionId: 'terminal-1',
+        worktreeId: worktree.id,
+        shell: '/bin/bash',
+        pid: 321,
+        startedAt: now,
+        status: 'running'
+      })),
+      onStateUpdate: vi.fn(() => () => {}),
+      onCodexOutput: vi.fn(() => () => {}),
+      onCodexStatus: vi.fn(() => () => {}),
+      getGitStatus: vi.fn(async () => ({ staged: [], unstaged: [], untracked: [] })),
+      getGitDiff: vi.fn(async () => ({ filePath: '', staged: false, diff: '', binary: false })),
+      getCodexLog: vi.fn(async () => ''),
+      summarizeCodexOutput: vi.fn(async () => ''),
+      refreshCodexSessionId: vi.fn(async () => null),
+      listCodexSessions: vi.fn(async () => []),
+      stopWorktreeTerminal: vi.fn(),
+      sendTerminalInput: vi.fn(),
+      resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
+      onTerminalOutput: vi.fn(() => () => {}),
+      onTerminalExit: vi.fn(() => () => {}),
+      setThemePreference
+    } as unknown as RendererApi;
+
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: api
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(api.getState).toHaveBeenCalled());
+    expect(document.documentElement.dataset.theme).toBe('light');
+
+    const toggle = await screen.findByRole('button', { name: /use dark theme/i });
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    await waitFor(() => expect(setThemePreference).toHaveBeenCalledWith('dark'));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(await screen.findByRole('button', { name: /use light theme/i })).toBeVisible();
+  });
+
   it('allows adding an extra terminal pane from the add menu', async () => {
     const worktree: WorktreeDescriptor = {
       id: 'wt-1',
@@ -179,7 +274,8 @@ describe('App with project state', () => {
     const state: AppState = {
       projects: [project],
       worktrees: [worktree],
-      sessions: []
+      sessions: [],
+      preferences: { theme: 'light' }
     };
 
     const api = {
@@ -226,7 +322,8 @@ describe('App with project state', () => {
       getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
       getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
-      onTerminalExit: vi.fn(() => () => {})
+      onTerminalExit: vi.fn(() => () => {}),
+      setThemePreference: vi.fn(async () => state)
     } as unknown as RendererApi;
 
     Object.defineProperty(window, 'api', {
@@ -268,13 +365,15 @@ describe('App with project state', () => {
     const populatedState: AppState = {
       projects: [project],
       worktrees: [worktree],
-      sessions: []
+      sessions: [],
+      preferences: { theme: 'light' }
     };
 
     const emptyState: AppState = {
       projects: [],
       worktrees: [],
-      sessions: []
+      sessions: [],
+      preferences: { theme: 'light' }
     };
 
     const removeProject = vi.fn(async () => emptyState);
@@ -309,7 +408,8 @@ describe('App with project state', () => {
       getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
       getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
       onTerminalOutput: vi.fn(() => () => {}),
-      onTerminalExit: vi.fn(() => () => {})
+      onTerminalExit: vi.fn(() => () => {}),
+      setThemePreference: vi.fn(async () => populatedState)
     } as unknown as RendererApi;
 
     Object.defineProperty(window, 'api', {
@@ -357,7 +457,8 @@ describe('App with project state', () => {
           status: 'running',
           startedAt: new Date().toISOString()
         }
-      ]
+      ],
+      preferences: { theme: 'light' }
     };
 
     let terminalOutputListener: ((payload: TerminalOutputPayload) => void) | undefined;
@@ -406,7 +507,8 @@ describe('App with project state', () => {
         terminalOutputListener = callback;
         return () => {};
       }),
-      onTerminalExit: vi.fn(() => () => {})
+      onTerminalExit: vi.fn(() => () => {}),
+      setThemePreference: vi.fn(async () => state)
     } as unknown as RendererApi;
 
     Object.defineProperty(window, 'api', {
@@ -475,7 +577,8 @@ describe('App with project state', () => {
     const state: AppState = {
       projects: [project],
       worktrees: [worktree],
-      sessions: []
+      sessions: [],
+      preferences: { theme: 'light' }
     };
 
     const openFolderMock = vi.fn();

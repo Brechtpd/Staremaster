@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, nativeTheme } from 'electron';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { registerIpcHandlers } from './ipc/registerIpcHandlers';
@@ -8,6 +8,7 @@ import { CodexSessionManager } from './services/CodexSessionManager';
 import { GitService } from './services/GitService';
 import { WindowStateStore, WindowBounds } from './services/WindowStateStore';
 import { TerminalService } from './services/TerminalService';
+import type { ThemePreference } from '../shared/ipc';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 const isHeadless = process.env.ELECTRON_HEADLESS === '1';
@@ -57,7 +58,13 @@ const loadRenderer = async (window: BrowserWindow): Promise<void> => {
   throw new Error(`Failed to connect to Vite dev server after ${maxAttempts} attempts`);
 };
 
-const createMainWindow = async (bounds: WindowBounds | null): Promise<BrowserWindow> => {
+const getBackgroundColor = (theme: ThemePreference): string =>
+  theme === 'dark' ? '#0b1120' : '#f8fafc';
+
+const createMainWindow = async (
+  bounds: WindowBounds | null,
+  theme: ThemePreference
+): Promise<BrowserWindow> => {
   const window = new BrowserWindow({
     width: bounds?.width ?? 1440,
     height: bounds?.height ?? 900,
@@ -71,6 +78,7 @@ const createMainWindow = async (bounds: WindowBounds | null): Promise<BrowserWin
       contextIsolation: true,
       offscreen: isHeadless
     },
+    backgroundColor: getBackgroundColor(theme),
     show: !isHeadless
   });
 
@@ -146,6 +154,7 @@ const bootstrap = async () => {
   // Codex terminals use the same TerminalService (no special-casing)
   await worktreeService.load();
   const state = worktreeService.getState();
+  nativeTheme.themeSource = state.preferences.theme;
   await Promise.all(
     state.worktrees
       .filter((worktree) => !worktree.id.startsWith('project-root:'))
@@ -157,20 +166,32 @@ const bootstrap = async () => {
   );
 
   const savedBounds = await windowStateStore.load();
-  const window = await createMainWindow(savedBounds);
+  const window = await createMainWindow(savedBounds, state.preferences.theme);
   registerIpcHandlers(
     window,
     worktreeService,
     gitService,
     codexManager,
-    terminalService
+    terminalService,
+    {
+      onThemeChange: (theme) => {
+        nativeTheme.themeSource = theme;
+        window.setBackgroundColor(getBackgroundColor(theme));
+      }
+    }
   );
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const latestBounds = await windowStateStore.load();
-      const newWindow = await createMainWindow(latestBounds);
-      registerIpcHandlers(newWindow, worktreeService, gitService, codexManager, terminalService);
+      const latestTheme = worktreeService.getState().preferences.theme;
+      const newWindow = await createMainWindow(latestBounds, latestTheme);
+      registerIpcHandlers(newWindow, worktreeService, gitService, codexManager, terminalService, {
+        onThemeChange: (theme) => {
+          nativeTheme.themeSource = theme;
+          newWindow.setBackgroundColor(getBackgroundColor(theme));
+        }
+      });
     }
   });
 };

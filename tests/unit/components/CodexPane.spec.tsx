@@ -173,6 +173,7 @@ describe('CodexPane', () => {
         visible
         paneId="pane-1"
         onNotification={() => {}}
+        theme="light"
       />
     );
 
@@ -203,6 +204,7 @@ describe('CodexPane', () => {
         visible
         paneId="pane-2"
         onNotification={() => {}}
+        theme="light"
       />
     );
 
@@ -239,6 +241,7 @@ describe('CodexPane', () => {
         visible
         paneId="pane-3"
         onNotification={() => {}}
+        theme="light"
       />
     );
 
@@ -277,6 +280,7 @@ describe('CodexPane', () => {
         visible
         paneId="pane-rescan"
         onNotification={() => {}}
+        theme="light"
       />
     );
 

@@ -1,12 +1,24 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { AppState, CodexSessionDescriptor, ProjectDescriptor, WorktreeDescriptor } from '../../shared/ipc';
+import {
+  AppPreferences,
+  AppState,
+  CodexSessionDescriptor,
+  ProjectDescriptor,
+  ThemePreference,
+  WorktreeDescriptor
+} from '../../shared/ipc';
+
+const DEFAULT_PREFERENCES: AppPreferences = {
+  theme: 'light'
+};
 
 const DEFAULT_STATE: AppState = {
   projects: [],
   worktrees: [],
-  sessions: []
+  sessions: [],
+  preferences: { ...DEFAULT_PREFERENCES }
 };
 
 export class ProjectStore {
@@ -62,12 +74,16 @@ export class ProjectStore {
         }
       }
 
+      const parsedPreferences = (parsed as { preferences?: Partial<AppPreferences> | null }).preferences;
+      const preferences = normalizePreferences(parsedPreferences);
+
       this.state = {
         ...DEFAULT_STATE,
         ...parsed,
         projects,
         worktrees,
-        sessions: parsed.sessions ?? []
+        sessions: parsed.sessions ?? [],
+        preferences
       };
 
       delete (this.state as { projectRoot?: unknown }).projectRoot;
@@ -76,7 +92,7 @@ export class ProjectStore {
         console.error('Failed to load state file', error);
       }
 
-      this.state = { ...DEFAULT_STATE };
+      this.state = { ...DEFAULT_STATE, preferences: { ...DEFAULT_PREFERENCES } };
       await this.save();
     }
 
@@ -85,6 +101,11 @@ export class ProjectStore {
 
   getState(): AppState {
     return JSON.parse(JSON.stringify(this.state)) as AppState;
+  }
+
+  async setThemePreference(theme: ThemePreference): Promise<void> {
+    this.state.preferences = { ...this.state.preferences, theme };
+    await this.save();
   }
 
   async upsertWorktree(descriptor: WorktreeDescriptor): Promise<void> {
@@ -181,4 +202,9 @@ export class ProjectStore {
 
 const hashFromPath = (input: string): string => {
   return createHash('sha1').update(path.resolve(input)).digest('hex');
+};
+
+const normalizePreferences = (input: Partial<AppPreferences> | null | undefined): AppPreferences => {
+  const theme = input?.theme === 'dark' ? 'dark' : 'light';
+  return { theme };
 };

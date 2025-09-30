@@ -8,7 +8,8 @@ import {
   CodexSummarizeRequest,
   TerminalResizeRequest,
   TerminalOutputPayload,
-  TerminalExitPayload
+  TerminalExitPayload,
+  ThemePreference
 } from '../../shared/ipc';
 import { WorktreeService } from '../services/WorktreeService';
 import { CodexSessionManager } from '../services/CodexSessionManager';
@@ -16,12 +17,17 @@ import { GitService } from '../services/GitService';
 import { TerminalService } from '../services/TerminalService';
 import { CodexSummarizer } from '../services/CodexSummarizer';
 
+interface RegisterIpcHandlersOptions {
+  onThemeChange?: (theme: ThemePreference) => void;
+}
+
 export const registerIpcHandlers = (
   window: BrowserWindow,
   worktreeService: WorktreeService,
   gitService: GitService,
   codexManager: CodexSessionManager,
-  terminalService: TerminalService
+  terminalService: TerminalService,
+  options?: RegisterIpcHandlersOptions
 ): void => {
   const sendState = (state: AppState) => {
     window.webContents.send(IPCChannels.stateUpdates, state);
@@ -196,6 +202,16 @@ export const registerIpcHandlers = (
   );
 
   ipcMain.handle(
+    IPCChannels.setThemePreference,
+    async (_event, payload: { theme: ThemePreference }) => {
+      const theme = payload?.theme === 'dark' ? 'dark' : 'light';
+      const nextState = await worktreeService.setThemePreference(theme);
+      options?.onThemeChange?.(theme);
+      return nextState;
+    }
+  );
+
+  ipcMain.handle(
     IPCChannels.terminalStart,
     async (
       _event,
@@ -316,6 +332,7 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.codexLog);
     ipcMain.removeHandler(IPCChannels.codexSummarize);
     ipcMain.removeHandler(IPCChannels.sendCodexInput);
+    ipcMain.removeHandler(IPCChannels.setThemePreference);
     ipcMain.removeHandler(IPCChannels.terminalStart);
     ipcMain.removeHandler(IPCChannels.terminalStop);
     ipcMain.removeHandler(IPCChannels.terminalInput);
