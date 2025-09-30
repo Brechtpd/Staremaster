@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactFlow, {
   Background,
   Edge,
@@ -7,7 +7,9 @@ import ReactFlow, {
   NodeProps,
   Position,
   ReactFlowInstance,
-  ReactFlowProvider
+  ReactFlowProvider,
+  applyNodeChanges,
+  type NodeChange
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import type { AgentGraphEdgeView, AgentGraphNodeView } from '../orchestrator/store';
@@ -27,6 +29,7 @@ const NODE_DIMENSIONS = { width: 180, height: 72 };
 
 type AgentNodeInternalData = AgentGraphNodeView & {
   onOpenArtifact?: (path: string) => void;
+  onOpenLog?: (node: AgentGraphNodeView) => void;
 };
 
 const ROLE_HANDLES: Record<WorkerRole, { source?: { position: Position; id: string }; target?: { position: Position; id: string } }> = {
@@ -66,6 +69,24 @@ const AgentNode: React.FC<NodeProps<AgentNodeInternalData>> = ({ id, data }) => 
     event.preventDefault();
     data.onOpenArtifact?.(path);
   };
+
+  const handleActionPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  const handleActionMouseDown = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  const handleActionTouchStart = (event: React.TouchEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  const handleLogClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    event.preventDefault();
+    data.onOpenLog?.(data);
+  };
   return (
     <div className={`agent-flow__node agent-flow__node--${data.state}`}>
       {handleConfig.target ? (
@@ -91,6 +112,9 @@ const AgentNode: React.FC<NodeProps<AgentNodeInternalData>> = ({ id, data }) => 
               <button
                 type="button"
                 className="agent-flow__node-action"
+                onPointerDown={handleActionPointerDown}
+                onMouseDown={handleActionMouseDown}
+                onTouchStart={handleActionTouchStart}
                 onClick={(event) => handleOpen(event, data.artifactPath!)}
                 title={data.artifactPath!}
               >
@@ -101,7 +125,10 @@ const AgentNode: React.FC<NodeProps<AgentNodeInternalData>> = ({ id, data }) => 
               <button
                 type="button"
                 className="agent-flow__node-action"
-                onClick={(event) => handleOpen(event, data.conversationPath!)}
+                onPointerDown={handleActionPointerDown}
+                onMouseDown={handleActionMouseDown}
+                onTouchStart={handleActionTouchStart}
+                onClick={handleLogClick}
                 title={data.conversationPath!}
               >
                 Open log
@@ -129,6 +156,7 @@ export interface AgentFlowGraphProps {
   nodes: AgentGraphNodeView[];
   edges: AgentGraphEdgeView[];
   onOpenArtifact?: (path: string) => void;
+  onOpenLog?: (node: AgentGraphNodeView) => void;
   visible: boolean;
 }
 
@@ -140,20 +168,57 @@ const EDGE_COLORS: Record<AgentGraphEdgeView['status'], string> = {
   error: 'rgba(248, 113, 113, 0.8)'
 };
 
-export const AgentFlowGraph: React.FC<AgentFlowGraphProps> = ({ nodes, edges, onOpenArtifact, visible }) => {
-  const flowNodes = useMemo<Node<AgentNodeInternalData>[]>(() => {
-    return nodes.map((node) => ({
-      id: node.id,
+export const AgentFlowGraph: React.FC<AgentFlowGraphProps> = ({
+  nodes,
+  edges,
+  onOpenArtifact,
+  onOpenLog,
+  visible
+}) => {
+  const positionsRef = useRef<Record<string, { x: number; y: number }>>({ ...NODE_POSITIONS });
+
+  const [flowNodes, setFlowNodes] = useState<Node<AgentNodeInternalData>[]>(() =>
+    nodes.map((graphNode) => ({
+      id: graphNode.id,
       type: 'agentNode',
-      data: {
-        ...node,
-        onOpenArtifact
-      },
-      position: NODE_POSITIONS[node.id] ?? { x: 0, y: 0 },
-      draggable: false,
+      data: { ...graphNode, onOpenArtifact, onOpenLog },
+      position: positionsRef.current[graphNode.id] ?? NODE_POSITIONS[graphNode.id] ?? { x: 0, y: 0 },
+      draggable: true,
       selectable: false
-    }));
-  }, [nodes, onOpenArtifact]);
+    }))
+  );
+
+  useEffect(() => {
+    const current = positionsRef.current;
+    let mutated = false;
+    for (const node of nodes) {
+      if (!current[node.id]) {
+        current[node.id] = NODE_POSITIONS[node.id] ?? { x: 0, y: 0 };
+        mutated = true;
+      }
+    }
+    if (mutated) {
+      positionsRef.current = { ...current };
+    }
+    setFlowNodes((previous) => {
+      const priorPositions = positionsRef.current;
+      const existing = new Map(previous.map((node) => [node.id, node]));
+      return nodes.map((graphNode) => {
+        const prior = existing.get(graphNode.id);
+        const position = priorPositions[graphNode.id] ?? NODE_POSITIONS[graphNode.id] ?? { x: 0, y: 0 };
+        return {
+          id: graphNode.id,
+          type: 'agentNode',
+          data: { ...graphNode, onOpenArtifact, onOpenLog },
+          position,
+          draggable: true,
+          selectable: false,
+          width: prior?.width,
+          height: prior?.height
+        } satisfies Node<AgentNodeInternalData>;
+      });
+    });
+  }, [nodes, onOpenArtifact, onOpenLog]);
 
   const flowEdges = useMemo<Edge[]>(() => {
     return edges.map((edge) => ({
@@ -175,6 +240,8 @@ export const AgentFlowGraph: React.FC<AgentFlowGraphProps> = ({ nodes, edges, on
   const instanceRef = useRef<ReactFlowInstance | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitFrameRef = useRef<number | null>(null);
+  const hasAutoFittedRef = useRef(false);
+  const userLockedRef = useRef(false);
 
   const hasContainerDimensions = useCallback(() => {
     const element = containerRef.current;
@@ -218,38 +285,67 @@ export const AgentFlowGraph: React.FC<AgentFlowGraphProps> = ({ nodes, edges, on
     return { x: offsetX, y: offsetY, zoom };
   }, [flowNodes]);
 
-  const requestFit = useCallback(() => {
-    if (!visible || !hasContainerDimensions()) {
-      return;
-    }
-    const instance = instanceRef.current;
-    if (!instance) {
-      return;
-    }
-    if (fitFrameRef.current !== null) {
-      window.cancelAnimationFrame(fitFrameRef.current);
-    }
-    fitFrameRef.current = window.requestAnimationFrame(() => {
-      const viewport = computeViewport();
-      if (viewport) {
-        instance.setViewport(viewport, { duration: 200 });
+  const requestFit = useCallback(
+    (force = false) => {
+      const instance = instanceRef.current;
+      if (!instance || !visible || !hasContainerDimensions()) {
+        return;
       }
-      fitFrameRef.current = null;
-    });
-  }, [computeViewport, hasContainerDimensions, visible]);
+      if (!force && (userLockedRef.current || hasAutoFittedRef.current)) {
+        return;
+      }
+      if (fitFrameRef.current !== null) {
+        window.cancelAnimationFrame(fitFrameRef.current);
+      }
+      fitFrameRef.current = window.requestAnimationFrame(() => {
+        const viewport = computeViewport();
+        if (viewport) {
+          instance.setViewport(viewport, { duration: force ? 200 : 0 });
+        }
+        fitFrameRef.current = null;
+        hasAutoFittedRef.current = true;
+      });
+    },
+    [computeViewport, hasContainerDimensions, visible]
+  );
+
+  const handleNodesChange = useCallback((changes: NodeChange<AgentNodeInternalData>[]) => {
+    setFlowNodes((current) => applyNodeChanges(changes, current));
+    const updated = { ...positionsRef.current };
+    let mutated = false;
+    for (const change of changes) {
+      if (change.type === 'position' && change.position) {
+        updated[change.id] = change.position;
+        mutated = true;
+      }
+    }
+    if (mutated) {
+      positionsRef.current = updated;
+      userLockedRef.current = true;
+    }
+  }, []);
 
   useEffect(() => {
-    requestFit();
-  }, [requestFit, flowNodes, flowEdges, visible]);
+    if (!visible) {
+      hasAutoFittedRef.current = false;
+      userLockedRef.current = false;
+      return;
+    }
+    if (nodes.length === 0) {
+      return;
+    }
+    requestFit(true);
+  }, [visible, nodes.length, requestFit]);
 
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') {
       return;
     }
     const element = containerRef.current;
-    if (!element) {
+    if (!element || hasAutoFittedRef.current) {
       return;
     }
+
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
@@ -273,19 +369,25 @@ export const AgentFlowGraph: React.FC<AgentFlowGraphProps> = ({ nodes, edges, on
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={nodeTypes}
-          nodesDraggable={false}
+          nodesDraggable
           nodesConnectable={false}
           elementsSelectable={false}
-          zoomOnScroll={false}
-          zoomOnDoubleClick={false}
-          panOnScroll
-          minZoom={0.6}
-          maxZoom={1.2}
+          zoomOnScroll
+          zoomOnDoubleClick
+          panOnScroll={false}
+          minZoom={0.4}
+          maxZoom={1.5}
           defaultViewport={{ x: 0, y: 0, zoom: 0.75 }}
           onInit={(instance) => {
             instanceRef.current = instance;
-            requestFit();
+            requestFit(true);
           }}
+          onMoveStart={() => {
+            if (hasAutoFittedRef.current) {
+              userLockedRef.current = true;
+            }
+          }}
+          onNodesChange={handleNodesChange}
           proOptions={{ hideAttribution: true }}
           style={{ width: '100%', height: '100%' }}
         >

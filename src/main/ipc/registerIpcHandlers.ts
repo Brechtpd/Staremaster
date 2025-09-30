@@ -1,4 +1,5 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   IPCChannels,
@@ -415,6 +416,32 @@ export const registerIpcHandlers = (
         ? payload.relativePath
         : path.join(worktreePath, payload.relativePath);
       return await shell.openPath(targetPath);
+    }
+  );
+
+  ipcMain.handle(
+    IPCChannels.orchestratorReadFile,
+    async (_event, payload: { worktreeId: string; relativePath: string }) => {
+      const canonical = resolveCanonical(payload.worktreeId);
+      const worktreePath = worktreeService.getWorktreePath(canonical);
+      if (!worktreePath) {
+        throw new Error(`Unknown worktree ${canonical}`);
+      }
+      const resolved = path.isAbsolute(payload.relativePath)
+        ? payload.relativePath
+        : path.join(worktreePath, payload.relativePath);
+      const normalized = path.normalize(resolved);
+      if (!normalized.startsWith(worktreePath)) {
+        throw new Error('Attempted to read file outside of worktree');
+      }
+      try {
+        return await fs.readFile(normalized, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return '';
+        }
+        throw error;
+      }
     }
   );
 

@@ -72,5 +72,6 @@ export interface RendererApi {
   configureOrchestratorWorkers(worktreeId: string, configs: WorkerSpawnConfig[]): Promise<void>;
   stopOrchestratorRun(worktreeId: string): Promise<void>;
   openOrchestratorPath(worktreeId: string, relativePath: string): Promise<string | null | void>;
+  readOrchestratorFile(worktreeId: string, relativePath: string): Promise<string>;
   onOrchestratorEvent(callback: (event: OrchestratorEvent) => void): () => void;
 }

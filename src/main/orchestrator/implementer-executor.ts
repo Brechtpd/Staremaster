@@ -6,15 +6,21 @@ import type { CodexExecutor, ExecutionContext, ExecutionResult } from './codex-e
 export interface ImplementerExecutorOptions {
   codexBin?: string;
   lockPath?: string;
+  sandboxMode?: string;
+  approvalPolicy?: string;
 }
 
 export class ImplementerExecutor implements CodexExecutor {
   private readonly codexBin: string;
   private readonly lockPath?: string;
+  private readonly sandboxMode: string;
+  private readonly approvalPolicy: string;
 
   constructor(options: ImplementerExecutorOptions = {}) {
     this.codexBin = options.codexBin ?? process.env.CODEX_BIN ?? 'codex';
     this.lockPath = options.lockPath;
+    this.sandboxMode = options.sandboxMode ?? process.env.CODEX_IMPLEMENTER_SANDBOX_MODE ?? 'workspace-write';
+    this.approvalPolicy = options.approvalPolicy ?? process.env.CODEX_IMPLEMENTER_APPROVAL_POLICY ?? 'never';
   }
 
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
@@ -32,14 +38,15 @@ export class ImplementerExecutor implements CodexExecutor {
 
   private async runPatch(context: ExecutionContext): Promise<ExecutionResult> {
     const cwd = this.resolveCwd(context);
-    const args = ['patch', '--apply', '--yolo', '--sandbox-mode', 'workspace-write'];
+    const args = ['patch', '--apply', '--yolo', '--sandbox-mode', this.sandboxMode];
     return await new Promise<ExecutionResult>((resolve, reject) => {
       const env = {
         ...process.env,
         CODEX_ORCHESTRATOR_ROLE: context.role,
         CODEX_ORCHESTRATOR_TASK_ID: context.task.id,
         CODEX_ORCHESTRATOR_RUN_ID: context.runId,
-        CODEX_SANDBOX_MODE: 'workspace-write'
+        CODEX_SANDBOX_MODE: this.sandboxMode,
+        CODEX_APPROVAL_POLICY: this.approvalPolicy
       } as NodeJS.ProcessEnv;
 
       if (!env.CODEX_THINKING_MODE) {
@@ -53,6 +60,9 @@ export class ImplementerExecutor implements CodexExecutor {
       }
       if (!env.CODEX_UNSAFE_ALLOW_NO_SANDBOX) {
         env.CODEX_UNSAFE_ALLOW_NO_SANDBOX = '1';
+      }
+      if (!env.CODEX_AUTO_APPLY_APPROVALS) {
+        env.CODEX_AUTO_APPLY_APPROVALS = '1';
       }
 
       const child = spawn(this.codexBin, args, {

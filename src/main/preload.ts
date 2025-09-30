@@ -47,7 +47,8 @@ const IPCChannels = {
   orchestratorStopWorkers: 'orchestrator:stop-workers',
   orchestratorConfigureWorkers: 'orchestrator:configure-workers',
   orchestratorStopRun: 'orchestrator:stop-run',
-  orchestratorOpenPath: 'orchestrator:open-path'
+  orchestratorOpenPath: 'orchestrator:open-path',
+  orchestratorReadFile: 'orchestrator:read-file'
 } as const;
 
 const api: RendererApi = {
@@ -171,6 +172,11 @@ const api: RendererApi = {
       worktreeId,
       relativePath
     }) as Promise<string | null>,
+  readOrchestratorFile: (worktreeId, relativePath) =>
+    ipcRenderer.invoke(IPCChannels.orchestratorReadFile, {
+      worktreeId,
+      relativePath
+    }) as Promise<string>,
   onOrchestratorEvent: (callback: (event: OrchestratorEvent) => void) =>
     subscribe(IPCChannels.orchestratorEvent, callback)
 };

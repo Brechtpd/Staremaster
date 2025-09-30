@@ -4,7 +4,8 @@ import {
   useOrchestratorStatus,
   useOrchestratorStore,
   useOrchestratorWorktree,
-  useOrchestratorWorkerLogs
+  useOrchestratorWorkerLogs,
+  type AgentGraphNodeView
 } from '../orchestrator/store';
 import type {
   ConversationEntry,
@@ -20,7 +21,7 @@ import { AgentFlowGraph } from './AgentFlowGraph';
 const EMPTY_TASKS: TaskRecord[] = [];
 const EMPTY_WORKERS: WorkerStatus[] = [];
 const MAX_WORKERS = 4;
-const GRAPH_ISOLATION_MODE = true;
+const GRAPH_ISOLATION_MODE = false;
 
 interface WorkerTypeDefinition {
   id: string;
@@ -77,6 +78,25 @@ const formatFileLabel = (relativePath: string): string => {
   return segments[segments.length - 1];
 };
 
+const formatWorkerLabel = (worker: WorkerStatus): string => {
+  const roleLabel = ROLE_TO_TYPE.get(worker.role)?.label ?? worker.role;
+  const base = `${roleLabel} · ${worker.id}`;
+  const model = (worker.model ?? 'default').trim() || 'default';
+  const reasoningRaw = worker.reasoningDepth ?? 'low';
+  const reasoning = reasoningRaw
+    .replace(/_/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+  const details: string[] = [model];
+  if (reasoning) {
+    details.push(`${reasoning} reasoning`);
+  }
+  return `${base} (${details.join(' · ')})`;
+};
+
 interface OrchestratorPaneProps {
   worktreeId: string;
   active: boolean;
@@ -104,7 +124,8 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     startWorkers: startWorkersApi,
     configureWorkers: configureWorkersApi,
     stopRun: stopRunApi,
-    openPath: openPathApi
+    openPath: openPathApi,
+    readFile: readFileApi
   } = useOrchestratorStore();
   const run = orchestratorState?.run ?? null;
   const tasks = orchestratorState?.tasks ?? EMPTY_TASKS;
@@ -163,6 +184,13 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [logViewer, setLogViewer] = useState<{
+    title: string;
+    path: string;
+    content: string;
+  } | null>(null);
+  const [logViewerLoading, setLogViewerLoading] = useState(false);
+  const [logViewerError, setLogViewerError] = useState<string | null>(null);
 
   const openRelativePath = useCallback(
     async (relativePath: string) => {
@@ -180,6 +208,33 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     },
     [openPathApi, setError, worktreeId]
   );
+
+  const handleOpenLog = useCallback(
+    async (node: AgentGraphNodeView) => {
+      if (!node.conversationPath) {
+        setInfo('No log available for this worker yet.');
+        return;
+      }
+      setLogViewer({ title: `${node.label} · Log`, path: node.conversationPath, content: '' });
+      setLogViewerLoading(true);
+      setLogViewerError(null);
+      try {
+        const contents = await readFileApi(worktreeId, node.conversationPath);
+        setLogViewer({ title: `${node.label} · Log`, path: node.conversationPath, content: contents });
+      } catch (cause) {
+        setLogViewerError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setLogViewerLoading(false);
+      }
+    },
+    [readFileApi, setInfo, worktreeId]
+  );
+
+  const handleCloseLog = useCallback(() => {
+    setLogViewer(null);
+    setLogViewerLoading(false);
+    setLogViewerError(null);
+  }, []);
 
   const bootstrappedRef = useRef(false);
 
@@ -601,7 +656,7 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
                 <ul className="orchestrator-pane__worker-list">
                   {group.map((worker) => {
                     const log = workerLogs[worker.id] ?? worker.logTail ?? '';
-                    const workerLabel = `${ROLE_TO_TYPE.get(worker.role)?.label ?? worker.role} · ${worker.id}`;
+                    const workerLabel = formatWorkerLabel(worker);
                     const task = worker.taskId ? taskMap.get(worker.taskId) : undefined;
                     const taskTitle = worker.taskId
                       ? task?.title ?? `Task ${worker.taskId}`
@@ -616,9 +671,7 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
                             <strong>{workerLabel}</strong>
                             <span className="orchestrator-pane__chip">{worker.state.replace(/_/g, ' ')}</span>
                           </div>
-                          <div className="orchestrator-pane__meta">
-                            Model {worker.model ?? 'default'} · Last heartbeat {formatRelativeTime(worker.lastHeartbeatAt)}
-                          </div>
+                          <div className="orchestrator-pane__meta">Last heartbeat {formatRelativeTime(worker.lastHeartbeatAt)}</div>
                           <div className="orchestrator-pane__meta">
                             Working on: {taskTitle}
                             {worker.pid ? ` · PID ${worker.pid}` : ''}
@@ -779,6 +832,7 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
                   nodes={agentGraph.nodes}
                   edges={agentGraph.edges}
                   onOpenArtifact={(path) => void openRelativePath(path)}
+                  onOpenLog={(node) => void handleOpenLog(node)}
                   visible={visible}
                 />
               </section>
@@ -903,6 +957,32 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
           </div>
         )}
       </div>
+      {logViewer ? (
+        <div className="modal-backdrop">
+          <div className="modal orchestrator-pane__log-modal">
+            <header className="orchestrator-pane__log-modal-header">
+              <div>
+                <h3>{logViewer.title}</h3>
+                <p className="orchestrator-pane__meta orchestrator-pane__meta--muted">{logViewer.path}</p>
+              </div>
+              <button type="button" className="orchestrator-pane__ghost-button" onClick={handleCloseLog}>
+                Close
+              </button>
+            </header>
+            <div className="orchestrator-pane__log-modal-body">
+              {logViewerLoading ? (
+                <p className="orchestrator-pane__meta">Loading log…</p>
+              ) : logViewerError ? (
+                <p className="orchestrator-pane__error">{logViewerError}</p>
+              ) : logViewer.content.trim().length === 0 ? (
+                <p className="orchestrator-pane__meta">No log content available yet.</p>
+              ) : (
+                <pre className="orchestrator-pane__log-modal-content">{logViewer.content}</pre>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

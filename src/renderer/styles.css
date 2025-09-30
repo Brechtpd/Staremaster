@@ -553,6 +553,8 @@ button {
   gap: 24px;
   width: 100%;
   align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 
 .orchestrator-pane__card {
@@ -902,29 +904,39 @@ button {
   width: 100%;
   align-self: stretch;
   overflow: hidden;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  /* Keep the card visible even when other sections expand */
+  min-height: 640px;
 }
 
 .agent-flow__container {
-  height: 720px;
+  flex: 1;
   width: 100%;
   background: #f8fafc;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.35);
   overflow: hidden;
+  /* Ensure the graph never collapses when other sections expand */
+  min-height: 520px;
 }
 
 .agent-flow__node {
-  min-width: 140px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  background: #fff;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+  position: relative;
+  min-width: 220px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(71, 85, 105, 0.65);
+  background: linear-gradient(160deg, rgba(15, 23, 42, 0.96) 0%, rgba(2, 6, 23, 0.94) 100%);
+  box-shadow: 0 24px 42px rgba(2, 6, 23, 0.55), 0 0 0 1px rgba(148, 163, 184, 0.15) inset;
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.5;
   display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 14px;
+  color: #e2e8f0;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 .agent-flow__node-body {
@@ -934,11 +946,13 @@ button {
 }
 
 .agent-flow__node-indicator {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.6);
+  background: rgba(148, 163, 184, 0.65);
+  box-shadow: 0 0 12px rgba(191, 219, 254, 0.65);
   flex-shrink: 0;
+  margin-top: 4px;
 }
 
 .agent-flow__handle {
@@ -947,58 +961,64 @@ button {
 }
 
 .agent-flow__node--pending .agent-flow__node-indicator {
-  background: rgba(234, 179, 8, 0.8);
+  background: rgba(251, 191, 36, 0.9);
+  box-shadow: 0 0 14px rgba(251, 191, 36, 0.45);
 }
 
 .agent-flow__node--active .agent-flow__node-indicator {
-  background: rgba(34, 197, 94, 0.85);
+  background: rgba(16, 185, 129, 0.95);
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.5);
 }
 
 .agent-flow__node--done .agent-flow__node-indicator {
-  background: rgba(59, 130, 246, 0.75);
+  background: rgba(59, 130, 246, 0.9);
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.5);
 }
 
 .agent-flow__node--error .agent-flow__node-indicator {
-  background: rgba(248, 113, 113, 0.85);
+  background: rgba(248, 113, 113, 0.95);
+  box-shadow: 0 0 16px rgba(248, 113, 113, 0.5);
 }
 
 .agent-flow__node-title {
   font-weight: 600;
-  color: #0f172a;
+  color: #f8fafc;
+  letter-spacing: 0.01em;
 }
 
 .agent-flow__node-status {
   font-size: 12px;
-  color: #1f2937;
-  opacity: 0.92;
+  color: #cbd5f5;
+  opacity: 0.9;
 }
 
 .agent-flow__node-summary {
   font-size: 12px;
-  color: #475569;
+  color: rgba(226, 232, 240, 0.72);
 }
 
 .agent-flow__node-actions {
   display: inline-flex;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .agent-flow__node-action {
-  border: 1px solid rgba(148, 163, 184, 0.55);
-  background: rgba(241, 245, 249, 0.85);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  background: rgba(37, 99, 235, 0.25);
   border-radius: 999px;
-  padding: 2px 10px;
+  padding: 4px 12px;
   font-size: 11px;
   font-weight: 600;
-  color: #0f172a;
+  color: #e0e7ff;
   cursor: pointer;
+  pointer-events: all;
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
 .agent-flow__node-action:hover {
-  background: rgba(191, 219, 254, 0.65);
-  border-color: rgba(59, 130, 246, 0.55);
+  background: rgba(59, 130, 246, 0.55);
+  border-color: rgba(59, 130, 246, 0.9);
   transform: translateY(-1px);
 }
 
@@ -1006,24 +1026,58 @@ button {
   transform: translateY(0);
 }
 
+.orchestrator-pane__log-modal {
+  width: min(840px, 92vw);
+  max-height: min(85vh, 900px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.orchestrator-pane__log-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.orchestrator-pane__log-modal-body {
+  flex: 1;
+  min-height: 0;
+  background: #0f172a;
+  border-radius: 12px;
+  border: 1px solid rgba(30, 41, 59, 0.55);
+  padding: 16px;
+  overflow: auto;
+}
+
+.orchestrator-pane__log-modal-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
 .agent-flow__node--pending {
-  border-color: rgba(234, 179, 8, 0.6);
-  box-shadow: 0 6px 18px rgba(234, 179, 8, 0.2);
+  border-color: rgba(251, 191, 36, 0.55);
+  box-shadow: 0 24px 36px rgba(251, 191, 36, 0.2), 0 0 0 1px rgba(251, 191, 36, 0.25) inset;
 }
 
 .agent-flow__node--active {
-  border-color: rgba(34, 197, 94, 0.6);
-  box-shadow: 0 8px 22px rgba(34, 197, 94, 0.25);
+  border-color: rgba(16, 185, 129, 0.55);
+  box-shadow: 0 28px 38px rgba(16, 185, 129, 0.24), 0 0 0 1px rgba(16, 185, 129, 0.25) inset;
 }
 
 .agent-flow__node--done {
-  border-color: rgba(59, 130, 246, 0.4);
-  opacity: 0.9;
+  border-color: rgba(59, 130, 246, 0.55);
+  box-shadow: 0 26px 36px rgba(59, 130, 246, 0.22), 0 0 0 1px rgba(59, 130, 246, 0.3) inset;
 }
 
 .agent-flow__node--error {
-  border-color: rgba(248, 113, 113, 0.7);
-  box-shadow: 0 8px 22px rgba(248, 113, 113, 0.25);
+  border-color: rgba(248, 113, 113, 0.65);
+  box-shadow: 0 28px 42px rgba(248, 113, 113, 0.24), 0 0 0 1px rgba(248, 113, 113, 0.3) inset;
 }
 
 .agent-flow__edge {

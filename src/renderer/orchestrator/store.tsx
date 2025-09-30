@@ -143,6 +143,29 @@ const pushActivity = (
   return next.slice(-200);
 };
 
+const formatReasoningDepthLabel = (value: string | undefined): string => {
+  const normalized = (value ?? 'low').replace(/_/g, ' ').trim();
+  if (!normalized) {
+    return 'Low';
+  }
+  return normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+};
+
+const formatModelReasoningLabel = (model: string | undefined, reasoning: string | undefined): string => {
+  const normalizedModel = (model ?? 'default').trim() || 'default';
+  const reasoningLabel = formatReasoningDepthLabel(reasoning);
+  return `${normalizedModel} · ${reasoningLabel} reasoning`;
+};
+
+const describeWorker = (worker: WorkerStatus): string => {
+  const detail = formatModelReasoningLabel(worker.model, worker.reasoningDepth);
+  return `${worker.id} (${detail})`;
+};
+
 const cloneState = (value: OrchestratorWorktreeState): OrchestratorWorktreeState => ({
   ...value,
   tasks: value.tasks.slice(),
@@ -321,7 +344,7 @@ const reducer = (state: OrchestratorState, action: Action): OrchestratorState =>
               current.workerLogs[worker.id] = worker.logTail;
             }
             const taskMessage = worker.taskId ? ` (${worker.taskId})` : '';
-            messages.push(`${worker.id} → ${worker.state}${taskMessage}`);
+            messages.push(`${describeWorker(worker)} → ${worker.state}${taskMessage}`);
           }
           current.workers = Array.from(map.values()).sort((a, b) => a.id.localeCompare(b.id));
           current.lastEventAt = new Date().toISOString();
@@ -446,6 +469,7 @@ interface OrchestratorContextValue {
   configureWorkers: (worktreeId: string, configs: WorkerSpawnConfig[]) => Promise<void>;
   stopRun: (worktreeId: string) => Promise<void>;
   openPath: (worktreeId: string, relativePath: string) => Promise<void>;
+  readFile: (worktreeId: string, relativePath: string) => Promise<string>;
 }
 
 const OrchestratorContext = createContext<OrchestratorContextValue | null>(null);
@@ -643,6 +667,16 @@ export const OrchestratorProvider: React.FC<OrchestratorProviderProps> = ({ api,
     [api]
   );
 
+  const readFile = useCallback(
+    async (worktreeId: string, relativePath: string) => {
+      if (!api.readOrchestratorFile) {
+        return '';
+      }
+      return await api.readOrchestratorFile(worktreeId, relativePath);
+    },
+    [api]
+  );
+
   const value = useMemo<OrchestratorContextValue>(
     () => ({
       state,
@@ -655,9 +689,23 @@ export const OrchestratorProvider: React.FC<OrchestratorProviderProps> = ({ api,
       stopWorkers,
       configureWorkers,
       stopRun,
-      openPath
+      openPath,
+      readFile
     }),
-    [approveTask, commentOnTask, configureWorkers, ensureWorktree, startRun, startWorkers, state, stopRun, stopWorkers, submitFollowUp, openPath]
+    [
+      approveTask,
+      commentOnTask,
+      configureWorkers,
+      ensureWorktree,
+      startRun,
+      startWorkers,
+      state,
+      stopRun,
+      stopWorkers,
+      submitFollowUp,
+      openPath,
+      readFile
+    ]
   );
 
   return <OrchestratorContext.Provider value={value}>{children}</OrchestratorContext.Provider>;
@@ -735,9 +783,52 @@ interface AgentGraphInput {
   tasks: TaskRecord[];
   workers: WorkerStatus[];
   agentStates?: Partial<Record<WorkerRole, AgentGraphNodeState>>;
+  workerLogs?: Record<string, string>;
 }
 
-export const deriveAgentGraphView = ({ tasks, workers, agentStates }: AgentGraphInput): {
+// Extract the latest "reasoning section" headline emitted by an agent
+// from a worker's log buffer. These arrive as a JSON line with
+//   {"id":"...","msg":{"type":"agent_reasoning_section_break"}}
+// followed by a markdown headline like: "🧠 **Searching for appearance components**"
+const extractReasoningHeadline = (log: string | undefined): string | undefined => {
+  if (!log) return undefined;
+  try {
+    const markerRe = /"type"\s*:\s*"agent_reasoning_section_break"/g;
+    let match: RegExpExecArray | null = null;
+    let lastIndex = -1;
+    while ((match = markerRe.exec(log))) {
+      lastIndex = match.index;
+    }
+    if (lastIndex === -1) return undefined;
+    const after = log.slice(lastIndex);
+    const firstNl = after.indexOf('\n');
+    if (firstNl === -1) return undefined;
+    // Take the next non-empty line after the marker
+    const remainder = after.slice(firstNl + 1);
+    const lines = remainder.split(/\r?\n/);
+    let headline = lines.find((l) => l.trim().length > 0);
+    if (!headline) return undefined;
+    // Strip ANSI escapes using dynamic RegExp to appease linter
+    const ESC = '\u001b';
+    headline = headline.replace(new RegExp(`${ESC}\\[[0-9;]*m`, 'g'), '');
+    // Remove common leading emoji/symbols and bullets without broad unicode classes
+    const leading = headline.trimStart();
+    const symbols = ['🧠', '🔎', '✅', '⚠️', '▶️', '•', '-', '→', '∙'];
+    for (const sym of symbols) {
+      if (leading.startsWith(sym)) {
+        headline = leading.slice(sym.length).trimStart();
+        break;
+      }
+    }
+    // Remove markdown emphasis/bold/backticks and brackets
+    headline = headline.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/[`*_]/g, '');
+    return headline.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+export const deriveAgentGraphView = ({ tasks, workers, agentStates, workerLogs }: AgentGraphInput): {
   nodes: AgentGraphNodeView[];
   edges: AgentGraphEdgeView[];
 } => {
@@ -785,7 +876,7 @@ const summarize = (value: string | undefined, limit = 45): string | undefined =>
   }
   const plain = value
     .replace(/\r?\n+/g, ' ')
-    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/[*_`]/g, '')
     .replace(/^\s*[-•]\s*/, '')
     .trim();
@@ -805,15 +896,21 @@ const summarize = (value: string | undefined, limit = 45): string | undefined =>
     const activeTask =
       roleTasks.find((task) => task.status === 'in_progress') ??
       roleTasks.find((task) => task.status === 'ready' || task.status === 'awaiting_review');
-    const worker = workers.find((item) => item.role === role && item.state === 'working');
+    const worker = workers.find((item) => item.role === role && item.state === 'working')
+      ?? workers.find((item) => item.role === role);
     const subtitle = truncate(activeTask?.title ?? (roleTasks.length > 0 ? `${roleTasks.length} task(s)` : undefined), 80);
     let status: string | undefined;
     let statusDetail: string | undefined;
     if (state === 'active') {
       status = truncate(worker?.description ?? (activeTask ? `Running ${activeTask.title}` : 'Running task'), 80);
+      // Prefer the latest agent reasoning headline from the worker log
+      const headline = extractReasoningHeadline(worker ? workerLogs?.[worker.id] : undefined);
+      if (headline) {
+        statusDetail = truncate(headline, 160);
+      }
       if (worker?.startedAt) {
         const elapsedMs = Date.now() - new Date(worker.startedAt).getTime();
-        if (elapsedMs > 0) {
+        if (!statusDetail && elapsedMs > 0) {
           const minutes = Math.floor(elapsedMs / 60_000);
           const seconds = Math.floor((elapsedMs % 60_000) / 1_000)
             .toString()
@@ -844,10 +941,12 @@ const summarize = (value: string | undefined, limit = 45): string | undefined =>
       .map((task) => task.conversationPath as string)[0];
 
     const detail = roleTasks.length === 0 && state === 'pending' ? 'Waiting on upstream' : undefined;
+    const labelDetail = formatModelReasoningLabel(worker?.model, worker?.reasoningDepth);
+    const label = `${ROLE_LABELS[role] ?? role} (${labelDetail})`;
 
     return {
       id: role,
-      label: ROLE_LABELS[role] ?? role,
+      label,
       state,
       subtitle,
       status,
@@ -895,14 +994,14 @@ export const useAgentGraph = (
   worktreeId: string | null | undefined
 ): { nodes: AgentGraphNodeView[]; edges: AgentGraphEdgeView[] } => {
   const worktree = useOrchestratorWorktree(worktreeId);
-  const tasks = worktree?.tasks ?? [];
-  const workers = worktree?.workers ?? [];
-  const agentStates = worktree?.metadata?.agentStates;
 
-  return useMemo(
-    () => deriveAgentGraphView({ tasks, workers, agentStates }),
-    [agentStates, tasks, workers]
-  );
+  return useMemo(() => {
+    const tasks = worktree?.tasks ?? [];
+    const workers = worktree?.workers ?? [];
+    const agentStates = worktree?.metadata?.agentStates;
+    const workerLogs = worktree?.workerLogs ?? {};
+    return deriveAgentGraphView({ tasks, workers, agentStates, workerLogs });
+  }, [worktree]);
 };
 
 export const useOrchestratorRun = (worktreeId: string | null | undefined): OrchestratorRunSummary | null => {

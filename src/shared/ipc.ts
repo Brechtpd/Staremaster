@@ -48,6 +48,7 @@ type IpcChannelMap = {
   orchestratorConfigureWorkers: 'orchestrator:configure-workers';
   orchestratorStopRun: 'orchestrator:stop-run';
   orchestratorOpenPath: 'orchestrator:open-path';
+  orchestratorReadFile: 'orchestrator:read-file';
 };
 
 export const IPCChannels: IpcChannelMap = {
@@ -90,10 +91,12 @@ export const IPCChannels: IpcChannelMap = {
   orchestratorStopWorkers: 'orchestrator:stop-workers',
   orchestratorConfigureWorkers: 'orchestrator:configure-workers',
   orchestratorStopRun: 'orchestrator:stop-run',
-  orchestratorOpenPath: 'orchestrator:open-path'
+  orchestratorOpenPath: 'orchestrator:open-path',
+  orchestratorReadFile: 'orchestrator:read-file'
 };
 
 export const ORCHESTRATOR_OPEN_PATH_CHANNEL = IPCChannels.orchestratorOpenPath;
+export const ORCHESTRATOR_READ_FILE_CHANNEL = IPCChannels.orchestratorReadFile;
 
 type ValueOf<T> = T[keyof T];
 

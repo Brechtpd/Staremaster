@@ -56,6 +56,7 @@ export interface WorkerStatus {
   pid?: number;
   logTail?: string;
   model?: string;
+  reasoningDepth?: string;
 }
 
 export type OrchestratorRunStatus =

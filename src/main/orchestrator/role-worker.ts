@@ -45,6 +45,7 @@ export class RoleWorker extends EventEmitter {
   private logTail = '';
   private readonly model?: string;
   private readonly index: number;
+  private readonly reasoningDepth: string;
 
   private status: WorkerStatus;
 
@@ -58,6 +59,7 @@ export class RoleWorker extends EventEmitter {
     this.executor = options.executor;
     this.context = options.context;
     this.model = options.model;
+    this.reasoningDepth = this.resolveReasoningDepth(options.role);
     const now = new Date().toISOString();
     this.status = {
       id: this.id,
@@ -67,7 +69,8 @@ export class RoleWorker extends EventEmitter {
       updatedAt: now,
       startedAt: now,
       lastHeartbeatAt: now,
-      model: this.model
+      model: this.model,
+      reasoningDepth: this.reasoningDepth
     };
   }
 
@@ -264,13 +267,31 @@ export class RoleWorker extends EventEmitter {
       ...partial,
       updatedAt: now,
       lastHeartbeatAt: partial.lastHeartbeatAt ?? now,
-      model: this.model
+      model: this.model,
+      reasoningDepth: this.reasoningDepth
     };
     this.bus.publish({
       kind: 'workers-updated',
       worktreeId: this.context.worktreeId,
       workers: [{ ...this.status }]
     });
+  }
+
+  private resolveReasoningDepth(role: WorkerRole): string {
+    const env = process.env;
+    const roleKey = role.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    const candidates = [
+      env[`CODEX_REASONING_DEPTH_${roleKey}`],
+      env[`CODEX_REASONING_EFFORT_${roleKey}`],
+      env.CODEX_REASONING_DEPTH,
+      env.CODEX_REASONING_EFFORT
+    ];
+    for (const candidate of candidates) {
+      if (candidate && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+    return 'low';
   }
 
   private scheduleHeartbeat(): void {

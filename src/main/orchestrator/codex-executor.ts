@@ -79,7 +79,7 @@ export class CodexCliExecutor implements CodexExecutor {
   }
 
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    const args = ['exec', '--json'];
+    const args = ['exec', '--json', '--full-auto'];
     const profile = this.resolveProfile(context.role);
     const model = context.model;
     if (profile) {
