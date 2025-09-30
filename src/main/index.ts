@@ -8,6 +8,7 @@ import { CodexSessionManager } from './services/CodexSessionManager';
 import { GitService } from './services/GitService';
 import { WindowStateStore, WindowBounds } from './services/WindowStateStore';
 import { TerminalService } from './services/TerminalService';
+import { WorktreeAuditLog } from './services/WorktreeAuditLog';
 import type { ThemePreference } from '../shared/ipc';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
@@ -28,6 +29,7 @@ let gitService: GitService;
 let codexManager: CodexSessionManager;
 let windowStateStore: WindowStateStore;
 let terminalService: TerminalService;
+let auditLog: WorktreeAuditLog;
 
 const preloadPath = (): string => {
   return path.join(__dirname, 'preload.js');
@@ -141,7 +143,8 @@ const bootstrap = async () => {
 
   const store = new ProjectStore(app.getPath('userData'));
   windowStateStore = new WindowStateStore(app.getPath('userData'));
-  worktreeService = new WorktreeService(store);
+  auditLog = new WorktreeAuditLog(path.join(app.getPath('userData'), 'worktree-logs'));
+  worktreeService = new WorktreeService(store, auditLog);
   gitService = new GitService((id) => worktreeService.getWorktreePath(id));
   codexManager = new CodexSessionManager(store);
   terminalService = new TerminalService((id) => worktreeService.getWorktreePath(id), {

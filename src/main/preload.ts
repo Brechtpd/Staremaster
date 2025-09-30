@@ -7,6 +7,7 @@ const IPCChannels = {
   removeProject: 'project:remove',
   createWorktree: 'worktree:create',
   mergeWorktree: 'worktree:merge',
+  pullWorktree: 'worktree:pull',
   removeWorktree: 'worktree:remove',
   openWorktreeInVSCode: 'worktree:open-vscode',
   openWorktreeInGitGui: 'worktree:open-git-gui',
@@ -41,6 +42,7 @@ const api: RendererApi = {
   createWorktree: (projectId, featureName) =>
     ipcRenderer.invoke(IPCChannels.createWorktree, { projectId, featureName }),
   mergeWorktree: (worktreeId) => ipcRenderer.invoke(IPCChannels.mergeWorktree, { worktreeId }),
+  pullWorktree: (worktreeId) => ipcRenderer.invoke(IPCChannels.pullWorktree, { worktreeId }),
   removeWorktree: (worktreeId, deleteFolder) =>
     ipcRenderer.invoke(IPCChannels.removeWorktree, { worktreeId, deleteFolder }),
   openWorktreeInVSCode: (worktreeId) =>

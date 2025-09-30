@@ -34,6 +34,7 @@ beforeEach(() => {
       codexStatus: 'idle'
     })),
     mergeWorktree: vi.fn().mockResolvedValue(emptyState),
+    pullWorktree: vi.fn().mockResolvedValue(emptyState),
     removeWorktree: vi.fn().mockResolvedValue(emptyState),
     openWorktreeInVSCode: vi.fn().mockResolvedValue(undefined),
     openWorktreeInGitGui: vi.fn().mockResolvedValue(undefined),

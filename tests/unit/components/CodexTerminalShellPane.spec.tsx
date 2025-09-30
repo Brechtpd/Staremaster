@@ -95,6 +95,7 @@ const createRendererApi = () => {
     addProject: vi.fn(),
     createWorktree: vi.fn(),
     mergeWorktree: vi.fn(),
+    pullWorktree: vi.fn(),
     removeWorktree: vi.fn(),
     openWorktreeInVSCode: vi.fn(),
     openWorktreeInGitGui: vi.fn(),

@@ -17,8 +17,19 @@ vi.mock('../../src/renderer/components/WorktreeTerminalPane', () => ({
   WorktreeTerminalPane: () => <div data-testid="mock-terminal-pane" />
 }));
 
+let latestGitPanelStatusChange:
+  | ((payload: { worktreeId: string; clean: boolean; message?: string }) => void)
+  | null = null;
+
 vi.mock('../../src/renderer/components/GitPanel', () => ({
-  GitPanel: () => <div data-testid="mock-git-panel" />
+  GitPanel: (props: {
+    api: RendererApi;
+    worktree: WorktreeDescriptor;
+    onStatusChange?: (payload: { worktreeId: string; clean: boolean; message?: string }) => void;
+  }) => {
+    latestGitPanelStatusChange = props.onStatusChange ?? null;
+    return <div data-testid="mock-git-panel" />;
+  }
 }));
 
 afterEach(() => {
@@ -29,6 +40,7 @@ afterEach(() => {
   if (document.body) {
     document.body.dataset.theme = 'light';
   }
+  latestGitPanelStatusChange = null;
 });
 
 describe('App', () => {
@@ -115,6 +127,7 @@ describe('App with project state', () => {
       removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
       removeWorktree: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
       openWorktreeInGitGui: vi.fn(),
@@ -169,6 +182,185 @@ describe('App with project state', () => {
     expect(openFolderMock).toHaveBeenCalledWith(worktree.id);
   });
 
+  it('enables the pull button when the worktree is clean and calls the API', async () => {
+    const worktree: WorktreeDescriptor = {
+      id: 'wt-1',
+      projectId: 'proj-1',
+      featureName: 'feature-1',
+      branch: 'feature-1',
+      path: '/tmp/feature-1',
+      createdAt: new Date().toISOString(),
+      status: 'ready',
+      codexStatus: 'idle'
+    };
+
+    const project = { id: 'proj-1', root: '/tmp/repo', name: 'Project', createdAt: new Date().toISOString() };
+    const state: AppState = {
+      projects: [project],
+      worktrees: [worktree],
+      sessions: [],
+      preferences: { theme: 'light' }
+    };
+
+    const pullWorktree = vi.fn(async () => state);
+
+    const api = {
+      getState: vi.fn(async () => state),
+      addProject: vi.fn(async () => state),
+      removeProject: vi.fn(async () => state),
+      createWorktree: vi.fn(),
+      mergeWorktree: vi.fn(),
+      pullWorktree,
+      removeWorktree: vi.fn(),
+      openWorktreeInVSCode: vi.fn(),
+      openWorktreeInGitGui: vi.fn(),
+      openWorktreeInFileManager: vi.fn(),
+      startCodex: vi.fn(),
+      stopCodex: vi.fn(),
+      sendCodexInput: vi.fn(),
+      startWorktreeTerminal: vi.fn(async () => ({
+        sessionId: 'terminal-1',
+        worktreeId: worktree.id,
+        shell: '/bin/bash',
+        pid: 123,
+        startedAt: new Date().toISOString(),
+        status: 'running'
+      })),
+      onStateUpdate: vi.fn(() => () => {}),
+      onCodexOutput: vi.fn(() => () => {}),
+      onCodexStatus: vi.fn(() => () => {}),
+      getGitStatus: vi.fn(),
+      getGitDiff: vi.fn(),
+      getCodexLog: vi.fn(),
+      summarizeCodexOutput: vi.fn(async () => ''),
+      refreshCodexSessionId: vi.fn(async () => null),
+      listCodexSessions: vi.fn(async () => []),
+      stopWorktreeTerminal: vi.fn(),
+      sendTerminalInput: vi.fn(),
+      resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
+      onTerminalOutput: vi.fn(() => () => {}),
+      onTerminalExit: vi.fn(() => () => {}),
+      setThemePreference: vi.fn(async () => state)
+    } as unknown as RendererApi;
+
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: api
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(api.getState).toHaveBeenCalled());
+
+    const pullButton = await screen.findByRole('button', { name: /pull/i });
+    expect(pullButton).toBeDisabled();
+    expect(screen.getByText(/checking worktree status/i)).toBeInTheDocument();
+
+    await act(async () => {
+      latestGitPanelStatusChange?.({ worktreeId: worktree.id, clean: true });
+    });
+
+    await waitFor(() => expect(pullButton).not.toBeDisabled());
+
+    fireEvent.click(pullButton);
+
+    await waitFor(() => expect(pullWorktree).toHaveBeenCalledWith('wt-1'));
+    expect(
+      screen.getByText('Pulled latest main branch changes into the worktree.')
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the pull button disabled when the worktree has pending changes', async () => {
+    const worktree: WorktreeDescriptor = {
+      id: 'wt-2',
+      projectId: 'proj-2',
+      featureName: 'feature-2',
+      branch: 'feature-2',
+      path: '/tmp/feature-2',
+      createdAt: new Date().toISOString(),
+      status: 'ready',
+      codexStatus: 'idle'
+    };
+
+    const project = { id: 'proj-2', root: '/tmp/repo-2', name: 'Project 2', createdAt: new Date().toISOString() };
+    const state: AppState = {
+      projects: [project],
+      worktrees: [worktree],
+      sessions: [],
+      preferences: { theme: 'light' }
+    };
+
+    const api = {
+      getState: vi.fn(async () => state),
+      addProject: vi.fn(async () => state),
+      removeProject: vi.fn(async () => state),
+      createWorktree: vi.fn(),
+      mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
+      removeWorktree: vi.fn(),
+      openWorktreeInVSCode: vi.fn(),
+      openWorktreeInGitGui: vi.fn(),
+      openWorktreeInFileManager: vi.fn(),
+      startCodex: vi.fn(),
+      stopCodex: vi.fn(),
+      sendCodexInput: vi.fn(),
+      startWorktreeTerminal: vi.fn(async () => ({
+        sessionId: 'terminal-2',
+        worktreeId: worktree.id,
+        shell: '/bin/bash',
+        pid: 456,
+        startedAt: new Date().toISOString(),
+        status: 'running'
+      })),
+      onStateUpdate: vi.fn(() => () => {}),
+      onCodexOutput: vi.fn(() => () => {}),
+      onCodexStatus: vi.fn(() => () => {}),
+      getGitStatus: vi.fn(),
+      getGitDiff: vi.fn(),
+      getCodexLog: vi.fn(),
+      summarizeCodexOutput: vi.fn(async () => ''),
+      refreshCodexSessionId: vi.fn(async () => null),
+      listCodexSessions: vi.fn(async () => []),
+      stopWorktreeTerminal: vi.fn(),
+      sendTerminalInput: vi.fn(),
+      resizeTerminal: vi.fn(),
+      getTerminalSnapshot: vi.fn(async () => ({ content: '', lastEventId: 0 })),
+      getTerminalDelta: vi.fn(async () => ({ chunks: [], lastEventId: 0 })),
+      onTerminalOutput: vi.fn(() => () => {}),
+      onTerminalExit: vi.fn(() => () => {}),
+      setThemePreference: vi.fn(async () => state)
+    } as unknown as RendererApi;
+
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: api
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(api.getState).toHaveBeenCalled());
+
+    const pullButton = await screen.findByRole('button', { name: /pull/i });
+    expect(pullButton).toBeDisabled();
+
+    await act(async () => {
+      latestGitPanelStatusChange?.({
+        worktreeId: worktree.id,
+        clean: false,
+        message: '1 staged, 1 unstaged'
+      });
+    });
+
+    await waitFor(() => {
+      expect(pullButton).toBeDisabled();
+      expect(screen.getByText(/1 staged, 1 unstaged/i)).toBeInTheDocument();
+    });
+
+    expect(api.pullWorktree).not.toHaveBeenCalled();
+  });
+
   it('toggles the theme preference via the sidebar control', async () => {
     const now = new Date().toISOString();
     const project = { id: 'proj-1', root: '/tmp/repo', name: 'Project', createdAt: now };
@@ -203,6 +395,7 @@ describe('App with project state', () => {
       removeProject: vi.fn(async () => initialState),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
       removeWorktree: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
       openWorktreeInGitGui: vi.fn(),
@@ -284,6 +477,7 @@ describe('App with project state', () => {
       removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
       removeWorktree: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
       openWorktreeInGitGui: vi.fn(),
@@ -384,6 +578,7 @@ describe('App with project state', () => {
       removeProject,
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
       removeWorktree: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
       openWorktreeInGitGui: vi.fn(),
@@ -469,6 +664,7 @@ describe('App with project state', () => {
       removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
       removeWorktree: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
       openWorktreeInGitGui: vi.fn(),
@@ -588,6 +784,7 @@ describe('App with project state', () => {
       removeProject: vi.fn(async () => state),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
       removeWorktree: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
       openWorktreeInGitGui: vi.fn(),

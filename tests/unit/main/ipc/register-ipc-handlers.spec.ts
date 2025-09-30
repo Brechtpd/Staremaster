@@ -7,6 +7,7 @@ import type { CodexSessionManager } from '../../../../src/main/services/CodexSes
 import type { TerminalService } from '../../../../src/main/services/TerminalService';
 import type { BrowserWindow } from 'electron';
 import { IPCChannels } from '../../../../src/shared/ipc';
+import type { AppState } from '../../../../src/shared/ipc';
 
 const sendMock = vi.fn();
 
@@ -67,6 +68,7 @@ class WorktreeServiceStub extends EventEmitter {
   openWorktreeInGitGui = vi.fn();
   openWorktreeInFileManager = vi.fn();
   mergeWorktree = vi.fn();
+  pullWorktree = vi.fn();
   refreshProjectWorktrees = vi.fn();
   updateCodexStatus = vi.fn(async () => {});
   getWorktreePath = vi.fn();
@@ -208,6 +210,18 @@ describe('registerIpcHandlers codex routing', () => {
     const result = await listHandler?.({}, { worktreeId: 'project-root:proj' });
     expect(codexManager.listCodexSessionCandidates).toHaveBeenCalledWith('wt-main');
     expect(result).toEqual([{ id: 'abc', mtimeMs: 1 }]);
+  });
+
+  it('routes pull requests to the worktree service', async () => {
+    const { worktreeService } = createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const pullHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.pullWorktree)?.[1] as
+      | ((event: unknown, payload: { worktreeId: string }) => Promise<AppState>)
+      | undefined;
+    expect(pullHandler).toBeDefined();
+    worktreeService.pullWorktree.mockResolvedValue({} as AppState);
+    await pullHandler?.({}, { worktreeId: 'wt-main' });
+    expect(worktreeService.pullWorktree).toHaveBeenCalledWith('wt-main');
   });
 
   it('updates theme preference through the store and invokes callback', async () => {

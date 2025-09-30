@@ -4,6 +4,7 @@ export const IPCChannels = {
   removeProject: 'project:remove',
   createWorktree: 'worktree:create',
   mergeWorktree: 'worktree:merge',
+  pullWorktree: 'worktree:pull',
   removeWorktree: 'worktree:remove',
   openWorktreeInVSCode: 'worktree:open-vscode',
   openWorktreeInGitGui: 'worktree:open-git-gui',
@@ -35,7 +36,14 @@ type ValueOf<T> = T[keyof T];
 
 export type IpcChannel = ValueOf<typeof IPCChannels>;
 
-export type WorktreeStatus = 'idle' | 'creating' | 'ready' | 'merging' | 'removing' | 'error';
+export type WorktreeStatus =
+  | 'idle'
+  | 'creating'
+  | 'ready'
+  | 'merging'
+  | 'pulling'
+  | 'removing'
+  | 'error';
 export type CodexStatus = 'idle' | 'starting' | 'resuming' | 'running' | 'stopped' | 'error';
 
 export type ThemePreference = 'light' | 'dark';
@@ -63,6 +71,15 @@ export interface WorktreeDescriptor {
   status: WorktreeStatus;
   codexStatus: CodexStatus;
   lastError?: string;
+}
+
+export interface WorktreeOperationLogEntry {
+  timestamp: string;
+  worktreeId: string;
+  actor: string;
+  action: string;
+  outcome: 'success' | 'error' | 'blocked';
+  detail?: string;
 }
 
 export interface CodexSessionDescriptor {
