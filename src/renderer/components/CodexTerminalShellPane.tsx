@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { RendererApi } from '@shared/api';
-import type { WorktreeDescriptor } from '@shared/ipc';
+import type { WorktreeDescriptor, ThemePreference } from '@shared/ipc';
 import { CodexTerminal, type CodexTerminalHandle } from './CodexTerminal';
 import type { DerivedCodexSession } from '../codex-model';
 
@@ -18,6 +18,7 @@ interface CodexTerminalShellPaneProps {
   onUnbootstrapped?(): void;
   initialScrollState?: { position: number; atBottom: boolean };
   onScrollStateChange?(worktreeId: string, state: { position: number; atBottom: boolean }): void;
+  theme: ThemePreference;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -45,7 +46,8 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
   onBootstrapped,
   onUnbootstrapped,
   initialScrollState,
-  onScrollStateChange
+  onScrollStateChange,
+  theme
 }) => {
   const [descriptorPid, setDescriptorPid] = useState<number | null>(null);
   const [status, setStatus] = useState<TerminalLifecycle>('idle');
@@ -619,6 +621,7 @@ export const CodexTerminalShellPane: React.FC<CodexTerminalShellPaneProps> = ({
         instanceId={paneId ? `${worktree.id}-codex-terminal-${paneId}` : `${worktree.id}-codex-terminal`}
         onResize={handleResize}
         onScroll={handleTerminalScroll}
+        theme={theme}
       />
       {descriptorPid ? (
         <footer className="terminal-footer">

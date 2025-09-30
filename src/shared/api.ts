@@ -1,5 +1,6 @@
 import {
   AppState,
+  ThemePreference,
   WorktreeDescriptor,
   CodexSessionDescriptor,
   CodexOutputPayload,
@@ -62,6 +63,7 @@ export interface RendererApi {
   getTerminalDelta(worktreeId: string, afterEventId: number, options?: { paneId?: string }): Promise<TerminalDelta>;
   onTerminalOutput(callback: (payload: TerminalOutputPayload) => void): () => void;
   onTerminalExit(callback: (payload: TerminalExitPayload) => void): () => void;
+  setThemePreference(theme: ThemePreference): Promise<AppState>;
   getOrchestratorSnapshot(worktreeId: string): Promise<OrchestratorSnapshot | null>;
   startOrchestratorRun(worktreeId: string, input: OrchestratorBriefingInput): Promise<OrchestratorRunSummary>;
   submitOrchestratorFollowUp(worktreeId: string, input: OrchestratorFollowUpInput): Promise<OrchestratorRunSummary>;

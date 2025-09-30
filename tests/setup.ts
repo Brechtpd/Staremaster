@@ -6,7 +6,8 @@ import type { AppState } from '@shared/ipc';
 const emptyState: AppState = {
   projects: [],
   worktrees: [],
-  sessions: []
+  sessions: [],
+  preferences: { theme: 'light' }
 };
 
 class NotificationStub {
@@ -73,7 +74,8 @@ beforeEach(() => {
     getTerminalSnapshot: vi.fn().mockResolvedValue({ content: '', lastEventId: 0 }),
     getTerminalDelta: vi.fn().mockResolvedValue({ chunks: [], lastEventId: 0 }),
     onTerminalOutput: vi.fn().mockReturnValue(() => {}),
-    onTerminalExit: vi.fn().mockReturnValue(() => {})
+    onTerminalExit: vi.fn().mockReturnValue(() => {}),
+    setThemePreference: vi.fn().mockResolvedValue(emptyState)
   };
 
   Object.defineProperty(window, 'api', {

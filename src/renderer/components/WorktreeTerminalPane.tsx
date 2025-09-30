@@ -7,7 +7,8 @@ import type {
   TerminalExitPayload,
   TerminalResizeRequest,
   TerminalSnapshot,
-  TerminalDelta
+  TerminalDelta,
+  ThemePreference
 } from '@shared/ipc';
 import { CodexTerminal, type CodexTerminalHandle } from './CodexTerminal';
 
@@ -21,6 +22,7 @@ interface WorktreeTerminalPaneProps {
   onBootstrapped?(): void;
   initialScrollState?: { position: number; atBottom: boolean };
   onScrollStateChange?(worktreeId: string, state: { position: number; atBottom: boolean }): void;
+  theme: ThemePreference;
 }
 
 type TerminalLifecycle = 'idle' | 'starting' | 'running' | 'exited';
@@ -43,7 +45,8 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
   onNotification,
   onBootstrapped,
   initialScrollState,
-  onScrollStateChange
+  onScrollStateChange,
+  theme
 }) => {
   const [descriptor, setDescriptor] = useState<WorktreeTerminalDescriptor | null>(null);
   const [status, setStatus] = useState<TerminalLifecycle>('idle');
@@ -518,6 +521,7 @@ export const WorktreeTerminalPane: React.FC<WorktreeTerminalPaneProps> = ({
         instanceId={paneId ? `${worktree.id}-terminal-${paneId}` : `${worktree.id}-terminal`}
         onResize={handleResize}
         onScroll={handleTerminalScroll}
+        theme={theme}
       />
       {descriptor ? (
         <footer className="terminal-footer">

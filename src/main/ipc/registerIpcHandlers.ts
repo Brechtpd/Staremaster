@@ -19,7 +19,8 @@ import {
   OrchestratorFollowUpResponse,
   OrchestratorApproveRequest,
   OrchestratorCommentRequest,
-  OrchestratorWorkersRequest
+  OrchestratorWorkersRequest,
+  ThemePreference
 } from '../../shared/ipc';
 import type {
   OrchestratorBriefingInput,
@@ -51,13 +52,18 @@ type OrchestratorBridge = {
   stopRun(worktreeId: string): Promise<void>;
 };
 
+interface RegisterIpcHandlersOptions {
+  onThemeChange?: (theme: ThemePreference) => void;
+}
+
 export const registerIpcHandlers = (
   window: BrowserWindow,
   worktreeService: WorktreeService,
   gitService: GitService,
   codexManager: CodexSessionManager,
   terminalService: TerminalService,
-  orchestrator: OrchestratorBridge
+  orchestrator: OrchestratorBridge,
+  options: RegisterIpcHandlersOptions = {}
 ): void => {
   const sendState = (state: AppState) => {
     window.webContents.send(IPCChannels.stateUpdates, state);
@@ -446,6 +452,16 @@ export const registerIpcHandlers = (
   );
 
   ipcMain.handle(
+    IPCChannels.setThemePreference,
+    async (_event, payload: { theme: ThemePreference }) => {
+      const theme = payload?.theme === 'dark' ? 'dark' : 'light';
+      const nextState = await worktreeService.setThemePreference(theme);
+      options.onThemeChange?.(theme);
+      return nextState;
+    }
+  );
+
+  ipcMain.handle(
     IPCChannels.terminalStart,
     async (
       _event,
@@ -566,6 +582,7 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.codexLog);
     ipcMain.removeHandler(IPCChannels.codexSummarize);
     ipcMain.removeHandler(IPCChannels.sendCodexInput);
+    ipcMain.removeHandler(IPCChannels.setThemePreference);
     ipcMain.removeHandler(IPCChannels.terminalStart);
     ipcMain.removeHandler(IPCChannels.terminalStop);
     ipcMain.removeHandler(IPCChannels.terminalInput);

@@ -6,9 +6,10 @@ import React, {
   useRef,
   useState
 } from 'react';
-import { Terminal, type IDisposable } from 'xterm';
+import { Terminal, type IDisposable, type ITerminalOptions } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
+import type { ThemePreference } from '@shared/ipc';
 
 interface TerminalEntry {
   terminal: Terminal;
@@ -21,6 +22,15 @@ interface TerminalEntry {
 }
 
 const terminalRegistry = new Map<string, TerminalEntry>();
+
+type TerminalTheme = NonNullable<ITerminalOptions['theme']>;
+
+const defaultTerminalTheme: TerminalTheme = {
+  background: '#1c1d1f',
+  foreground: '#f8fafc',
+  cursor: '#f8fafc',
+  selection: 'rgba(148, 163, 184, 0.35)'
+};
 
 export interface CodexTerminalHandle {
   write(data: string): void;
@@ -41,27 +51,38 @@ interface CodexTerminalProps {
   instanceId: string;
   onResize?: (size: { cols: number; rows: number }) => void;
   onScroll?: (state: { position: number; atBottom: boolean }) => void;
+  theme: ThemePreference;
 }
 
 export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminalProps>(
-  ({ onData, instanceId, onResize, onScroll }, ref) => {
+  ({ onData, instanceId, onResize, onScroll, theme }, ref) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const dataHandlerRef = useRef(onData);
     const scrollHandlerRef = useRef<typeof onScroll>(onScroll);
-    const themeRef = useRef({
-      background: '#1c1d1f',
-      foreground: '#f8fafc',
-      cursor: '#f8fafc',
-      selection: 'rgba(148, 163, 184, 0.35)'
-    });
+    const themeRef = useRef<TerminalTheme>(defaultTerminalTheme);
     const pendingRef = useRef<string[]>([]);
     const readyRef = useRef(false);
 
     const retryTokenRef = useRef<number | null>(null);
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null);
     const resizeHandlerRef = useRef(onResize);
+    const readThemeFromCss = useCallback((): TerminalTheme => {
+      if (typeof window === 'undefined') {
+        return themeRef.current;
+      }
+      const style = window.getComputedStyle(document.documentElement);
+      const background = style.getPropertyValue('--color-terminal-bg').trim() || themeRef.current.background;
+      const foreground = style.getPropertyValue('--color-terminal-fg').trim() || themeRef.current.foreground;
+      const selection = style.getPropertyValue('--color-terminal-selection').trim() || themeRef.current.selection;
+      return {
+        background,
+        foreground,
+        cursor: foreground,
+        selection
+      };
+    }, []);
     const [contextMenu, setContextMenu] = useState<{
       x: number;
       y: number;
@@ -75,6 +96,24 @@ export const CodexTerminal = React.forwardRef<CodexTerminalHandle, CodexTerminal
     useEffect(() => {
       resizeHandlerRef.current = onResize;
     }, [onResize]);
+
+    useEffect(() => {
+      const palette = readThemeFromCss();
+      themeRef.current = palette;
+      const terminal = terminalRef.current;
+      if (terminal) {
+        terminal.options.theme = palette;
+        if (terminal.rows > 0) {
+          terminal.refresh(0, terminal.rows - 1);
+        }
+      }
+      terminalRegistry.forEach((entry) => {
+        entry.terminal.options.theme = palette;
+        if (entry.terminal.rows > 0) {
+          entry.terminal.refresh(0, entry.terminal.rows - 1);
+        }
+      });
+    }, [readThemeFromCss, theme]);
 
     useEffect(() => {
       if (!contextMenu) {

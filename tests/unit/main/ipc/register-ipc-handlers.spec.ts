@@ -56,7 +56,14 @@ class WorktreeServiceStub extends EventEmitter {
     return null;
   });
 
-  getState = vi.fn(() => ({ projects: [], worktrees: [], sessions: [] }));
+  state: { projects: []; worktrees: []; sessions: []; preferences: { theme: 'light' } } = {
+    projects: [],
+    worktrees: [],
+    sessions: [],
+    preferences: { theme: 'light' }
+  };
+
+  getState = vi.fn(() => this.state);
   addProject = vi.fn();
   removeProject = vi.fn();
   createWorktree = vi.fn();
@@ -69,6 +76,13 @@ class WorktreeServiceStub extends EventEmitter {
   updateCodexStatus = vi.fn(async () => {});
   getWorktreePath = vi.fn();
   dispose = vi.fn();
+  setThemePreference = vi.fn(async (theme: 'light' | 'dark') => {
+    this.state = {
+      ...this.state,
+      preferences: { theme }
+    };
+    return this.state;
+  });
 }
 
 class TerminalServiceStub extends EventEmitter {
@@ -155,16 +169,18 @@ describe('registerIpcHandlers codex routing', () => {
     const terminalService = new TerminalServiceStub();
     const orchestrator = new OrchestratorStub();
 
+    const onThemeChange = vi.fn();
     registerIpcHandlers(
       windowStub,
       worktreeService as unknown as WorktreeService,
       gitService as unknown as GitService,
       codexManager as unknown as CodexSessionManager,
       terminalService as unknown as TerminalService,
-      orchestrator as unknown as OrchestratorCoordinator
+      orchestrator,
+      { onThemeChange }
     );
 
-    return { worktreeService, codexManager, orchestrator };
+    return { worktreeService, codexManager, orchestrator, onThemeChange };
   };
 
   it('forwards codex output events only for canonical worktrees', () => {
@@ -280,5 +296,17 @@ describe('registerIpcHandlers codex routing', () => {
     await expect(openHandler?.({}, { worktreeId: 'missing', relativePath: 'out.md' })).rejects.toThrow(
       /Unknown worktree/
     );
+  });
+
+  it('updates theme preference through the store and invokes callback', async () => {
+    const { worktreeService, onThemeChange } = createHarness();
+    const handleMock = ipcMain.handle as unknown as Mock;
+    const themeHandler = handleMock.mock.calls.find(([channel]) => channel === IPCChannels.setThemePreference)?.[1] as
+      | ((event: unknown, payload: { theme: 'light' | 'dark' }) => Promise<unknown>)
+      | undefined;
+    expect(themeHandler).toBeDefined();
+    await themeHandler?.({}, { theme: 'dark' });
+    expect(worktreeService.setThemePreference).toHaveBeenCalledWith('dark');
+    expect(onThemeChange).toHaveBeenCalledWith('dark');
   });
 });

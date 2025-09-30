@@ -107,6 +107,13 @@ This document describes the current architecture of the Staremaster Electron app
 - `src/main/preload.ts` exposes a `RendererApi` with project/worktree ops, Codex ops, terminal ops, and convenience methods (e.g., resume rescan).
 - `src/shared/api.ts` and `src/shared/ipc.ts` define API and channel contracts.
 
+## Theme System
+
+- `ProjectStore` persists `preferences.theme`; `WorktreeService` exposes `setThemePreference()` and emits state changes so renderer panes refresh without a reload. Main syncs the preference to `nativeTheme.themeSource` and updates window background colours.
+- The renderer applies `data-theme="light|dark"` to both `document.documentElement` and `body`, and `src/renderer/styles.css` centralises all colours, shadows, and surface treatments as CSS custom properties with light/dark palettes.
+- Third-party surfaces (`diff2html`, highlight.js, xterm) now read those tokens. The shared `CodexTerminal` component watches the active theme and reconfigures xterm instances from the CSS variables so terminal panes stay in sync when the toggle flips.
+- No renderer surface is left on hard-coded colours; if the host environment cannot resolve CSS variables (e.g. jsdom), the terminal falls back to the light palette defaults while the rest of the UI keeps using the defined tokens.
+
 ## Known Gaps / TODOs
 
 - Codex event mirroring to alias:

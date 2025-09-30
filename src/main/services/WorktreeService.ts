@@ -4,7 +4,13 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import simpleGit, { SimpleGit } from 'simple-git';
 import { spawn } from 'node:child_process';
-import { WorktreeDescriptor, AppState, CodexStatus, ProjectDescriptor } from '../../shared/ipc';
+import {
+  WorktreeDescriptor,
+  AppState,
+  CodexStatus,
+  ProjectDescriptor,
+  ThemePreference
+} from '../../shared/ipc';
 import { ProjectStore } from './ProjectStore';
 
 export interface WorktreeEvents {
@@ -49,6 +55,13 @@ export class WorktreeService extends EventEmitter {
 
   getState(): AppState {
     return this.store.getState();
+  }
+
+  async setThemePreference(theme: ThemePreference): Promise<AppState> {
+    await this.store.setThemePreference(theme);
+    const updated = this.store.getState();
+    this.emit('state-changed', updated);
+    return updated;
   }
 
   getWorktreePath(worktreeId: string): string | null {

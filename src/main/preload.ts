@@ -29,6 +29,7 @@ const IPCChannels = {
   codexListSessions: 'codex:list-sessions',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
+  setThemePreference: 'preferences:set-theme',
   terminalStart: 'terminal:start',
   terminalStop: 'terminal:stop',
   terminalInput: 'terminal:input',
@@ -113,6 +114,7 @@ const api: RendererApi = {
     }),
   onTerminalOutput: (callback) => subscribe(IPCChannels.terminalOutput, callback),
   onTerminalExit: (callback) => subscribe(IPCChannels.terminalExit, callback),
+  setThemePreference: (theme) => ipcRenderer.invoke(IPCChannels.setThemePreference, { theme }),
   getOrchestratorSnapshot: async (worktreeId) => {
     const response: OrchestratorSnapshotResponse = await ipcRenderer.invoke(IPCChannels.orchestratorSnapshot, {
       worktreeId

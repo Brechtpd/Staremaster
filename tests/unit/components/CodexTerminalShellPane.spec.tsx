@@ -140,6 +140,7 @@ describe('CodexTerminalShellPane', () => {
         active
         visible
         onNotification={() => {}}
+        theme="light"
       />
     );
 
@@ -161,6 +162,7 @@ describe('CodexTerminalShellPane', () => {
         active
         visible
         onNotification={() => {}}
+        theme="light"
       />
     );
 
@@ -188,6 +190,7 @@ describe('CodexTerminalShellPane', () => {
         active
         visible
         onNotification={() => {}}
+        theme="light"
       />
     );
 
@@ -217,6 +220,7 @@ describe('CodexTerminalShellPane', () => {
         active
         visible
         onNotification={() => {}}
+        theme="light"
       />
     );
 
