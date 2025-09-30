@@ -115,6 +115,8 @@ class OrchestratorStub extends EventEmitter {
     epicId: null,
     status: 'running',
     description: input.description ?? 'stub run',
+    mode: input.mode ?? 'implement_feature',
+    bugHunterCount: input.bugHunterCount,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   }));
@@ -124,6 +126,7 @@ class OrchestratorStub extends EventEmitter {
     epicId: null,
     status: 'running',
     description: 'stub run',
+    mode: 'implement_feature',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   }));

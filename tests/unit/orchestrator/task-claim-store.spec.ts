@@ -118,7 +118,9 @@ describe('TaskClaimStore', () => {
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks: analysisTasks
+      tasks: analysisTasks,
+      mode: 'implement_feature',
+      description: 'Prototype'
     });
 
     const afterExpansion = await store.readTaskEntries({
@@ -149,7 +151,9 @@ describe('TaskClaimStore', () => {
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks: withConsensusDone
+      tasks: withConsensusDone,
+      mode: 'implement_feature',
+      description: 'Prototype'
     });
 
     const afterSplitterExpansion = await store.readTaskEntries({
@@ -189,7 +193,9 @@ describe('TaskClaimStore', () => {
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks: withSplitterDone
+      tasks: withSplitterDone,
+      mode: 'implement_feature',
+      description: 'Prototype'
     });
 
     const claimImplementerAfter = await claimStore.claimNext({

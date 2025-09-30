@@ -13,6 +13,7 @@ const createOrchestratorApi = () => {
     epicId: null,
     status: 'running' as const,
     description: 'stub run',
+    mode: 'implement_feature' as const,
     createdAt: now,
     updatedAt: now
   };

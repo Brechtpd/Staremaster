@@ -279,7 +279,9 @@ describe.skipIf(!cargoAvailable)('End-to-end orchestration — Rust Fibonacci CL
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks
+      tasks,
+      mode: 'implement_feature',
+      description: 'Design and ship a simple terminal Fibonacci CLI in Rust.'
     });
   };
 

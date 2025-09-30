@@ -14,7 +14,7 @@ import type {
   WorkerRole,
   WorkerStatus
 } from '@shared/orchestrator';
-import type { WorkerSpawnConfig } from '@shared/orchestrator-config';
+import { DEFAULT_COUNTS, type WorkerSpawnConfig } from '@shared/orchestrator-config';
 
 interface OrchestratorWorktreeState {
   run: OrchestratorRunSummary | null;
@@ -117,6 +117,15 @@ const cloneMetadata = (
       priority[role] = models.slice();
     }
     next.modelPriority = priority;
+  }
+  if (metadata.agentStates) {
+    next.agentStates = { ...metadata.agentStates };
+  }
+  if (metadata.mode) {
+    next.mode = metadata.mode;
+  }
+  if (metadata.bugHunterCount !== undefined) {
+    next.bugHunterCount = metadata.bugHunterCount;
   }
   return next;
 };
@@ -784,6 +793,7 @@ interface AgentGraphInput {
   workers: WorkerStatus[];
   agentStates?: Partial<Record<WorkerRole, AgentGraphNodeState>>;
   workerLogs?: Record<string, string>;
+  workerCounts?: Partial<Record<WorkerRole, number>>;
 }
 
 // Extract the latest "reasoning section" headline emitted by an agent
@@ -828,10 +838,21 @@ const extractReasoningHeadline = (log: string | undefined): string | undefined =
   }
 };
 
-export const deriveAgentGraphView = ({ tasks, workers, agentStates, workerLogs }: AgentGraphInput): {
+export const deriveAgentGraphView = ({ tasks, workers, agentStates, workerLogs, workerCounts }: AgentGraphInput): {
   nodes: AgentGraphNodeView[];
   edges: AgentGraphEdgeView[];
 } => {
+  const activeRoles = AGENT_GRAPH_ROLES.filter((role) => {
+    const configured = workerCounts?.[role] ?? DEFAULT_COUNTS[role] ?? 0;
+    if (configured > 0) {
+      return true;
+    }
+    if (tasks.some((task) => task.role === role)) {
+      return true;
+    }
+    return workers.some((worker) => worker.role === role);
+  });
+
   const fallbackStateForRole = (role: WorkerRole): AgentGraphNodeState => {
     const roleTasks = tasks.filter((task) => task.role === role);
     const statuses = roleTasks.map((task) => task.status);
@@ -890,7 +911,7 @@ const summarize = (value: string | undefined, limit = 45): string | undefined =>
   return result.length > limit ? `${result.slice(0, limit - 1).trim()}…` : result;
 };
 
-  const nodes: AgentGraphNodeView[] = AGENT_GRAPH_ROLES.map((role) => {
+  const nodes: AgentGraphNodeView[] = activeRoles.map((role) => {
     const state = agentStates?.[role] ?? fallbackStateForRole(role);
     const roleTasks = tasks.filter((task) => task.role === role);
     const activeTask =
@@ -960,7 +981,10 @@ const summarize = (value: string | undefined, limit = 45): string | undefined =>
 
   const stateByRole = new Map(nodes.map((node) => [node.id, node.state]));
 
-  const edges: AgentGraphEdgeView[] = AGENT_GRAPH_EDGES.map((edge) => {
+  const activeRoleSet = new Set(activeRoles);
+  const edges: AgentGraphEdgeView[] = AGENT_GRAPH_EDGES.filter(
+    (edge) => activeRoleSet.has(edge.source) && activeRoleSet.has(edge.target)
+  ).map((edge) => {
     const sourceState = stateByRole.get(edge.source) ?? 'idle';
     let status: AgentGraphEdgeView['status'];
     switch (sourceState) {
@@ -1000,7 +1024,8 @@ export const useAgentGraph = (
     const workers = worktree?.workers ?? [];
     const agentStates = worktree?.metadata?.agentStates;
     const workerLogs = worktree?.workerLogs ?? {};
-    return deriveAgentGraphView({ tasks, workers, agentStates, workerLogs });
+    const workerCounts = worktree?.metadata?.workerCounts;
+    return deriveAgentGraphView({ tasks, workers, agentStates, workerLogs, workerCounts });
   }, [worktree]);
 };
 

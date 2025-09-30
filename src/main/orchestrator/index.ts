@@ -6,6 +6,7 @@ import type {
   OrchestratorCommentInput,
   OrchestratorEvent,
   OrchestratorFollowUpInput,
+  OrchestratorRunMode,
   OrchestratorRunSummary,
   OrchestratorSnapshot,
   TaskRecord,
@@ -19,6 +20,9 @@ import { DEFAULT_COUNTS, DEFAULT_PRIORITY, WORKER_ROLES, type WorkerSpawnConfig 
 import { AGENT_GRAPH_PARENTS, AGENT_GRAPH_ROLES } from '@shared/orchestrator-graph';
 
 type OrchestratorListener = Parameters<OrchestratorEventBus['subscribe']>[0];
+
+const DEFAULT_BUG_HUNTER_COUNT = 3;
+const DEFAULT_ANALYST_COUNT = (DEFAULT_COUNTS.analyst_a ?? 0) + (DEFAULT_COUNTS.analyst_b ?? 0) || 2;
 
 interface RunState {
   run: OrchestratorRunSummary;
@@ -83,6 +87,8 @@ export class OrchestratorCoordinator {
       throw new Error(`Unknown worktree: ${worktreeId}`);
     }
     const now = new Date().toISOString();
+    const mode: OrchestratorRunMode = input.mode ?? 'implement_feature';
+    const bugHunterCount = mode === 'bug_hunt' ? this.normalizeBugHunterCount(input.bugHunterCount) : undefined;
     const run: OrchestratorRunSummary = {
       worktreeId,
       runId: randomUUID(),
@@ -90,6 +96,8 @@ export class OrchestratorCoordinator {
       status: 'running',
       description: input.description,
       guidance: input.guidance,
+      mode,
+      bugHunterCount,
       createdAt: now,
       updatedAt: now
     };
@@ -97,6 +105,21 @@ export class OrchestratorCoordinator {
     const tasksRoot = path.join(runRoot, 'tasks');
     const conversationRoot = path.join(runRoot, 'conversations');
 
+    const desiredCounts: Partial<Record<WorkerRole, number>> = { ...DEFAULT_COUNTS };
+    if (input.initialWorkerCounts) {
+      for (const [role, value] of Object.entries(input.initialWorkerCounts) as Array<[WorkerRole, number]>) {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          desiredCounts[role] = Math.max(0, Math.floor(value));
+        }
+      }
+    }
+    const initialAnalystCount = this.computeAnalystCount(desiredCounts);
+    if (mode === 'bug_hunt') {
+      const hunters = bugHunterCount ?? (initialAnalystCount > 0 ? initialAnalystCount : DEFAULT_BUG_HUNTER_COUNT);
+      const { analystACount, analystBCount } = this.distributeBugHunters(hunters);
+      desiredCounts.analyst_a = analystACount;
+      desiredCounts.analyst_b = analystBCount;
+    }
     const state: RunState = {
       run,
       tasks: [],
@@ -104,26 +127,59 @@ export class OrchestratorCoordinator {
       workers: [],
       paths: { runRoot, tasksRoot, conversationRoot },
       lastEventAt: now,
-      desiredCounts: { ...DEFAULT_COUNTS },
+      desiredCounts,
       modelPriority: { ...DEFAULT_PRIORITY }
     };
     await this.stopTaskWatcher(worktreeId);
     this.runs.set(worktreeId, state);
-    const seeded = await this.taskStore.ensureAnalysisSeeds({
-      worktreePath: state.worktreePath,
-      tasksRoot,
-      conversationRoot,
-      runId: run.runId,
-      description: run.description,
-      guidance: run.guidance,
-      epicId: run.epicId
-    });
+    const seeded =
+      mode === 'bug_hunt'
+        ? await this.taskStore.ensureBugHuntSeeds({
+            worktreePath: state.worktreePath,
+            tasksRoot,
+            conversationRoot,
+            runId: run.runId,
+            description: run.description,
+            guidance: run.guidance,
+            bugHunterCount: bugHunterCount ?? (initialAnalystCount > 0 ? initialAnalystCount : DEFAULT_BUG_HUNTER_COUNT)
+          })
+        : await this.taskStore.ensureAnalysisSeeds({
+            worktreePath: state.worktreePath,
+            tasksRoot,
+            conversationRoot,
+            runId: run.runId,
+            description: run.description,
+            guidance: run.guidance,
+            epicId: run.epicId,
+            analysisCount: Math.max(1, initialAnalystCount || DEFAULT_ANALYST_COUNT)
+          });
     state.tasks = seeded;
     this.scheduler.notifyTasksUpdated(worktreeId, state.tasks);
     await this.ensureTaskWatcher(worktreeId, state);
     this.bus.publish({ kind: 'snapshot', worktreeId, snapshot: this.cloneSnapshot(state) });
     this.bus.publish({ kind: 'run-status', worktreeId, run: state.run });
     return run;
+  }
+
+  private normalizeBugHunterCount(value?: number): number {
+    const fallback = DEFAULT_BUG_HUNTER_COUNT;
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fallback;
+    }
+    const sanitized = Math.floor(value);
+    return Math.min(8, Math.max(1, sanitized));
+  }
+
+  private distributeBugHunters(count: number): { analystACount: number; analystBCount: number } {
+    const analystACount = Math.ceil(count / 2);
+    const analystBCount = Math.max(count - analystACount, 0);
+    return { analystACount, analystBCount };
+  }
+
+  private computeAnalystCount(counts: Partial<Record<WorkerRole, number>>): number {
+    const a = Math.max(0, Math.floor(counts.analyst_a ?? 0));
+    const b = Math.max(0, Math.floor(counts.analyst_b ?? 0));
+    return a + b;
   }
 
   async submitFollowUp(worktreeId: string, input: OrchestratorFollowUpInput): Promise<OrchestratorRunSummary> {
@@ -219,7 +275,9 @@ export class OrchestratorCoordinator {
         implementerLockHeldBy: state.implementerLockHeldBy ?? null,
         workerCounts: { ...state.desiredCounts },
         modelPriority: { ...state.modelPriority },
-        agentStates: this.deriveAgentStates(state)
+        agentStates: this.deriveAgentStates(state),
+        mode: state.run.mode,
+        bugHunterCount: state.run.bugHunterCount
       }
     };
   }
@@ -371,12 +429,18 @@ export class OrchestratorCoordinator {
   }
 
   private async ensureWorkflowExpansion(worktreeId: string, state: RunState): Promise<TaskRecord[]> {
+    const analysisCount = this.computeAnalystCount(state.desiredCounts);
     return await this.taskStore.ensureWorkflowExpansion({
       worktreePath: state.worktreePath,
       tasksRoot: state.paths.tasksRoot,
       conversationRoot: state.paths.conversationRoot,
       runId: state.run.runId,
-      tasks: state.tasks
+      description: state.run.description,
+      guidance: state.run.guidance,
+      tasks: state.tasks,
+      mode: state.run.mode,
+      bugHunterCount: state.run.bugHunterCount,
+      analysisCount
     });
   }
 

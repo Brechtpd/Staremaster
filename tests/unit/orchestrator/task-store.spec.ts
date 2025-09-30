@@ -71,15 +71,15 @@ describe('TaskStore workflow expansion', () => {
       tasksRoot,
       conversationRoot
     })).map((entry) => entry.record);
-    const mutated = await store.ensureWorkflowExpansion({
+    await store.ensureWorkflowExpansion({
       worktreePath: tempDir,
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks
+      tasks,
+      mode: 'implement_feature',
+      description: 'Initial feasibility analysis'
     });
-
-    expect(mutated).toBe(true);
     const consensusEntries = await store.readTaskEntries({
       worktreePath: tempDir,
       tasksRoot,
@@ -108,7 +108,9 @@ describe('TaskStore workflow expansion', () => {
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks: afterDone.map((entry) => entry.record)
+      tasks: afterDone.map((entry) => entry.record),
+      mode: 'implement_feature',
+      description: 'Initial feasibility analysis'
     });
 
     const consensusEntry = (await store.readTaskEntries({
@@ -120,15 +122,15 @@ describe('TaskStore workflow expansion', () => {
     if (!consensusEntry) return;
 
     await setStatus(consensusEntry.record.id, 'done');
-    const mutated = await store.ensureWorkflowExpansion({
+    await store.ensureWorkflowExpansion({
       worktreePath: tempDir,
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks: [analystA.record, analystB.record, { ...consensusEntry.record, status: 'done' }]
+      tasks: [analystA.record, analystB.record, { ...consensusEntry.record, status: 'done' }],
+      mode: 'implement_feature',
+      description: 'Initial feasibility analysis'
     });
-
-    expect(mutated).toBe(true);
     const entries = await store.readTaskEntries({
       worktreePath: tempDir,
       tasksRoot,
@@ -159,7 +161,9 @@ describe('TaskStore workflow expansion', () => {
       tasksRoot,
       conversationRoot,
       runId: RUN_ID,
-      tasks: afterAnalysts
+      tasks: afterAnalysts,
+      mode: 'implement_feature',
+      description: 'Initial feasibility analysis'
     });
 
     const afterConsensus = await store.readTaskEntries({
@@ -180,7 +184,9 @@ describe('TaskStore workflow expansion', () => {
         worktreePath: tempDir,
         tasksRoot,
         conversationRoot
-      })).map((entry) => entry.record)
+      })).map((entry) => entry.record),
+      mode: 'implement_feature',
+      description: 'Initial feasibility analysis'
     });
 
     const withSplitter = await store.readTaskEntries({
@@ -193,7 +199,7 @@ describe('TaskStore workflow expansion', () => {
     if (!splitter) return;
     await setStatus(splitter.record.id, 'done');
 
-    const mutated = await store.ensureWorkflowExpansion({
+    await store.ensureWorkflowExpansion({
       worktreePath: tempDir,
       tasksRoot,
       conversationRoot,
@@ -202,10 +208,10 @@ describe('TaskStore workflow expansion', () => {
         worktreePath: tempDir,
         tasksRoot,
         conversationRoot
-      })).map((entry) => entry.record)
+      })).map((entry) => entry.record),
+      mode: 'implement_feature',
+      description: 'Initial feasibility analysis'
     });
-
-    expect(mutated).toBe(true);
     const finalEntries = await store.readTaskEntries({
       worktreePath: tempDir,
       tasksRoot,

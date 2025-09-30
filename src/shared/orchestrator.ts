@@ -67,6 +67,8 @@ export type OrchestratorRunStatus =
   | 'completed'
   | 'error';
 
+export type OrchestratorRunMode = 'implement_feature' | 'bug_hunt';
+
 export interface OrchestratorRunSummary {
   worktreeId: string;
   runId: string;
@@ -74,6 +76,8 @@ export interface OrchestratorRunSummary {
   status: OrchestratorRunStatus;
   description: string;
   guidance?: string;
+  mode: OrchestratorRunMode;
+  bugHunterCount?: number;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -90,6 +94,8 @@ export interface OrchestratorSnapshot {
     workerCounts: Partial<Record<WorkerRole, number>>;
     modelPriority: Partial<Record<WorkerRole, string[]>>;
     agentStates?: Partial<Record<WorkerRole, AgentGraphNodeState>>;
+    mode?: OrchestratorRunMode;
+    bugHunterCount?: number;
   };
 }
 
@@ -97,6 +103,9 @@ export interface OrchestratorBriefingInput {
   description: string;
   guidance?: string;
   autoStartWorkers?: boolean;
+  mode?: OrchestratorRunMode;
+  bugHunterCount?: number;
+  initialWorkerCounts?: Partial<Record<WorkerRole, number>>;
 }
 
 export interface OrchestratorFollowUpInput {

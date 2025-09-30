@@ -74,6 +74,7 @@ describe('WorkerOrchestratorBridge', () => {
           epicId: null,
           status: 'running',
           description: 'test',
+          mode: 'implement_feature',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         },
@@ -114,6 +115,7 @@ describe('WorkerOrchestratorBridge', () => {
           epicId: null,
           status: 'running',
           description: 'second',
+          mode: 'implement_feature',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         },
@@ -152,6 +154,7 @@ describe('WorkerOrchestratorBridge', () => {
           epicId: null,
           status: 'running',
           description: 'recovered',
+          mode: 'implement_feature',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         },

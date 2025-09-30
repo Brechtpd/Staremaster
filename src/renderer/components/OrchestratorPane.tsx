@@ -11,6 +11,7 @@ import type {
   ConversationEntry,
   OrchestratorBriefingInput,
   OrchestratorFollowUpInput,
+  OrchestratorRunMode,
   TaskRecord,
   WorkerRole,
   WorkerStatus
@@ -46,6 +47,11 @@ for (const definition of WORKER_TYPES) {
   }
 }
 
+const BUG_HUNTER_MIN = 1;
+const BUG_HUNTER_MAX = WORKER_TYPES.find((type) => type.id === 'analyst')?.maxWorkers ?? 4;
+const BUG_HUNTER_DEFAULT = Math.min(3, BUG_HUNTER_MAX);
+const DEFAULT_ANALYST_COUNT = (DEFAULT_COUNTS.analyst_a ?? 0) + (DEFAULT_COUNTS.analyst_b ?? 0) || 2;
+
 const formatRelativeTime = (iso?: string | null): string => {
   if (!iso) {
     return 'never';
@@ -76,6 +82,21 @@ const formatFileLabel = (relativePath: string): string => {
     return relativePath;
   }
   return segments[segments.length - 1];
+};
+
+const formatModeLabel = (mode: OrchestratorRunMode): string =>
+  mode === 'bug_hunt' ? 'Bug hunt' : 'Implement feature';
+
+const clampBugHunterCount = (value: number): number => {
+  const fallback = BUG_HUNTER_DEFAULT;
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  const normalized = Math.floor(value);
+  if (Number.isNaN(normalized)) {
+    return fallback;
+  }
+  return Math.min(BUG_HUNTER_MAX, Math.max(BUG_HUNTER_MIN, normalized));
 };
 
 const formatWorkerLabel = (worker: WorkerStatus): string => {
@@ -164,10 +185,54 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
   }, [metadata, normalizePriority]);
 
   const [workerTypeSettings, setWorkerTypeSettings] = useState<Record<string, WorkerTypeSettings>>(initialSettings);
+  const [mode, setMode] = useState<OrchestratorRunMode>('implement_feature');
+  const [bugHunterCount, setBugHunterCount] = useState<number>(BUG_HUNTER_DEFAULT);
 
   useEffect(() => {
     setWorkerTypeSettings(initialSettings);
   }, [initialSettings]);
+
+  useEffect(() => {
+    if (run) {
+      return;
+    }
+    const analystDefinition = WORKER_TYPES.find((type) => type.id === 'analyst');
+    if (!analystDefinition) {
+      return;
+    }
+    const targetCount =
+      mode === 'bug_hunt'
+        ? clampBugHunterCount(bugHunterCount)
+        : Math.min(analystDefinition.maxWorkers, Math.max(0, DEFAULT_ANALYST_COUNT));
+    setWorkerTypeSettings((previous) => {
+      const current = previous[analystDefinition.id] ?? {
+        count: targetCount,
+        modelPriority: normalizePriority(DEFAULT_PRIORITY[analystDefinition.roles[0]])
+      };
+      if (current.count === targetCount && previous[analystDefinition.id]) {
+        return previous;
+      }
+      return {
+        ...previous,
+        [analystDefinition.id]: {
+          ...current,
+          count: targetCount
+        }
+      };
+    });
+  }, [bugHunterCount, mode, normalizePriority, run]);
+
+  useEffect(() => {
+    if (run?.mode === 'bug_hunt' && typeof run.bugHunterCount === 'number') {
+      setBugHunterCount(clampBugHunterCount(run.bugHunterCount));
+    }
+  }, [run]);
+
+  useEffect(() => {
+    if (!run && mode !== 'bug_hunt') {
+      setBugHunterCount(BUG_HUNTER_DEFAULT);
+    }
+  }, [mode, run]);
   const workerLogs = useOrchestratorWorkerLogs(worktreeId);
   const activity = orchestratorState?.activity ?? [];
   const agentGraph = useAgentGraph(worktreeId);
@@ -313,7 +378,10 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
         }
       };
     });
-  }, [normalizePriority]);
+    if (typeId === 'analyst' && mode === 'bug_hunt') {
+      setBugHunterCount(clampBugHunterCount(normalized));
+    }
+  }, [mode, normalizePriority]);
 
   const handleModelPriorityChange = useCallback((typeId: string, index: number, model: string) => {
     setWorkerTypeSettings((previous) => {
@@ -342,7 +410,7 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
     });
   }, [normalizePriority]);
 
-  const buildConfigPayload = useCallback((): WorkerSpawnConfig[] => {
+const buildConfigPayload = useCallback((): WorkerSpawnConfig[] => {
     const configs: WorkerSpawnConfig[] = [];
     for (const definition of WORKER_TYPES) {
       const settings = workerTypeSettings[definition.id] ?? {
@@ -369,17 +437,36 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
       });
     }
     return configs;
-  }, [normalizePriority, workerTypeSettings]);
+}, [normalizePriority, workerTypeSettings]);
+
+  const totalConfiguredAnalysts = useMemo(() => {
+    const analystSettings = workerTypeSettings.analyst;
+    return clampBugHunterCount(analystSettings?.count ?? DEFAULT_ANALYST_COUNT);
+  }, [workerTypeSettings]);
+
+  useEffect(() => {
+    if (!run && mode === 'bug_hunt') {
+      setBugHunterCount(totalConfiguredAnalysts);
+    }
+  }, [mode, run, totalConfiguredAnalysts]);
 
   const handleStart = useCallback(async () => {
     if (!description.trim()) {
       setError('Describe the task before starting a run.');
       return;
     }
+    const normalizedBugHunters = clampBugHunterCount(bugHunterCount);
     const configs = buildConfigPayload();
+    const initialWorkerCounts = configs.reduce((acc, config) => {
+      acc[config.role] = config.count;
+      return acc;
+    }, {} as Partial<Record<WorkerRole, number>>);
     const payload: OrchestratorBriefingInput = {
       description: description.trim(),
-      autoStartWorkers: false
+      autoStartWorkers: false,
+      mode,
+      bugHunterCount: mode === 'bug_hunt' ? normalizedBugHunters : undefined,
+      initialWorkerCounts
     };
     setPending(true);
     setError(null);
@@ -394,12 +481,14 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
         setInfo('Run seeded. Launch workers below when ready.');
       }
       setDescription('');
+      setMode('implement_feature');
+      setBugHunterCount(BUG_HUNTER_DEFAULT);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setPending(false);
     }
-  }, [autoStartWorkers, buildConfigPayload, configureWorkersApi, description, startRun, startWorkersApi, worktreeId]);
+  }, [autoStartWorkers, bugHunterCount, buildConfigPayload, configureWorkersApi, description, mode, startRun, startWorkersApi, worktreeId]);
 
   const handleFollowUp = useCallback(async () => {
     if (!followUpMessage.trim()) {
@@ -782,6 +871,16 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
                     <dd>{run.status}</dd>
                   </div>
                   <div>
+                    <dt>Mode</dt>
+                    <dd>{formatModeLabel(run.mode)}</dd>
+                  </div>
+                  {run.mode === 'bug_hunt' && run.bugHunterCount ? (
+                    <div>
+                      <dt>Bug hunters</dt>
+                      <dd>{run.bugHunterCount}</dd>
+                    </div>
+                  ) : null}
+                  <div>
                     <dt>Last activity</dt>
                     <dd>{formatRelativeTime(status.lastEventAt)}</dd>
                   </div>
@@ -867,6 +966,45 @@ export const OrchestratorPane: React.FC<OrchestratorPaneProps> = ({
           <div className="orchestrator-pane__content">
             <section className="orchestrator-pane__card orchestrator-pane__card--form">
               <h3>Kick off a new orchestrator run</h3>
+              <label className="orchestrator-pane__label" htmlFor={`orchestrator-mode-${paneId}`}>
+                Mode
+              </label>
+              <select
+                id={`orchestrator-mode-${paneId}`}
+                value={mode}
+                onChange={(event) => {
+                  const nextMode = event.target.value as OrchestratorRunMode;
+                  setMode(nextMode);
+                  if (nextMode === 'bug_hunt') {
+                    setBugHunterCount(totalConfiguredAnalysts);
+                  } else {
+                    setBugHunterCount(BUG_HUNTER_DEFAULT);
+                  }
+                }}
+                disabled={pending}
+              >
+                <option value="implement_feature">Implement feature</option>
+                <option value="bug_hunt">Bug hunt</option>
+              </select>
+              {mode === 'bug_hunt' ? (
+                <div className="orchestrator-pane__meta">
+                  <label className="orchestrator-pane__label" htmlFor={`orchestrator-bughunters-${paneId}`}>
+                    Bug hunters
+                  </label>
+                  <input
+                    id={`orchestrator-bughunters-${paneId}`}
+                    type="number"
+                    min={BUG_HUNTER_MIN}
+                    max={BUG_HUNTER_MAX}
+                    value={bugHunterCount}
+                    onChange={(event) => setBugHunterCount(clampBugHunterCount(Number.parseInt(event.target.value, 10)))}
+                    disabled={pending}
+                  />
+                  <p className="orchestrator-pane__meta orchestrator-pane__meta--muted">
+                    Assigns dedicated bug hunters to triage, explain, and fix the issue. ({BUG_HUNTER_MIN}–{BUG_HUNTER_MAX})
+                  </p>
+                </div>
+              ) : null}
               <label className="orchestrator-pane__label" htmlFor={`orchestrator-brief-${paneId}`}>
                 Task briefing
               </label>

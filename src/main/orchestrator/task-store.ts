@@ -6,6 +6,7 @@ import type { FSWatcher } from 'chokidar';
 import type {
   ConversationEntry,
   OrchestratorCommentInput,
+  OrchestratorRunMode,
   TaskRecord,
   TaskStatus,
   TaskKind,
@@ -180,6 +181,7 @@ export class TaskStore {
     description: string;
     guidance?: string;
     epicId?: string | null;
+    analysisCount?: number;
   }): Promise<TaskRecord[]> {
     const analysisRoot = path.join(params.tasksRoot, 'analysis');
     await fs.mkdir(analysisRoot, { recursive: true });
@@ -187,9 +189,10 @@ export class TaskStore {
       { role: 'analyst_a', title: 'Analyst A — requirements draft' },
       { role: 'analyst_b', title: 'Analyst B — requirements draft' }
     ];
+    const targetCount = Math.max(1, Math.min(params.analysisCount ?? buckets.length, buckets.length));
     const created: TaskRecord[] = [];
     const now = new Date().toISOString();
-    for (const bucket of buckets) {
+    for (const bucket of buckets.slice(0, targetCount)) {
       const suffix = bucket.role === 'analyst_a' ? 'A' : 'B';
       const taskId = `ANALYSIS-${params.runId}-${suffix}`;
       const fileName = `${taskId}.json`;
@@ -234,12 +237,69 @@ export class TaskStore {
     return created;
   }
 
+  async ensureBugHuntSeeds(params: {
+    worktreePath: string;
+    tasksRoot: string;
+    conversationRoot: string;
+    runId: string;
+    description: string;
+    guidance?: string;
+    bugHunterCount: number;
+  }): Promise<TaskRecord[]> {
+    const hunters = Math.max(1, Math.floor(params.bugHunterCount));
+    const created: TaskRecord[] = [];
+    const roleSequence: WorkerRole[] = ['analyst_a', 'analyst_b'];
+
+    for (let index = 0; index < hunters; index += 1) {
+      const role = roleSequence[index % roleSequence.length];
+      const hunterNumber = index + 1;
+      const id = `BUGHUNT-${params.runId}-${hunterNumber}`;
+      const prompt = this.buildBugHunterPrompt({
+        runId: params.runId,
+        description: params.description,
+        guidance: params.guidance,
+        hunterNumber,
+        totalHunters: hunters
+      });
+      const record = await this.writeTaskIfMissing({
+        directory: 'analysis',
+        tasksRoot: params.tasksRoot,
+        worktreePath: params.worktreePath,
+        conversationRoot: params.conversationRoot,
+        payload: {
+          id,
+          epic: params.runId,
+          kind: 'analysis',
+          role,
+          title: `Bug hunter ${hunterNumber} — investigate`,
+          prompt,
+          status: 'ready',
+          cwd: '.',
+          depends_on: [],
+          approvals_required: 0,
+          approvals: [],
+          artifacts: []
+        }
+      });
+      if (record) {
+        created.push(record);
+      }
+    }
+
+    return created;
+  }
+
   async ensureWorkflowExpansion(params: {
     worktreePath: string;
     tasksRoot: string;
     conversationRoot: string;
     runId: string;
     tasks: TaskRecord[];
+    description?: string;
+    guidance?: string;
+    mode?: OrchestratorRunMode;
+    bugHunterCount?: number;
+    analysisCount?: number;
   }): Promise<TaskRecord[]> {
     let workingTasks = params.tasks.slice();
 
@@ -316,15 +376,38 @@ export class TaskStore {
     conversationRoot: string;
     runId: string;
     tasks: TaskRecord[];
+    description?: string;
+    guidance?: string;
+    mode?: OrchestratorRunMode;
+    bugHunterCount?: number;
+    analysisCount?: number;
   }): Promise<TaskRecord | null> {
     const existing = params.tasks.find((task) => task.kind === 'consensus');
     const analysesDone = params.tasks.filter((task) => task.kind === 'analysis' && task.status === 'done');
-    if (existing || analysesDone.length < 2) {
+    const totalAnalyses = params.tasks.filter((task) => task.kind === 'analysis').length;
+    if (totalAnalyses === 0) {
+      return null;
+    }
+    const expectedAnalyses =
+      params.mode === 'bug_hunt'
+        ? Math.max(1, params.bugHunterCount ?? params.analysisCount ?? totalAnalyses)
+        : Math.max(1, params.analysisCount ?? totalAnalyses);
+    const requiredAnalyses = Math.min(expectedAnalyses, totalAnalyses);
+    if (existing || analysesDone.length < requiredAnalyses) {
       return null;
     }
     const consensusId = `CONSENSUS-${params.runId}`;
     const dependsOn = analysesDone.map((task) => task.id);
-    const prompt = this.buildConsensusPrompt({ runId: params.runId });
+    const prompt = this.buildConsensusPrompt({
+      runId: params.runId,
+      mode: params.mode ?? 'implement_feature',
+      description: params.description,
+      guidance: params.guidance
+    });
+    const title =
+      (params.mode ?? 'implement_feature') === 'bug_hunt'
+        ? 'Consensus — document bug and proposed fix'
+        : 'Consensus — unify analyst drafts';
     return await this.writeTaskIfMissing({
       directory: 'consensus',
       tasksRoot: params.tasksRoot,
@@ -335,7 +418,7 @@ export class TaskStore {
         epic: params.runId,
         kind: 'consensus',
         role: 'consensus_builder',
-        title: 'Consensus — unify analyst drafts',
+        title,
         prompt,
         status: 'ready',
         cwd: '.',
@@ -353,6 +436,10 @@ export class TaskStore {
     conversationRoot: string;
     runId: string;
     tasks: TaskRecord[];
+    description?: string;
+    guidance?: string;
+    mode?: OrchestratorRunMode;
+    analysisCount?: number;
   }): Promise<TaskRecord | null> {
     const existing = params.tasks.find((task) => task.role === 'splitter');
     const consensus = params.tasks.find((task) => task.kind === 'consensus' && task.status === 'done');
@@ -360,7 +447,16 @@ export class TaskStore {
       return null;
     }
     const splitterId = `SPLIT-${params.runId}`;
-    const prompt = this.buildSplitterPrompt({ runId: params.runId });
+    const prompt = this.buildSplitterPrompt({
+      runId: params.runId,
+      mode: params.mode ?? 'implement_feature',
+      description: params.description,
+      guidance: params.guidance
+    });
+    const title =
+      (params.mode ?? 'implement_feature') === 'bug_hunt'
+        ? 'Fix planner — remediation plan'
+        : 'Splitter — implementation plan';
     return await this.writeTaskIfMissing({
       directory: 'analysis',
       tasksRoot: params.tasksRoot,
@@ -371,7 +467,7 @@ export class TaskStore {
         epic: params.runId,
         kind: 'analysis',
         role: 'splitter',
-        title: 'Splitter — implementation plan',
+        title,
         prompt,
         status: 'ready',
         cwd: '.',
@@ -389,6 +485,9 @@ export class TaskStore {
     conversationRoot: string;
     runId: string;
     tasks: TaskRecord[];
+    description?: string;
+    guidance?: string;
+    mode?: OrchestratorRunMode;
   }): Promise<TaskRecord[] | null> {
     const splitter = params.tasks.find((task) => task.role === 'splitter' && task.status === 'done');
     if (!splitter) {
@@ -414,8 +513,16 @@ export class TaskStore {
         epic: params.runId,
         kind: 'impl',
         role: 'implementer',
-        title: 'Implementer — apply plan in code',
-        prompt: this.buildImplementerPrompt({ runId: params.runId }),
+        title:
+          (params.mode ?? 'implement_feature') === 'bug_hunt'
+            ? 'Implementer — apply the bug fix'
+            : 'Implementer — apply plan in code',
+        prompt: this.buildImplementerPrompt({
+          runId: params.runId,
+          mode: params.mode ?? 'implement_feature',
+          description: params.description,
+          guidance: params.guidance
+        }),
         status: 'ready',
         cwd: '.',
         depends_on: [splitter.id],
@@ -438,8 +545,16 @@ export class TaskStore {
         epic: params.runId,
         kind: 'test',
         role: 'tester',
-        title: 'Tester — validate build and behaviour',
-        prompt: this.buildTesterPrompt({ runId: params.runId }),
+        title:
+          (params.mode ?? 'implement_feature') === 'bug_hunt'
+            ? 'Tester — confirm bug is resolved'
+            : 'Tester — validate build and behaviour',
+        prompt: this.buildTesterPrompt({
+          runId: params.runId,
+          mode: params.mode ?? 'implement_feature',
+          description: params.description,
+          guidance: params.guidance
+        }),
         status: 'ready',
         cwd: '.',
         depends_on: [implementerId],
@@ -462,8 +577,16 @@ export class TaskStore {
         epic: params.runId,
         kind: 'review',
         role: 'reviewer',
-        title: 'Reviewer — assess implementation',
-        prompt: this.buildReviewerPrompt({ runId: params.runId }),
+        title:
+          (params.mode ?? 'implement_feature') === 'bug_hunt'
+            ? 'Reviewer — finalise bug fix'
+            : 'Reviewer — assess implementation',
+        prompt: this.buildReviewerPrompt({
+          runId: params.runId,
+          mode: params.mode ?? 'implement_feature',
+          description: params.description,
+          guidance: params.guidance
+        }),
         status: 'ready',
         cwd: '.',
         depends_on: [implementerId, testerId],
@@ -604,24 +727,91 @@ export class TaskStore {
     return record?.record ?? null;
   }
 
-  private buildConsensusPrompt(context: { runId: string }): string {
-    return `You are the consensus builder for run ${context.runId}. Read Analyst A and Analyst B drafts, reconcile differences, and produce a single set of actionable requirements plus acceptance criteria.`;
+  private buildRunContextSuffix(description?: string, guidance?: string): string {
+    const segments: string[] = [];
+    const trimmedDescription = description?.trim();
+    const trimmedGuidance = guidance?.trim();
+    if (trimmedDescription) {
+      segments.push(`Run context: ${trimmedDescription}`);
+    }
+    if (trimmedGuidance) {
+      segments.push(`Additional guidance: ${trimmedGuidance}`);
+    }
+    return segments.length > 0 ? `\n\n${segments.join('\n')}` : '';
   }
 
-  private buildSplitterPrompt(context: { runId: string }): string {
-    return `Using the consensus requirements for run ${context.runId}, outline the technical implementation plan: list modules to touch, major steps for the implementer, and risks or open questions.`;
+  private buildBugHunterPrompt(context: {
+    runId: string;
+    description: string;
+    guidance?: string;
+    hunterNumber: number;
+    totalHunters: number;
+  }): string {
+    const teammatesNote =
+      context.totalHunters > 1
+        ? `Coordinate with the other ${context.totalHunters - 1} bug hunter${context.totalHunters - 1 === 1 ? '' : 's'} by sharing interim findings so the team can converge quickly.`
+        : 'Document your reasoning clearly so downstream teammates can understand the failure without additional context.';
+    return `You are Bug Hunter #${context.hunterNumber} for run ${context.runId}. Reproduce the reported defect, inspect the code to isolate the root cause, and propose the minimal fix or mitigation. Capture logs, relevant files, and assumptions in your notes. ${teammatesNote}${this.buildRunContextSuffix(context.description, context.guidance)}`;
   }
 
-  private buildImplementerPrompt(context: { runId: string }): string {
-    return `Implement the approved plan for run ${context.runId}. Apply code changes directly in the repository, keeping diffs focused. After coding, summarise what was changed.`;
+  private buildConsensusPrompt(context: {
+    runId: string;
+    mode: OrchestratorRunMode;
+    description?: string;
+    guidance?: string;
+  }): string {
+    if (context.mode === 'bug_hunt') {
+      return `Synthesise every bug-hunter investigation for run ${context.runId}. Provide a precise explanation of the defect (root cause, affected components, reproduction steps) and agree on the fix approach the team should follow.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    }
+    return `You are the consensus builder for run ${context.runId}. Read Analyst A and Analyst B drafts, reconcile differences, and produce a single set of actionable requirements plus acceptance criteria.${this.buildRunContextSuffix(context.description, context.guidance)}`;
   }
 
-  private buildTesterPrompt(context: { runId: string }): string {
-    return `Validate the implementation for run ${context.runId}. Run the prescribed test commands (e.g., cargo test) and report pass/fail with logs or follow-up actions.`;
+  private buildSplitterPrompt(context: {
+    runId: string;
+    mode: OrchestratorRunMode;
+    description?: string;
+    guidance?: string;
+  }): string {
+    if (context.mode === 'bug_hunt') {
+      return `Translate the agreed bug explanation for run ${context.runId} into a concrete fix plan. List the files and modules to touch, outline the implementation steps, note any new tests to add, and call out risks or follow-up checks.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    }
+    return `Using the consensus requirements for run ${context.runId}, outline the technical implementation plan: list modules to touch, major steps for the implementer, and risks or open questions.${this.buildRunContextSuffix(context.description, context.guidance)}`;
   }
 
-  private buildReviewerPrompt(context: { runId: string }): string {
-    return `Review the implementation for run ${context.runId}. Inspect the diff, note strengths/concerns, and approve or request changes with clear rationale.`;
+  private buildImplementerPrompt(context: {
+    runId: string;
+    mode: OrchestratorRunMode;
+    description?: string;
+    guidance?: string;
+  }): string {
+    if (context.mode === 'bug_hunt') {
+      return `Apply the agreed bug fix for run ${context.runId}. Modify the code to resolve the root cause, keep the diff focused, update or add regression tests if needed, and summarise exactly how the fix eliminates the defect.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    }
+    return `Implement the approved plan for run ${context.runId}. Apply code changes directly in the repository, keeping diffs focused. After coding, summarise what was changed.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+  }
+
+  private buildTesterPrompt(context: {
+    runId: string;
+    mode: OrchestratorRunMode;
+    description?: string;
+    guidance?: string;
+  }): string {
+    if (context.mode === 'bug_hunt') {
+      return `Validate that the bug fix for run ${context.runId} works as intended. Reproduce the original failure to confirm it no longer occurs, run targeted and regression tests, and report pass/fail with supporting logs.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    }
+    return `Validate the implementation for run ${context.runId}. Run the prescribed test commands (e.g., npm test) and report pass/fail with logs or follow-up actions.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+  }
+
+  private buildReviewerPrompt(context: {
+    runId: string;
+    mode: OrchestratorRunMode;
+    description?: string;
+    guidance?: string;
+  }): string {
+    if (context.mode === 'bug_hunt') {
+      return `Review the bug fix for run ${context.runId}. Inspect the diff to ensure the root cause is addressed, verify tests cover the regression, and highlight any lingering risks before approving or requesting changes.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    }
+    return `Review the implementation for run ${context.runId}. Inspect the diff, note strengths/concerns, and approve or request changes with clear rationale.${this.buildRunContextSuffix(context.description, context.guidance)}`;
   }
 
   private createWatcher(
