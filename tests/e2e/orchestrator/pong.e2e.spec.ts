@@ -44,9 +44,15 @@ class StaticExecutor {
 
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
     context.onLog(`${this.summary}\n`, 'stdout');
+    const summary = this.summary;
     return {
-      summary: this.summary,
-      artifacts: []
+      summary,
+      artifacts: [],
+      outcome: {
+        status: 'ok',
+        summary,
+        details: summary
+      }
     };
   }
 }
@@ -58,14 +64,20 @@ class DeterministicImplementerExecutor {
     context.onLog('Writing Rust Fibonacci implementation\n', 'stdout');
     await this.writeSources();
     const diff = await gitDiff(this.repoPath);
+    const summary = 'Implemented terminal Fibonacci calculator in Rust.';
     return {
-      summary: 'Implemented terminal Fibonacci calculator in Rust.',
+      summary,
       artifacts: [
         {
           path: `artifacts/${context.task.id}.diff`,
           contents: diff
         }
-      ]
+      ],
+      outcome: {
+        status: 'ok',
+        summary,
+        details: 'Deterministic implementer applied the planned changes.'
+      }
     };
   }
 
@@ -106,14 +118,21 @@ class CodexImplementerExecutor {
     }
 
     const diff = await gitDiff(this.repoPath);
+    const summary = payload.summary ?? codexResult.summary;
+    const outcome = {
+      ...codexResult.outcome,
+      summary: payload.summary ?? codexResult.outcome.summary,
+      details: codexResult.outcome.details ?? 'Codex implementer applied generated diff.'
+    };
     return {
-      summary: payload.summary ?? codexResult.summary,
+      summary,
       artifacts: [
         {
           path: `artifacts/${context.task.id}.diff`,
           contents: diff
         }
-      ]
+      ],
+      outcome
     };
   }
 }
@@ -314,9 +333,26 @@ describe.skipIf(!cargoAvailable)('End-to-end orchestration — Rust Fibonacci CL
     };
     const result = await executor(context);
     const artifactPaths = await persistArtifacts(runRoot, tempDir, result.artifacts ?? []);
+    let outcome = result.outcome;
+    if (outcome) {
+      const outcomeRelative = path.join('artifacts', `${claim.entry.record.id}.outcome.json`).replace(/\\/g, '/');
+      const outcomeAbsolute = path.join(runRoot, outcomeRelative);
+      await mkdir(path.dirname(outcomeAbsolute), { recursive: true });
+      const persisted = {
+        status: outcome.status.toUpperCase().replace(/[^A-Z]+/g, '_'),
+        summary: outcome.summary,
+        details: outcome.details
+      };
+      await writeFile(outcomeAbsolute, `${JSON.stringify(persisted, null, 2)}\n`, 'utf8');
+      if (!artifactPaths.includes(outcomeRelative)) {
+        artifactPaths.push(outcomeRelative);
+      }
+      outcome = { ...outcome, documentPath: outcomeRelative };
+    }
     await claims.markDone(claim, {
-      summary: result.summary,
-      artifacts: artifactPaths
+      summary: outcome?.summary ?? result.summary,
+      artifacts: artifactPaths,
+      workerOutcome: outcome
     });
   };
 

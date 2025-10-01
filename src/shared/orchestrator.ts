@@ -11,6 +11,15 @@ export type AgentGraphNodeState = 'idle' | 'pending' | 'active' | 'done' | 'erro
 
 export type TaskKind = 'analysis' | 'consensus' | 'impl' | 'test' | 'review';
 
+export type WorkerOutcomeStatus = 'ok' | 'changes_requested' | 'blocked';
+
+export interface WorkerOutcomeDocument {
+  status: WorkerOutcomeStatus;
+  summary: string;
+  details?: string;
+  documentPath?: string;
+}
+
 export type TaskStatus =
   | 'ready'
   | 'in_progress'
@@ -36,6 +45,7 @@ export interface TaskRecord {
   artifacts: string[];
   conversationPath?: string;
   summary?: string;
+  workerOutcome?: WorkerOutcomeDocument;
   assignee?: string;
   lastClaimedBy?: string;
   createdAt: string;

@@ -98,7 +98,15 @@ const createSupervisor = () => {
   const bus = new OrchestratorEventBus();
   const claimStore = {} as TaskClaimStore;
   const executorFactory = (): CodexExecutor => ({
-    execute: vi.fn(async () => ({ summary: '', artifacts: [] }))
+    execute: vi.fn(async () => ({
+      summary: 'noop',
+      artifacts: [],
+      outcome: {
+        status: 'ok',
+        summary: 'noop',
+        details: 'noop'
+      }
+    }))
   });
   const supervisor = new WorkerSupervisor(bus, claimStore, executorFactory);
   supervisor.registerContext('wt', {

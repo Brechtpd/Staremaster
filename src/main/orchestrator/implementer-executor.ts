@@ -98,6 +98,11 @@ export class ImplementerExecutor implements CodexExecutor {
         try {
           const diff = await this.captureDiff(cwd);
           const summary = stdout.trim() || 'Applied implementation changes.';
+          const outcome = {
+            status: 'ok' as const,
+            summary,
+            details: `Implementation worker applied the patch. Review artifacts/${context.task.id}.diff for diff contents.`
+          };
           resolve({
             summary,
             artifacts: [
@@ -105,7 +110,8 @@ export class ImplementerExecutor implements CodexExecutor {
                 path: `artifacts/${context.task.id}.diff`,
                 contents: diff
               }
-            ]
+            ],
+            outcome
           });
         } catch (error) {
           reject(error);

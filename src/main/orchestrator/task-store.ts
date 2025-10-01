@@ -10,6 +10,7 @@ import type {
   TaskRecord,
   TaskStatus,
   TaskKind,
+  WorkerOutcomeDocument,
   WorkerRole
 } from '@shared/orchestrator';
 
@@ -740,6 +741,21 @@ export class TaskStore {
     return segments.length > 0 ? `\n\n${segments.join('\n')}` : '';
   }
 
+  private buildStructuredOutcomeInstructions(): string {
+    return [
+      '',
+      'Final response format:',
+      'Return exactly one JSON object with this shape and no surrounding commentary:',
+      '{',
+      '  "status": "OK" | "CHANGES_REQUESTED" | "BLOCKED",',
+      '  "summary": "<single-sentence plain-text recap>",',
+      '  "details": "<Markdown body with your full report; include findings, plans, or evidence>"',
+      '}',
+      'Choose "CHANGES_REQUESTED" whenever the work is incomplete, uncertain, or requires follow-up. Choose "BLOCKED" only for external blockers you cannot resolve.',
+      'Embed all substantive content inside the `details` field and avoid code fences or extra text outside the JSON.'
+    ].join('\n');
+  }
+
   private buildBugHunterPrompt(context: {
     runId: string;
     description: string;
@@ -751,7 +767,8 @@ export class TaskStore {
       context.totalHunters > 1
         ? `Coordinate with the other ${context.totalHunters - 1} bug hunter${context.totalHunters - 1 === 1 ? '' : 's'} by sharing interim findings so the team can converge quickly.`
         : 'Document your reasoning clearly so downstream teammates can understand the failure without additional context.';
-    return `You are Bug Hunter #${context.hunterNumber} for run ${context.runId}. Reproduce the reported defect, inspect the code to isolate the root cause, and propose the minimal fix or mitigation. Capture logs, relevant files, and assumptions in your notes. ${teammatesNote}${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    const intro = `You are Bug Hunter #${context.hunterNumber} for run ${context.runId}. Reproduce the reported defect, inspect the code to isolate the root cause, and propose the minimal fix or mitigation. Capture logs, relevant files, and assumptions in your notes. ${teammatesNote}`;
+    return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
   }
 
   private buildConsensusPrompt(context: {
@@ -761,9 +778,11 @@ export class TaskStore {
     guidance?: string;
   }): string {
     if (context.mode === 'bug_hunt') {
-      return `Synthesise every bug-hunter investigation for run ${context.runId}. Provide a precise explanation of the defect (root cause, affected components, reproduction steps) and agree on the fix approach the team should follow.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+      const intro = `Synthesise every bug-hunter investigation for run ${context.runId}. Provide a precise explanation of the defect (root cause, affected components, reproduction steps) and agree on the fix approach the team should follow.`;
+      return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
     }
-    return `You are the consensus builder for run ${context.runId}. Read Analyst A and Analyst B drafts, reconcile differences, and produce a single set of actionable requirements plus acceptance criteria.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    const intro = `You are the consensus builder for run ${context.runId}. Read Analyst A and Analyst B drafts, reconcile differences, and produce a single set of actionable requirements plus acceptance criteria.`;
+    return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
   }
 
   private buildSplitterPrompt(context: {
@@ -773,9 +792,11 @@ export class TaskStore {
     guidance?: string;
   }): string {
     if (context.mode === 'bug_hunt') {
-      return `Translate the agreed bug explanation for run ${context.runId} into a concrete fix plan. List the files and modules to touch, outline the implementation steps, note any new tests to add, and call out risks or follow-up checks.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+      const intro = `Translate the agreed bug explanation for run ${context.runId} into a concrete fix plan. List the files and modules to touch, outline the implementation steps, note any new tests to add, and call out risks or follow-up checks.`;
+      return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
     }
-    return `Using the consensus requirements for run ${context.runId}, outline the technical implementation plan: list modules to touch, major steps for the implementer, and risks or open questions.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    const intro = `Using the consensus requirements for run ${context.runId}, outline the technical implementation plan: list modules to touch, major steps for the implementer, and risks or open questions.`;
+    return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
   }
 
   private buildImplementerPrompt(context: {
@@ -785,9 +806,11 @@ export class TaskStore {
     guidance?: string;
   }): string {
     if (context.mode === 'bug_hunt') {
-      return `Apply the agreed bug fix for run ${context.runId}. Modify the code to resolve the root cause, keep the diff focused, update or add regression tests if needed, and summarise exactly how the fix eliminates the defect.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+      const intro = `Apply the agreed bug fix for run ${context.runId}. Modify the code to resolve the root cause, keep the diff focused, update or add regression tests if needed, and summarise exactly how the fix eliminates the defect.`;
+      return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
     }
-    return `Implement the approved plan for run ${context.runId}. Apply code changes directly in the repository, keeping diffs focused. After coding, summarise what was changed.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    const intro = `Implement the approved plan for run ${context.runId}. Apply code changes directly in the repository, keeping diffs focused. After coding, summarise what was changed.`;
+    return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
   }
 
   private buildTesterPrompt(context: {
@@ -797,9 +820,11 @@ export class TaskStore {
     guidance?: string;
   }): string {
     if (context.mode === 'bug_hunt') {
-      return `Validate that the bug fix for run ${context.runId} works as intended. Reproduce the original failure to confirm it no longer occurs, run targeted and regression tests, and report pass/fail with supporting logs.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+      const intro = `Validate that the bug fix for run ${context.runId} works as intended. Reproduce the original failure to confirm it no longer occurs, run targeted and regression tests, and report pass/fail with supporting logs.`;
+      return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
     }
-    return `Validate the implementation for run ${context.runId}. Run the prescribed test commands (e.g., npm test) and report pass/fail with logs or follow-up actions.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    const intro = `Validate the implementation for run ${context.runId}. Run the prescribed test commands (e.g., npm test) and report pass/fail with logs or follow-up actions.`;
+    return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
   }
 
   private buildReviewerPrompt(context: {
@@ -809,9 +834,11 @@ export class TaskStore {
     guidance?: string;
   }): string {
     if (context.mode === 'bug_hunt') {
-      return `Review the bug fix for run ${context.runId}. Inspect the diff to ensure the root cause is addressed, verify tests cover the regression, and highlight any lingering risks before approving or requesting changes.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+      const intro = `Review the bug fix for run ${context.runId}. Inspect the diff to ensure the root cause is addressed, verify tests cover the regression, and highlight any lingering risks before approving or requesting changes.`;
+      return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
     }
-    return `Review the implementation for run ${context.runId}. Inspect the diff, note strengths/concerns, and approve or request changes with clear rationale.${this.buildRunContextSuffix(context.description, context.guidance)}`;
+    const intro = `Review the implementation for run ${context.runId}. Inspect the diff, note strengths/concerns, and approve or request changes with clear rationale.`;
+    return `${intro}${this.buildRunContextSuffix(context.description, context.guidance)}${this.buildStructuredOutcomeInstructions()}`;
   }
 
   private createWatcher(
@@ -941,7 +968,8 @@ export class TaskStore {
     const description = readString(payload, 'title') ?? `Task ${id}`;
     const assignee = readString(payload, 'assignee') ?? undefined;
     const lastClaimedBy = readString(payload, 'last_claimed_by') ?? undefined;
-    const summary = readString(payload, 'summary') ?? undefined;
+    const workerOutcome = this.readWorkerOutcome(payload);
+    const summary = readString(payload, 'summary') ?? workerOutcome?.summary ?? undefined;
     const cwd = readString(payload, 'cwd') ?? '.';
     const createdAt = readString(payload, 'created_at') ?? now;
     const updatedAt = readString(payload, 'updated_at') ?? createdAt;
@@ -961,6 +989,7 @@ export class TaskStore {
       artifacts,
       conversationPath: conversationRelative,
       summary,
+      workerOutcome,
       assignee,
       lastClaimedBy,
       createdAt,
@@ -971,6 +1000,69 @@ export class TaskStore {
       filePath: meta.filePath,
       directory: meta.directory
     };
+  }
+
+  private readWorkerOutcome(payload: Record<string, unknown>): WorkerOutcomeDocument | undefined {
+    const raw = (payload as { worker_outcome?: unknown }).worker_outcome;
+    if (!raw || typeof raw !== 'object') {
+      return undefined;
+    }
+    const status = this.normalizeWorkerOutcomeStatus((raw as { status?: unknown }).status);
+    const summarySource = (raw as { summary?: unknown }).summary;
+    const detailsSource = (raw as { details?: unknown }).details;
+    const documentPathSource = (raw as { document_path?: unknown }).document_path;
+    const summary = typeof summarySource === 'string' ? summarySource.trim() : '';
+    const details = typeof detailsSource === 'string' ? detailsSource.trim() : undefined;
+    const documentPath =
+      typeof documentPathSource === 'string' && documentPathSource.trim() ? documentPathSource.trim() : undefined;
+
+    const outcome: WorkerOutcomeDocument = {
+      status,
+      summary
+    };
+    if (details) {
+      outcome.details = details;
+    }
+    if (documentPath) {
+      outcome.documentPath = documentPath;
+    }
+    return outcome;
+  }
+
+  private normalizeWorkerOutcomeStatus(value: unknown): WorkerOutcomeDocument['status'] {
+    if (typeof value !== 'string') {
+      return 'changes_requested';
+    }
+    const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    if (!normalized) {
+      return 'changes_requested';
+    }
+    switch (normalized) {
+      case 'ok':
+      case 'approved':
+      case 'success':
+      case 'pass':
+      case 'passed':
+      case 'complete':
+      case 'completed':
+        return 'ok';
+      case 'blocked':
+      case 'blocker':
+        return 'blocked';
+      case 'changes_requested':
+      case 'changesrequested':
+      case 'needs_changes':
+      case 'needschanges':
+      case 'requires_changes':
+      case 'requireschanges':
+      case 'revision_required':
+      case 'revisionrequired':
+      case 'fail':
+      case 'failed':
+        return 'changes_requested';
+      default:
+        return 'changes_requested';
+    }
   }
 
   private inferStatus(directory: TaskDirectory): TaskStatus {
@@ -1109,7 +1201,7 @@ export class TaskStore {
     if (params.guidance?.trim()) {
       instructions.push('', `Additional guidance: ${params.guidance.trim()}`);
     }
-    instructions.push('', 'Return markdown with clear headings and numbered acceptance criteria.');
-    return instructions.join('\n');
+    instructions.push('', 'Prepare markdown with clear headings and numbered acceptance criteria inside the `details` field of the final JSON report.');
+    return `${instructions.join('\n')}${this.buildStructuredOutcomeInstructions()}`;
   }
 }

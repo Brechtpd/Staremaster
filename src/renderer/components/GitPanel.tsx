@@ -14,6 +14,7 @@ import type { RendererApi } from '@shared/api';
 interface GitPanelProps {
   api: RendererApi;
   worktree: WorktreeDescriptor;
+  onStatusChange?: (payload: { worktreeId: string; clean: boolean; message?: string }) => void;
 }
 
 type Selection = {
@@ -38,7 +39,35 @@ type SectionKey = keyof GitStatusSummary;
 const SIDEBAR_MIN = 0.2;
 const SIDEBAR_MAX = 0.75;
 
-export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree }) => {
+const computeEligibility = (
+  summary: GitStatusSummary
+): { clean: boolean; message?: string } => {
+  const staged = summary.staged.length;
+  const unstaged = summary.unstaged.length;
+  const untracked = summary.untracked.length;
+  if (staged === 0 && unstaged === 0 && untracked === 0) {
+    return { clean: true };
+  }
+  const parts: string[] = [];
+  if (staged > 0) {
+    parts.push(`${staged} staged`);
+  }
+  if (unstaged > 0) {
+    parts.push(`${unstaged} unstaged`);
+  }
+  if (untracked > 0) {
+    parts.push(`${untracked} untracked`);
+  }
+  const detail = parts.join(', ');
+  return {
+    clean: false,
+    message: detail
+      ? `Pull requires a clean worktree. Resolve ${detail} changes first.`
+      : 'Pull requires a clean worktree. Resolve pending changes first.'
+  };
+};
+
+export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree, onStatusChange }) => {
   const [status, setStatus] = useState<GitStatusSummary | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [diff, setDiff] = useState<GitDiffResponse | null>(null);
@@ -66,6 +95,10 @@ export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree }) => {
       try {
         const summary = await api.getGitStatus(worktree.id);
         setStatus(summary);
+        if (onStatusChange) {
+          const eligibility = computeEligibility(summary);
+          onStatusChange({ worktreeId: worktree.id, ...eligibility });
+        }
         setSelection((current) => {
           const resolveCandidate = (candidate: Selection | null | undefined): Selection | null => {
             if (!candidate) {
@@ -100,11 +133,16 @@ export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree }) => {
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load status');
+        onStatusChange?.({
+          worktreeId: worktree.id,
+          clean: false,
+          message: err instanceof Error ? err.message : 'Failed to load git status'
+        });
       } finally {
         setLoading(false);
       }
     },
-    [api, worktree.id]
+    [api, onStatusChange, worktree.id]
   );
 
   useEffect(() => {
@@ -126,8 +164,9 @@ export const GitPanel: React.FC<GitPanelProps> = ({ api, worktree }) => {
     setDiff(null);
     setError(null);
     setSelection(null);
+    onStatusChange?.({ worktreeId: worktree.id, clean: false, message: 'Checking git status…' });
     void refreshStatus(snapshot?.selection ?? null);
-  }, [worktree.id, refreshStatus]);
+  }, [worktree.id, refreshStatus, onStatusChange]);
 
   useEffect(() => {
     if (!selection) {

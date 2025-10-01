@@ -9,6 +9,7 @@ import { GitService } from './services/GitService';
 import { WindowStateStore, WindowBounds } from './services/WindowStateStore';
 import { TerminalService } from './services/TerminalService';
 import { WorkerOrchestratorBridge } from './orchestrator/worker-bridge';
+import { WorktreeAuditLog } from './services/WorktreeAuditLog';
 import type { ThemePreference } from '../shared/ipc';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
@@ -30,6 +31,7 @@ let codexManager: CodexSessionManager;
 let windowStateStore: WindowStateStore;
 let terminalService: TerminalService;
 let orchestratorBridge: WorkerOrchestratorBridge;
+let auditLog: WorktreeAuditLog;
 
 const preloadPath = (): string => {
   return path.join(__dirname, 'preload.js');
@@ -141,9 +143,11 @@ const createMainWindow = async (
 const bootstrap = async () => {
   await app.whenReady();
 
-  const store = new ProjectStore(app.getPath('userData'));
-  windowStateStore = new WindowStateStore(app.getPath('userData'));
-  worktreeService = new WorktreeService(store);
+  const userDataDir = app.getPath('userData');
+  const store = new ProjectStore(userDataDir);
+  windowStateStore = new WindowStateStore(userDataDir);
+  auditLog = new WorktreeAuditLog(path.join(userDataDir, 'worktree-logs'));
+  worktreeService = new WorktreeService(store, auditLog);
   gitService = new GitService((id) => worktreeService.getWorktreePath(id));
   codexManager = new CodexSessionManager(store);
   terminalService = new TerminalService((id) => worktreeService.getWorktreePath(id), {
@@ -151,7 +155,7 @@ const bootstrap = async () => {
       enabled: true,
       limit: 500_000
     },
-    persistDir: path.join(app.getPath('userData'), 'terminal-logs')
+    persistDir: path.join(userDataDir, 'terminal-logs')
   });
   orchestratorBridge = new WorkerOrchestratorBridge((id) => worktreeService.getWorktreePath(id));
   // Codex terminals use the same TerminalService (no special-casing)

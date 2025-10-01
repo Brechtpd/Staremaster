@@ -203,6 +203,10 @@ export const registerIpcHandlers = (
     return worktreeService.mergeWorktree(payload.worktreeId);
   });
 
+  ipcMain.handle(IPCChannels.pullWorktree, async (_event, payload: { worktreeId: string }) => {
+    return worktreeService.pullWorktree(payload.worktreeId);
+  });
+
   ipcMain.handle(IPCChannels.startCodex, async (_event, payload: { worktreeId: string }) => {
     const canonicalId = resolveCanonical(payload.worktreeId);
     const state = worktreeService.getState();
@@ -571,6 +575,7 @@ export const registerIpcHandlers = (
     ipcMain.removeHandler(IPCChannels.addProject);
     ipcMain.removeHandler(IPCChannels.createWorktree);
     ipcMain.removeHandler(IPCChannels.mergeWorktree);
+    ipcMain.removeHandler(IPCChannels.pullWorktree);
     ipcMain.removeHandler(IPCChannels.removeWorktree);
     ipcMain.removeHandler(IPCChannels.openWorktreeInVSCode);
     ipcMain.removeHandler(IPCChannels.openWorktreeInGitGui);

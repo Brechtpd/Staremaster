@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { Buffer } from 'node:buffer';
-import type { TaskStatus, WorkerRole, WorkerStatus } from '@shared/orchestrator';
+import type { TaskStatus, WorkerOutcomeDocument, WorkerRole, WorkerStatus } from '@shared/orchestrator';
 import { OrchestratorEventBus } from './event-bus';
 import { TaskClaimStore, type ClaimedTask } from './task-claim-store';
 import type { CodexExecutor, ExecutionResult } from './codex-executor';
@@ -201,11 +201,18 @@ export class RoleWorker extends EventEmitter {
 
   private async handleSuccess(claim: ClaimedTask, result: ExecutionResult): Promise<void> {
     try {
-      const artifacts = await this.persistArtifacts(result);
+      const persisted = await this.persistArtifacts(claim.entry.record.id, result);
+      const outcome = this.buildWorkerOutcome(result.outcome, persisted.outcomeDocumentPath, result.summary);
       const statusOverride = this.determineStatusOverride(result);
-      const updates: { summary: string; artifacts: string[]; status?: TaskStatus } = {
-        summary: result.summary,
-        artifacts
+      const updates: {
+        summary: string;
+        artifacts: string[];
+        workerOutcome: WorkerOutcomeDocument;
+        status?: TaskStatus;
+      } = {
+        summary: outcome.summary || result.summary,
+        artifacts: persisted.artifactPaths,
+        workerOutcome: outcome
       };
       if (statusOverride) {
         updates.status = statusOverride;
@@ -230,25 +237,48 @@ export class RoleWorker extends EventEmitter {
     this.publishStatus({ state: 'error', description: message });
   }
 
-  private async persistArtifacts(result: ExecutionResult): Promise<string[]> {
-    if (!result.artifacts || result.artifacts.length === 0) {
-      return [];
-    }
-    const artifacts: string[] = [];
+  private async persistArtifacts(
+    taskId: string,
+    result: ExecutionResult
+  ): Promise<{ artifactPaths: string[]; outcomeDocumentPath?: string }> {
+    const artifactPaths: string[] = [];
     const runRoot = path.resolve(this.context.runRoot);
-    for (const artifact of result.artifacts) {
-      const resolved = path.resolve(runRoot, artifact.path);
+    const seen = new Set<string>();
+
+    const pushArtifact = (resolved: string) => {
+      const normalized = path.relative(this.context.options.worktreePath, resolved).replace(/\\/g, '/');
+      if (!seen.has(normalized)) {
+        artifactPaths.push(normalized);
+        seen.add(normalized);
+      }
+      return normalized;
+    };
+
+    if (result.artifacts && result.artifacts.length > 0) {
+      for (const artifact of result.artifacts) {
+        const resolved = path.resolve(runRoot, artifact.path);
+        if (resolved !== runRoot && !resolved.startsWith(`${runRoot}${path.sep}`)) {
+          throw new Error(`Artifact path escapes run root: ${artifact.path}`);
+        }
+        await fs.mkdir(path.dirname(resolved), { recursive: true });
+        await fs.writeFile(resolved, artifact.contents, 'utf8');
+        pushArtifact(resolved);
+      }
+    }
+
+    let outcomeDocumentPath: string | undefined;
+    if (result.outcome) {
+      const relative = path.join('artifacts', `${taskId}.outcome.json`);
+      const resolved = path.resolve(runRoot, relative);
       if (resolved !== runRoot && !resolved.startsWith(`${runRoot}${path.sep}`)) {
-        throw new Error(`Artifact path escapes run root: ${artifact.path}`);
+        throw new Error(`Outcome document path escapes run root: ${relative}`);
       }
       await fs.mkdir(path.dirname(resolved), { recursive: true });
-      await fs.writeFile(resolved, artifact.contents, 'utf8');
-      const normalized = path
-        .relative(this.context.options.worktreePath, resolved)
-        .replace(/\\/g, '/');
-      artifacts.push(normalized);
+      await fs.writeFile(resolved, this.serializeOutcome(result.outcome), 'utf8');
+      outcomeDocumentPath = pushArtifact(resolved);
     }
-    return artifacts;
+
+    return { artifactPaths, outcomeDocumentPath };
   }
 
   private appendLog(chunk: string): void {
@@ -258,6 +288,27 @@ export class RoleWorker extends EventEmitter {
     const next = (this.logTail + chunk).slice(-LOG_TAIL_LIMIT);
     this.logTail = next;
     this.publishStatus({ logTail: next });
+  }
+
+  private buildWorkerOutcome(
+    outcome: WorkerOutcomeDocument,
+    documentPath?: string,
+    fallbackSummary?: string
+  ): WorkerOutcomeDocument {
+    const summaryCandidate = outcome.summary?.trim() || fallbackSummary?.trim();
+    const summary = summaryCandidate && summaryCandidate.length > 0 ? summaryCandidate : 'Task outcome recorded.';
+    const normalized: WorkerOutcomeDocument = {
+      status: outcome.status,
+      summary
+    };
+    if (outcome.details && outcome.details.trim()) {
+      normalized.details = outcome.details.trim();
+    }
+    const effectivePath = documentPath ?? outcome.documentPath;
+    if (effectivePath) {
+      normalized.documentPath = effectivePath;
+    }
+    return normalized;
   }
 
   private publishStatus(partial: Partial<WorkerStatus>): void {
@@ -309,25 +360,43 @@ export class RoleWorker extends EventEmitter {
   }
 
   private determineStatusOverride(result: ExecutionResult): TaskStatus | undefined {
-    if (this.role !== 'reviewer') {
+    const status = result.outcome?.status;
+    if (!status) {
       return undefined;
     }
-    const text = (result.summary ?? '').toLowerCase();
-    if (!text) {
-      return 'approved';
+    if (status === 'blocked') {
+      return 'blocked';
     }
-    const changePhrases = [
-      'requesting changes',
-      'changes requested',
-      'request changes',
-      'needs changes',
-      'requires changes',
-      'blocked'
-    ];
-    if (changePhrases.some((phrase) => text.includes(phrase))) {
+    if (status === 'changes_requested') {
       return 'changes_requested';
     }
-    return 'approved';
+    if (status === 'ok' && this.role === 'reviewer') {
+      return 'approved';
+    }
+    return undefined;
+  }
+
+  private serializeOutcome(outcome: WorkerOutcomeDocument): string {
+    const payload: Record<string, unknown> = {
+      status: this.formatOutcomeStatus(outcome.status),
+      summary: outcome.summary
+    };
+    if (outcome.details && outcome.details.trim()) {
+      payload.details = outcome.details.trim();
+    }
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+
+  private formatOutcomeStatus(status: WorkerOutcomeDocument['status']): string {
+    switch (status) {
+      case 'ok':
+        return 'OK';
+      case 'blocked':
+        return 'BLOCKED';
+      case 'changes_requested':
+      default:
+        return 'CHANGES_REQUESTED';
+    }
   }
 
   private normalizeLogChunk(raw: string): string {

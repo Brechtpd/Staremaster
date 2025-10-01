@@ -101,10 +101,8 @@ const AgentNode: React.FC<NodeProps<AgentNodeInternalData>> = ({ id, data }) => 
       <span className="agent-flow__node-indicator" />
       <div className="agent-flow__node-body">
         <span className="agent-flow__node-title">{data.label}</span>
-        {data.statusDetail ? <span className="agent-flow__node-status">{data.statusDetail}</span> : null}
-        {!data.statusDetail && data.status ? (
-          <span className="agent-flow__node-status">{data.status}</span>
-        ) : null}
+        {data.status ? <span className="agent-flow__node-status">{data.status}</span> : null}
+        {data.statusDetail ? <span className="agent-flow__node-summary">{data.statusDetail}</span> : null}
         {data.summary ? <span className="agent-flow__node-summary">{data.summary}</span> : null}
         {showArtifact || showConversation ? (
           <div className="agent-flow__node-actions">

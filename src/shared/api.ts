@@ -32,6 +32,7 @@ export interface RendererApi {
   removeProject(projectId: string): Promise<AppState>;
   createWorktree(projectId: string, featureName: string): Promise<WorktreeDescriptor>;
   mergeWorktree(worktreeId: string): Promise<AppState>;
+  pullWorktree(worktreeId: string): Promise<AppState>;
   removeWorktree(worktreeId: string, deleteFolder?: boolean): Promise<AppState>;
   openWorktreeInVSCode(worktreeId: string): Promise<void>;
   openWorktreeInGitGui(worktreeId: string): Promise<void>;

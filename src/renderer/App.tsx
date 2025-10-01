@@ -60,6 +60,11 @@ interface PaneLayoutState {
 
 const paneLayoutStoragePrefix = 'layout/panes/';
 
+type AppNotification = {
+  kind: 'success' | 'error' | 'info';
+  message: string;
+};
+
 export class LongRunTracker {
   constructor(private readonly thresholdMs: number) {}
 
@@ -292,13 +297,14 @@ export const App: React.FC = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notification, setNotification] = useState<string | null>(null);
+  const [notification, setNotification] = useState<AppNotification | null>(null);
   const [isCreateModalOpen, setCreateModalOpen] = useState(false);
   const [createName, setCreateName] = useState('');
   const [createProjectId, setCreateProjectId] = useState<string | null>(null);
   const [sidebarRatio, setSidebarRatio] = useState(0.25);
   const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>(() => readStoredList(hiddenProjectsStorageKey));
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<string[]>(() => readStoredList(collapsedProjectsStorageKey));
+  const [pullReadiness, setPullReadiness] = useState<Record<string, { clean: boolean; message?: string }>>({});
   const stateInitializedRef = useRef(false);
   const selectedProject = useMemo<ProjectDescriptor | null>(() => {
     if (!selectedProjectId) {
@@ -373,6 +379,21 @@ export const App: React.FC = () => {
       const root = roots.get(worktree.projectId);
       return !root || worktree.path !== root;
     });
+  }, [state.projects, state.worktrees]);
+
+  const projectRootDescriptors = useMemo(() => {
+    if (state.projects.length === 0 || state.worktrees.length === 0) {
+      return new Map<string, WorktreeDescriptor>();
+    }
+    const roots = new Map(state.projects.map((project) => [project.id, project.root] as const));
+    const descriptors = new Map<string, WorktreeDescriptor>();
+    for (const worktree of state.worktrees) {
+      const expectedRoot = roots.get(worktree.projectId);
+      if (expectedRoot && worktree.path === expectedRoot) {
+        descriptors.set(worktree.projectId, worktree);
+      }
+    }
+    return descriptors;
   }, [state.projects, state.worktrees]);
   const orchestratorWorktreeIds = useMemo(
     () => state.worktrees.map((worktree) => worktree.id),
@@ -829,23 +850,33 @@ export const App: React.FC = () => {
     if (!project) {
       return null;
     }
+    const rootDescriptor = projectRootDescriptors.get(projectId);
     const canonicalId = resolveSessionWorktreeId(selectedWorktreeId);
     const canonical = canonicalId
       ? state.worktrees.find((item) => item.id === canonicalId)
       : undefined;
-    const branch = canonical?.branch ?? 'main';
+    const branch = rootDescriptor?.branch ?? canonical?.branch ?? 'main';
+    const status = rootDescriptor?.status ?? canonical?.status ?? 'ready';
+    const codexStatus = canonical?.codexStatus ?? rootDescriptor?.codexStatus ?? 'idle';
+    const lastError = canonical?.lastError ?? rootDescriptor?.lastError;
     return {
       id: selectedWorktreeId,
       projectId: project.id,
-      featureName: 'main',
+      featureName: rootDescriptor?.featureName ?? 'main',
       branch,
       path: project.root,
-      createdAt: project.createdAt,
-      status: canonical?.status ?? 'ready',
-      codexStatus: canonical?.codexStatus ?? 'idle',
-      lastError: canonical?.lastError
+      createdAt: rootDescriptor?.createdAt ?? project.createdAt,
+      status,
+      codexStatus,
+      lastError
     };
-  }, [resolveSessionWorktreeId, selectedWorktreeId, state.projects, state.worktrees]);
+  }, [
+    projectRootDescriptors,
+    resolveSessionWorktreeId,
+    selectedWorktreeId,
+    state.projects,
+    state.worktrees
+  ]);
 
   const selectedWorktree = useMemo<WorktreeDescriptor | null>(() => {
     if (rootWorktree) {
@@ -922,6 +953,64 @@ export const App: React.FC = () => {
   }, [openPaneMenuFor, state.projects, state.worktrees]);
 
   const isRootSelection = Boolean(rootWorktree);
+  const selectedWorktreeStatus = selectedWorktree?.status ?? 'idle';
+  const isPulling = selectedWorktreeStatus === 'pulling';
+  const isMerging = selectedWorktreeStatus === 'merging';
+  const selectedPullInfo = selectedWorktree ? pullReadiness[selectedWorktree.id] : undefined;
+  const pullButtonDisabled =
+    busy || !bridge || isRootSelection || isPulling || isMerging || !(selectedPullInfo?.clean ?? false);
+  const mergeButtonDisabled = busy || !bridge || isRootSelection || isPulling || isMerging;
+  const pullHelperText = useMemo(() => {
+    if (busy && !isPulling && !isMerging) {
+      return 'Another action is currently running. Pull will be available once it completes.';
+    }
+    if (!selectedWorktree || isRootSelection) {
+      return 'Select a feature worktree to enable pulling from main.';
+    }
+    if (isPulling) {
+      return 'Pull in progress…';
+    }
+    if (isMerging) {
+      return 'Merge in progress. Pull will be available afterwards.';
+    }
+    if (selectedPullInfo?.clean) {
+      return null;
+    }
+    if (!selectedPullInfo) {
+      return 'Checking worktree status…';
+    }
+    return selectedPullInfo.message ?? 'Pull requires a clean worktree.';
+  }, [busy, isMerging, isPulling, isRootSelection, selectedPullInfo, selectedWorktree]);
+
+  const worktreeStatusLabel = useMemo(() => {
+    if (!selectedWorktree) {
+      return null;
+    }
+    switch (selectedWorktree.status) {
+      case 'pulling':
+        return 'Pulling latest main branch changes…';
+      case 'merging':
+        return 'Merging into the main branch…';
+      case 'error':
+        return selectedWorktree.lastError ?? 'Worktree reported an error.';
+      default:
+        return null;
+    }
+  }, [selectedWorktree]);
+
+  const pullButtonTitle = pullHelperText ?? 'Pull latest main branch changes into this worktree.';
+  const mergeButtonTitle = useMemo(() => {
+    if (isRootSelection) {
+      return 'Merge is unavailable for the main project view.';
+    }
+    if (isPulling) {
+      return 'Wait for the pull operation to finish before merging.';
+    }
+    if (isMerging) {
+      return 'A merge is already in progress.';
+    }
+    return 'Merge this worktree into the main branch.';
+  }, [isMerging, isPulling, isRootSelection]);
 
   const selectedWorktreeProject = useMemo<ProjectDescriptor | null>(() => {
     if (!selectedWorktree) {
@@ -1259,12 +1348,14 @@ export const App: React.FC = () => {
         }
         applyState(initialState);
       } catch (error) {
-        setNotification((error as Error).message);
+        const message = error instanceof Error ? error.message : 'Failed to load application state';
+        setNotification({ kind: 'error', message });
       }
     };
 
     bootstrap().catch((error) => {
-      setNotification((error as Error).message);
+      const message = error instanceof Error ? error.message : 'Failed to bootstrap renderer';
+      setNotification({ kind: 'error', message });
     });
 
     const unsubscribeState = bridge.onStateUpdate((nextState) => {
@@ -1305,18 +1396,23 @@ export const App: React.FC = () => {
   }, [bridge]);
 
   const runAction = useCallback(
-    async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
-      setBusy(true);
+    async <T,>(action: () => Promise<T>, options?: { useGlobalBusy?: boolean }): Promise<T | undefined> => {
+      const useGlobalBusy = options?.useGlobalBusy ?? true;
+      if (useGlobalBusy) {
+        setBusy(true);
+      }
       setNotification(null);
       try {
         return await action();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unexpected error';
-        setNotification(message);
+        setNotification({ kind: 'error', message });
         console.error(error);
         return undefined;
       } finally {
-        setBusy(false);
+        if (useGlobalBusy) {
+          setBusy(false);
+        }
       }
     },
     [setBusy, setNotification]
@@ -1333,7 +1429,7 @@ export const App: React.FC = () => {
       applyThemePreference(currentTheme);
       const message =
         error instanceof Error ? error.message : 'Failed to update theme preference';
-      setNotification(message);
+      setNotification({ kind: 'error', message });
       console.error('[theme] failed to update preference', error);
     }
   }, [api, applyState, applyThemePreference, selectedProjectId, selectedWorktreeId, state.preferences.theme]);
@@ -1433,12 +1529,12 @@ export const App: React.FC = () => {
   const submitCreateWorktree = async () => {
     const trimmed = createName.trim();
     if (!trimmed) {
-      setNotification('Feature name is required');
+      setNotification({ kind: 'error', message: 'Feature name is required' });
       return;
     }
     const targetProjectId = createProjectId ?? effectiveProject?.id ?? null;
     if (!targetProjectId) {
-      setNotification('Select a project before creating a worktree');
+      setNotification({ kind: 'error', message: 'Select a project before creating a worktree' });
       return;
     }
     const descriptor = await runAction(() => api.createWorktree(targetProjectId, trimmed));
@@ -1460,7 +1556,7 @@ export const App: React.FC = () => {
 
   const handleMergeWorktree = async (worktree: WorktreeDescriptor) => {
     if (worktree.id.startsWith('project-root:')) {
-      setNotification('Cannot merge the main project worktree into itself.');
+      setNotification({ kind: 'error', message: 'Cannot merge the main project worktree into itself.' });
       return;
     }
     const confirmed = window.confirm(
@@ -1475,9 +1571,30 @@ export const App: React.FC = () => {
     }
   };
 
+  const handlePullWorktree = async (worktree: WorktreeDescriptor) => {
+    if (worktree.id.startsWith('project-root:')) {
+      setNotification({ kind: 'error', message: 'Pull is not available for the main project worktree.' });
+      return;
+    }
+    const readiness = pullReadiness[worktree.id];
+    if (!readiness?.clean) {
+      const message = readiness?.message ?? 'Pull requires a clean worktree.';
+      setNotification({ kind: 'error', message });
+      return;
+    }
+    const nextState = await runAction(() => api.pullWorktree(worktree.id), { useGlobalBusy: false });
+    if (nextState) {
+      applyState(nextState, worktree.projectId, worktree.id);
+      setNotification({
+        kind: 'success',
+        message: 'Pulled latest main branch changes into the worktree.'
+      });
+    }
+  };
+
   const handleDeleteWorktree = async (worktree: WorktreeDescriptor) => {
     if (worktree.id.startsWith('project-root:')) {
-      setNotification('The main project worktree cannot be deleted.');
+      setNotification({ kind: 'error', message: 'The main project worktree cannot be deleted.' });
       return;
     }
     const confirmed = window.confirm(
@@ -1524,6 +1641,34 @@ export const App: React.FC = () => {
     await runAction(() => api.openWorktreeInFileManager(worktree.id));
   };
 
+  const handleWorktreeStatusChange = useCallback(
+    (payload: { worktreeId: string; clean: boolean; message?: string }) => {
+      setPullReadiness((prev) => {
+        const nextEntry = { clean: payload.clean, message: payload.message };
+        const existing = prev[payload.worktreeId];
+        if (existing && existing.clean === nextEntry.clean && existing.message === nextEntry.message) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [payload.worktreeId]: nextEntry
+        };
+      });
+    },
+    [setPullReadiness]
+  );
+
+  const handlePaneNotification = useCallback(
+    (message: string | null) => {
+      if (!message) {
+        setNotification(null);
+        return;
+      }
+      setNotification({ kind: 'error', message });
+    },
+    [setNotification]
+  );
+
   const handleSidebarPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const divider = event.currentTarget as HTMLElement;
     const container = divider.parentElement;
@@ -1569,27 +1714,30 @@ export const App: React.FC = () => {
       worktree,
       isActive,
       isVisible
-    }: { pane: PaneInstance; worktree: WorktreeDescriptor; isActive: boolean; isVisible: boolean }) => (
-      <div
-        key={pane.id}
-        id={`pane-panel-${pane.id}`}
-        className="codex-pane-wrapper"
-        role="tabpanel"
-        aria-labelledby={`pane-tab-${pane.id}`}
-        aria-hidden={!isVisible}
-        style={{ display: isVisible ? 'flex' : 'none' }}
-      >
-        <OrchestratorPane
-          worktreeId={worktree.id}
-          active={isActive}
-          visible={isVisible}
-          paneId={pane.id}
-          onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
-          onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
-        />
-      </div>
-    ),
-    [markPaneBootstrapped, markPaneUnbootstrapped]
+    }: { pane: PaneInstance; worktree: WorktreeDescriptor; isActive: boolean; isVisible: boolean }) => {
+      const orchestratorWorktreeId = resolveSessionWorktreeId(worktree.id) ?? worktree.id;
+      return (
+        <div
+          key={pane.id}
+          id={`pane-panel-${pane.id}`}
+          className="codex-pane-wrapper"
+          role="tabpanel"
+          aria-labelledby={`pane-tab-${pane.id}`}
+          aria-hidden={!isVisible}
+          style={{ display: isVisible ? 'flex' : 'none' }}
+        >
+          <OrchestratorPane
+            worktreeId={orchestratorWorktreeId}
+            active={isActive}
+            visible={isVisible}
+            paneId={pane.id}
+            onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
+            onUnbootstrapped={() => markPaneUnbootstrapped(worktree.id, pane.id)}
+          />
+        </div>
+      );
+    },
+    [markPaneBootstrapped, markPaneUnbootstrapped, resolveSessionWorktreeId]
   );
 
   const renderCodexPane = useCallback(
@@ -1630,7 +1778,7 @@ export const App: React.FC = () => {
               visible={isVisible}
               paneId={pane.id}
               sessionWorktreeId={sessionWorktreeId}
-              onNotification={setNotification}
+              onNotification={handlePaneNotification}
               onUserInput={(data) => {
                 if (sessionWorktreeId) {
                   handleCodexUserInput(sessionWorktreeId, data);
@@ -1654,7 +1802,7 @@ export const App: React.FC = () => {
               visible={isVisible}
               paneId={pane.id}
               sessionWorktreeId={sessionWorktreeId}
-              onNotification={setNotification}
+              onNotification={handlePaneNotification}
               onUserInput={(data) => {
                 if (sessionWorktreeId) {
                   handleCodexUserInput(sessionWorktreeId, data);
@@ -1681,7 +1829,7 @@ export const App: React.FC = () => {
       markPaneUnbootstrapped,
       codexSessions,
       resolveSessionWorktreeId,
-      setNotification,
+      handlePaneNotification,
       state.preferences.theme
     ]
   );
@@ -1708,7 +1856,7 @@ export const App: React.FC = () => {
           active={isActive}
           visible={isVisible}
           paneId={pane.id}
-          onNotification={setNotification}
+          onNotification={handlePaneNotification}
           onBootstrapped={() => markPaneBootstrapped(worktree.id, pane.id)}
           initialScrollState={terminalScrollStateRef.current[`${worktree.id}:${pane.id}`]}
           onScrollStateChange={(worktreeId, state) => {
@@ -1718,7 +1866,7 @@ export const App: React.FC = () => {
         />
       </div>
     ),
-    [api, markPaneBootstrapped, setNotification, state.preferences.theme]
+    [api, handlePaneNotification, markPaneBootstrapped, state.preferences.theme]
   );
 
   busyStatesRef.current = busyStates;
@@ -1767,7 +1915,7 @@ export const App: React.FC = () => {
     });
 
     tracker.prune(validIds);
-  }, [busySignature, notifyLongRunCompletion, setCodexStatusLines, setNotification, state.projects, state.worktrees]);
+  }, [busySignature, notifyLongRunCompletion, setCodexStatusLines, state.projects, state.worktrees]);
 
   if (state.projects.length === 0) {
     return (
@@ -1778,7 +1926,9 @@ export const App: React.FC = () => {
           <button type="button" onClick={handleAddProject} disabled={busy || !bridge}>
             Add Project
           </button>
-          {notification ? <p className="banner banner-error">{notification}</p> : null}
+          {notification ? (
+            <p className={`banner banner-${notification.kind}`}>{notification.message}</p>
+          ) : null}
         </div>
       </main>
     );
@@ -1862,7 +2012,8 @@ export const App: React.FC = () => {
               const isCollapsed = collapsedProjects.has(project.id);
               const isActiveProject = worktrees.some((worktree) => worktree.id === selectedWorktreeId);
               const rootWorktreeId = `project-root:${project.id}`;
-              const projectBranch = worktrees[0]?.branch ?? 'main';
+              const rootDescriptor = projectRootDescriptors.get(project.id);
+              const projectBranch = rootDescriptor?.branch ?? 'main';
               const isRootActive = selectedWorktreeId === rootWorktreeId;
               const entries = [
                 { kind: 'root' as const, id: rootWorktreeId },
@@ -2035,7 +2186,9 @@ export const App: React.FC = () => {
           onPointerDown={handleSidebarPointerDown}
         />
         <section className="main-pane">
-          {notification ? <div className="banner banner-error">{notification}</div> : null}
+          {notification ? (
+            <div className={`banner banner-${notification.kind}`}>{notification.message}</div>
+          ) : null}
           {selectedWorktree ? (
             <div className="worktree-overview">
               <header className="overview-header">
@@ -2046,6 +2199,11 @@ export const App: React.FC = () => {
                     {' · Path '}
                     <code title={selectedWorktree.path}>{selectedWorktree.path}</code>
                   </p>
+                  {worktreeStatusLabel ? (
+                    <div className={`worktree-status worktree-status--${selectedWorktree.status}`}>
+                      {worktreeStatusLabel}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="overview-actions">
                   <button
@@ -2071,19 +2229,33 @@ export const App: React.FC = () => {
                   </button>
                   <button
                     type="button"
+                    onClick={() => handlePullWorktree(selectedWorktree)}
+                    disabled={pullButtonDisabled}
+                    title={pullButtonTitle}
+                  >
+                    {isPulling ? 'Pulling…' : 'Pull'}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleMergeWorktree(selectedWorktree)}
-                    disabled={busy || !bridge || isRootSelection}
+                    disabled={mergeButtonDisabled}
+                    title={mergeButtonTitle}
                   >
                     Merge
                   </button>
                   <button
                     type="button"
                     onClick={() => handleDeleteWorktree(selectedWorktree)}
-                    disabled={busy || !bridge || isRootSelection}
+                    disabled={busy || !bridge || isRootSelection || isPulling || isMerging}
                   >
                     Delete
                   </button>
                 </div>
+                {pullHelperText && !selectedPullInfo?.clean ? (
+                  <p className="worktree-hint" role="status">
+                    {pullHelperText}
+                  </p>
+                ) : null}
               </header>
               <ResizableColumns
                 left={
@@ -2224,7 +2396,11 @@ export const App: React.FC = () => {
                 }
                 right={
                   <section className="diff-pane">
-                    <GitPanel api={api} worktree={selectedWorktree} />
+                    <GitPanel
+                      api={api}
+                      worktree={selectedWorktree}
+                      onStatusChange={handleWorktreeStatusChange}
+                    />
                 </section>
               }
               storageKey={codexColumnsStorageKey}
@@ -2290,6 +2466,10 @@ const createRendererStub = (): RendererApi => {
       throw new Error('Renderer API unavailable: createWorktree');
     },
     mergeWorktree: async (_worktreeId?: string) => {
+      void _worktreeId;
+      return state;
+    },
+    pullWorktree: async (_worktreeId?: string) => {
       void _worktreeId;
       return state;
     },

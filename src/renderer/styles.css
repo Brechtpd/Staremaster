@@ -687,6 +687,57 @@ button {
   border: 1px solid var(--color-danger-border);
 }
 
+.banner-success {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.banner-info {
+  background: var(--color-status-info-bg);
+  color: var(--color-status-info-text);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.worktree-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: var(--color-status-neutral-bg);
+  color: var(--color-status-neutral-text);
+}
+
+.worktree-status--pulling {
+  background: var(--color-status-info-bg);
+  color: var(--color-status-info-text);
+}
+
+.worktree-status--merging {
+  background: rgba(249, 115, 22, 0.18);
+  color: #c2410c;
+}
+
+[data-theme='dark'] .worktree-status--merging {
+  background: rgba(249, 115, 22, 0.28);
+  color: #fb923c;
+}
+
+.worktree-status--error {
+  background: var(--color-status-error-bg);
+  color: var(--color-status-error-text);
+}
+
+.worktree-hint {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
 .worktree-overview {
   display: flex;
   flex-direction: column;

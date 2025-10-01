@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import type { TaskRecord, TaskStatus, WorkerRole } from '@shared/orchestrator';
+import type { TaskRecord, TaskStatus, WorkerOutcomeDocument, WorkerRole } from '@shared/orchestrator';
 import { TaskStore, type LoadTaskOptions, type TaskEntry } from './task-store';
 
 export interface ClaimedTask {
@@ -135,6 +135,9 @@ export class TaskClaimStore {
       if (updates.summary) {
         payload.summary = updates.summary;
       }
+      if (updates.workerOutcome) {
+        payload.worker_outcome = this.serializeWorkerOutcome(updates.workerOutcome);
+      }
       if (updates.approvalsRequired != null) {
         payload.approvals_required = updates.approvalsRequired;
       }
@@ -174,6 +177,20 @@ export class TaskClaimStore {
 
   private buildLockPath(filePath: string): string {
     return `${filePath}${LOCK_SUFFIX}`;
+  }
+
+  private serializeWorkerOutcome(outcome: WorkerOutcomeDocument): Record<string, unknown> {
+    const payload: Record<string, unknown> = {
+      status: outcome.status,
+      summary: outcome.summary
+    };
+    if (outcome.details) {
+      payload.details = outcome.details;
+    }
+    if (outcome.documentPath) {
+      payload.document_path = outcome.documentPath;
+    }
+    return payload;
   }
 
   private async tryCreateLock(lockPath: string): Promise<boolean> {

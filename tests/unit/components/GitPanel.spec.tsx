@@ -61,6 +61,7 @@ describe('GitPanel', () => {
       addProject: vi.fn(),
       createWorktree: vi.fn(),
       mergeWorktree: vi.fn(),
+      pullWorktree: vi.fn(),
       removeWorktree: vi.fn(),
       removeProject: vi.fn(),
       openWorktreeInVSCode: vi.fn(),
@@ -106,7 +107,10 @@ describe('GitPanel', () => {
     };
 
     const api = createApi(statuses);
-    const { rerender } = render(<GitPanel api={api} worktree={worktreeA} />);
+    const onStatusChange = vi.fn();
+    const { rerender } = render(
+      <GitPanel api={api} worktree={worktreeA} onStatusChange={onStatusChange} />
+    );
 
     await waitFor(() => expect(api.getGitStatus).toHaveBeenCalledWith('wt-a'));
     await waitFor(() =>
@@ -131,7 +135,7 @@ describe('GitPanel', () => {
     sidebar.scrollTop = 48;
     diff.scrollTop = 96;
 
-    rerender(<GitPanel api={api} worktree={worktreeB} />);
+    rerender(<GitPanel api={api} worktree={worktreeB} onStatusChange={onStatusChange} />);
 
     await waitFor(() => expect(api.getGitStatus).toHaveBeenLastCalledWith('wt-b'));
 
@@ -140,7 +144,7 @@ describe('GitPanel', () => {
     sidebarB.scrollTop = 30;
     diffB.scrollTop = 60;
 
-    rerender(<GitPanel api={api} worktree={worktreeA} />);
+    rerender(<GitPanel api={api} worktree={worktreeA} onStatusChange={onStatusChange} />);
 
     await waitFor(() => expect(api.getGitStatus).toHaveBeenLastCalledWith('wt-a'));
 
@@ -161,5 +165,15 @@ describe('GitPanel', () => {
         expect.objectContaining({ worktreeId: 'wt-a', filePath: 'src/beta.ts', staged: false })
       )
     );
+
+    await waitFor(() => expect(onStatusChange).toHaveBeenCalled());
+    const callsForA = onStatusChange.mock.calls
+      .map(([payload]) => payload)
+      .filter((payload) => payload.worktreeId === 'wt-a');
+    expect(callsForA.at(-1)).toMatchObject({
+      worktreeId: 'wt-a',
+      clean: false,
+      message: expect.stringContaining('Pull requires a clean worktree')
+    });
   });
 });

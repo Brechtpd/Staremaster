@@ -11,6 +11,7 @@ import type {
   OrchestratorRunSummary,
   OrchestratorSnapshot,
   TaskRecord,
+  WorkerOutcomeStatus,
   WorkerRole,
   WorkerStatus
 } from '@shared/orchestrator';
@@ -911,9 +912,37 @@ const summarize = (value: string | undefined, limit = 45): string | undefined =>
   return result.length > limit ? `${result.slice(0, limit - 1).trim()}…` : result;
 };
 
+const formatOutcomeStatus = (status: WorkerOutcomeStatus | undefined): string | undefined => {
+  if (!status) {
+    return undefined;
+  }
+  switch (status) {
+    case 'ok':
+      return 'OK';
+    case 'blocked':
+      return 'Blocked';
+    case 'changes_requested':
+    default:
+      return 'Changes requested';
+  }
+};
+
   const nodes: AgentGraphNodeView[] = activeRoles.map((role) => {
     const state = agentStates?.[role] ?? fallbackStateForRole(role);
     const roleTasks = tasks.filter((task) => task.role === role);
+    const outcomeTask = roleTasks.reduce<TaskRecord | null>((latest, candidate) => {
+      if (!candidate.workerOutcome) {
+        return latest;
+      }
+      if (!latest) {
+        return candidate;
+      }
+      return latest.updatedAt >= candidate.updatedAt ? latest : candidate;
+    }, null);
+    const outcome = outcomeTask?.workerOutcome;
+    const outcomeStatus = outcome ? formatOutcomeStatus(outcome.status) : undefined;
+    const outcomeSummary = outcome?.summary ? summarize(outcome.summary, 160) : undefined;
+    const outcomeDetails = outcome?.details ? truncate(outcome.details, 160) : undefined;
     const activeTask =
       roleTasks.find((task) => task.status === 'in_progress') ??
       roleTasks.find((task) => task.status === 'ready' || task.status === 'awaiting_review');
@@ -948,15 +977,23 @@ const summarize = (value: string | undefined, limit = 45): string | undefined =>
       status = 'Needs attention';
     }
 
+    if (state !== 'active') {
+      status = outcomeStatus ?? status;
+      if (outcomeSummary) {
+        statusDetail = outcomeSummary;
+      }
+    }
+
     const summaries = roleTasks
       .filter((task) => task.summary && (task.status === 'done' || task.status === 'approved'))
       .map((task) => task.summary as string);
-    const summary = summarize(summaries[0]);
+    const summaryFallback = summarize(summaries[0]);
+    const summary = outcomeDetails ?? summaryFallback;
 
     const artifacts = roleTasks
       .filter((task) => task.artifacts.length > 0 && (task.status === 'done' || task.status === 'approved'))
       .map((task) => task.artifacts[0]);
-    const artifactPath = artifacts[0];
+    const artifactPath = outcome?.documentPath ?? artifacts[0];
     const conversationPath = roleTasks
       .filter((task) => task.conversationPath)
       .map((task) => task.conversationPath as string)[0];

@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { RoleWorker } from '../../../src/main/orchestrator/role-worker';
@@ -99,7 +99,12 @@ describe('RoleWorker', () => {
           path: 'artifacts/ANALYSIS-success.md',
           contents: '# Generated requirements\n\n- Flow overview\n'
         }
-      ]
+      ],
+      outcome: {
+        status: 'ok',
+        summary: 'Requirements ready for consensus review.',
+        details: 'Document covers scope, risks, and acceptance criteria.'
+      }
     });
 
     const worker = new RoleWorker({
@@ -137,16 +142,90 @@ describe('RoleWorker', () => {
 
     const payload = await loadTaskPayload(entry.filePath);
     expect(payload.status).toBe('done');
-    expect(payload.summary).toContain('Generated requirements');
+    expect(payload.summary).toContain('Requirements ready for consensus review.');
     expect(Array.isArray(payload.artifacts)).toBe(true);
+    const workerOutcome = payload.worker_outcome as { status?: string; summary?: string; details?: string; document_path?: string };
+    expect(workerOutcome).toBeDefined();
+    expect(workerOutcome.status).toBe('ok');
+    expect(workerOutcome.summary).toContain('Requirements ready');
+    const artifactList = Array.isArray(payload.artifacts) ? payload.artifacts.map(String) : [];
+    expect(artifactList.some((item) => item.endsWith('.outcome.json'))).toBe(true);
 
     const artifactPath = path.join(tempDir, String(payload.artifacts?.[0]));
     await expect(stat(artifactPath)).resolves.toMatchObject({});
+    const outcomeArtifact = workerOutcome?.document_path
+      ? path.join(tempDir, workerOutcome.document_path)
+      : artifactList
+          .map((item) => path.join(tempDir, item))
+          .find((candidate) => candidate.endsWith('.outcome.json'));
+    if (outcomeArtifact) {
+      await expect(stat(outcomeArtifact)).resolves.toMatchObject({});
+    }
 
     expect(events.some((kind) => kind === 'worker-log')).toBe(true);
 
     await worker.stop();
     unsubscribe();
+  });
+
+  it.each([
+    { outcomeStatus: 'ok' as const, expectedStatus: 'approved' },
+    { outcomeStatus: 'changes_requested' as const, expectedStatus: 'changes_requested' }
+  ])('applies reviewer outcome status %s', async ({ outcomeStatus, expectedStatus }) => {
+    const reviewDir = path.join(tasksRoot, 'review');
+    await mkdir(reviewDir, { recursive: true });
+    const taskId = `REVIEW-${outcomeStatus.toUpperCase()}`;
+    const taskPath = path.join(reviewDir, `${taskId}.json`);
+    const now = new Date().toISOString();
+    const reviewPayload = {
+      id: taskId,
+      epic: RUN_ID,
+      kind: 'review',
+      role: 'reviewer',
+      title: 'Reviewer validation',
+      prompt: 'Review implementer output for correctness.',
+      status: 'ready',
+      cwd: '.',
+      depends_on: [],
+      approvals_required: 1,
+      approvals: [],
+      artifacts: [],
+      created_at: now,
+      updated_at: now
+    } as Record<string, unknown>;
+    await writeFile(taskPath, `${JSON.stringify(reviewPayload, null, 2)}\n`, 'utf8');
+
+    const executor = new ResolvingExecutor({
+      summary: 'Reviewer outcome summary',
+      artifacts: [],
+      outcome: {
+        status: outcomeStatus,
+        summary: outcomeStatus === 'ok' ? 'All checks passed.' : 'Further changes required.',
+        details: 'Structured reviewer output.'
+      }
+    });
+
+    const worker = new RoleWorker({
+      role: 'reviewer',
+      bus,
+      claimStore,
+      executor,
+      context: context()
+    });
+
+    worker.start();
+
+    await waitFor(async () => {
+      const payload = await loadTaskPayload(taskPath);
+      return payload.status === expectedStatus;
+    });
+
+    const payload = await loadTaskPayload(taskPath);
+    const workerOutcome = payload.worker_outcome as { status?: string } | undefined;
+    expect(workerOutcome?.status).toBe(outcomeStatus);
+    expect(payload.status).toBe(expectedStatus);
+
+    await worker.stop();
   });
 
   it('marks tasks blocked when executor throws', async () => {

@@ -2,16 +2,18 @@ import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import simpleGit, { SimpleGit } from 'simple-git';
+import simpleGit, { SimpleGit, StatusResult } from 'simple-git';
 import { spawn } from 'node:child_process';
 import {
   WorktreeDescriptor,
   AppState,
   CodexStatus,
   ProjectDescriptor,
-  ThemePreference
+  ThemePreference,
+  WorktreeOperationLogEntry
 } from '../../shared/ipc';
 import { ProjectStore } from './ProjectStore';
+import { WorktreeAuditLog } from './WorktreeAuditLog';
 
 export interface WorktreeEvents {
   'worktree-updated': (descriptor: WorktreeDescriptor) => void;
@@ -35,7 +37,7 @@ const FEATURE_NAME_REGEX = /[^a-z0-9-_]/gi;
 export class WorktreeService extends EventEmitter {
   private readonly projects = new Map<string, ProjectContext>();
 
-  constructor(private readonly store: ProjectStore) {
+  constructor(private readonly store: ProjectStore, private readonly auditLog: WorktreeAuditLog) {
     super();
   }
 
@@ -334,6 +336,93 @@ export class WorktreeService extends EventEmitter {
     return nextState;
   }
 
+  async pullWorktree(worktreeId: string): Promise<AppState> {
+    if (worktreeId.startsWith('project-root:')) {
+      throw new Error('Select a specific worktree before pulling changes from the main branch.');
+    }
+
+    const state = this.store.getState();
+    const descriptor = state.worktrees.find((item) => item.id === worktreeId);
+
+    if (!descriptor) {
+      throw new Error(`Unknown worktree ${worktreeId}`);
+    }
+
+    if (descriptor.status === 'pulling' || descriptor.status === 'merging' || descriptor.status === 'removing') {
+      throw new Error('This worktree is busy with another operation. Try again once it returns to ready state.');
+    }
+
+    const context = await this.ensureProjectContextFromStore(descriptor.projectId);
+    const worktreeGit = this.createWorktreeGit(descriptor.path);
+    const actor = this.resolveActor();
+    const logBase: Omit<WorktreeOperationLogEntry, 'outcome' | 'timestamp'> = {
+      worktreeId: descriptor.id,
+      actor,
+      action: 'pull'
+    };
+
+    const status = await worktreeGit.status();
+    if (!isCleanStatus(status)) {
+      const detail = describeDirtyStatus(status);
+      await this.auditLog.append({ ...logBase, timestamp: new Date().toISOString(), outcome: 'blocked', detail });
+      descriptor.status = 'ready';
+      descriptor.lastError = detail;
+      await this.store.upsertWorktree(descriptor);
+      this.emit('worktree-updated', descriptor);
+      throw new Error(detail);
+    }
+
+    const primaryBranch = await this.resolvePrimaryBranch(context.git);
+    if (!primaryBranch) {
+      const detail = 'Unable to determine the main branch to pull from.';
+      await this.auditLog.append({ ...logBase, timestamp: new Date().toISOString(), outcome: 'blocked', detail });
+      descriptor.lastError = detail;
+      await this.store.upsertWorktree(descriptor);
+      this.emit('worktree-updated', descriptor);
+      throw new Error(detail);
+    }
+
+    descriptor.status = 'pulling';
+    descriptor.lastError = undefined;
+    await this.store.upsertWorktree(descriptor);
+    this.emit('worktree-updated', descriptor);
+
+    const remoteBranch = `origin/${primaryBranch}`;
+    let failureMessage: string | undefined;
+
+    try {
+      await worktreeGit.fetch('origin', primaryBranch);
+      await worktreeGit.raw(['merge', '--no-edit', remoteBranch]);
+      await this.auditLog.append({
+        ...logBase,
+        timestamp: new Date().toISOString(),
+        outcome: 'success',
+        detail: `Merged ${remoteBranch}`
+      });
+    } catch (error) {
+      failureMessage = (error as Error).message;
+      await this.auditLog.append({
+        ...logBase,
+        timestamp: new Date().toISOString(),
+        outcome: 'error',
+        detail: failureMessage
+      });
+      await this.abortMerge(worktreeGit);
+      descriptor.lastError = failureMessage;
+      throw error;
+    } finally {
+      descriptor.status = 'ready';
+      descriptor.lastError = failureMessage;
+      await this.store.upsertWorktree(descriptor);
+      this.emit('worktree-updated', descriptor);
+    }
+
+    await this.refreshProjectWorktrees(descriptor.projectId);
+    const nextState = this.store.getState();
+    this.emit('state-changed', nextState);
+    return nextState;
+  }
+
   async updateCodexStatus(worktreeId: string, status: CodexStatus, error?: string): Promise<void> {
     await this.store.patchWorktree(worktreeId, {
       codexStatus: status,
@@ -477,7 +566,59 @@ export class WorktreeService extends EventEmitter {
       return null;
     }
   }
+
+  private createWorktreeGit(worktreePath: string): SimpleGit {
+    return simpleGit(worktreePath);
+  }
+
+  private resolveActor(): string {
+    return process.env.USER ?? process.env.USERNAME ?? 'unknown';
+  }
+
+  private async abortMerge(git: SimpleGit): Promise<void> {
+    try {
+      await git.raw(['merge', '--abort']);
+    } catch (error) {
+      if ((error as Error).message.includes('No merge to abort')) {
+        return;
+      }
+      console.warn('[worktree] merge abort failed', error);
+    }
+  }
 }
+
+const isCleanStatus = (status: StatusResult): boolean => {
+  return status.files.length === 0 && status.not_added.length === 0 && status.conflicted.length === 0;
+};
+
+const describeDirtyStatus = (status: StatusResult): string => {
+  const stagedCount = status.files.filter((file) => file.index !== ' ').length;
+    const unstagedCount = status.files.filter((file) => {
+      const workingTreeStatus = (file as unknown as { workingTree?: string; working_tree?: string }).workingTree ??
+        (file as unknown as { working_tree?: string }).working_tree ??
+        ' ';
+      return workingTreeStatus !== ' ';
+    }).length;
+  const untrackedCount = status.not_added.length;
+  const conflictedCount = status.conflicted.length;
+
+  const parts: string[] = [];
+  if (stagedCount > 0) {
+    parts.push(`${stagedCount} staged`);
+  }
+  if (unstagedCount > 0) {
+    parts.push(`${unstagedCount} unstaged`);
+  }
+  if (untrackedCount > 0) {
+    parts.push(`${untrackedCount} untracked`);
+  }
+  if (conflictedCount > 0) {
+    parts.push(`${conflictedCount} conflicted`);
+  }
+
+  const detail = parts.length > 0 ? parts.join(', ') : 'pending changes';
+  return `Pull requires a clean worktree. Resolve ${detail} before trying again.`;
+};
 
 const sanitizeFeatureName = (input: string): string => {
   return input

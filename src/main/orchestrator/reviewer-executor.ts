@@ -13,9 +13,6 @@ export class ReviewerExecutor implements CodexExecutor {
 
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
     const result = await this.delegate.execute(context);
-    return {
-      summary: result.summary,
-      artifacts: result.artifacts
-    };
+    return { ...result };
   }
 }

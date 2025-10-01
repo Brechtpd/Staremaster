@@ -15,6 +15,7 @@ const makeTask = (overrides: Partial<TaskRecord>): TaskRecord => ({
   approvalsRequired: overrides.approvalsRequired ?? 0,
   approvals: overrides.approvals ?? [],
   artifacts: overrides.artifacts ?? [],
+  workerOutcome: overrides.workerOutcome,
   createdAt: overrides.createdAt ?? new Date().toISOString(),
   updatedAt: overrides.updatedAt ?? new Date().toISOString()
 });
@@ -58,5 +59,30 @@ describe('deriveAgentGraphView', () => {
       expect(edge.status).toBe('active');
     }
   });
-});
 
+  it('surfaces worker outcome details in node summaries', () => {
+    const outcome = {
+      status: 'changes_requested' as const,
+      summary: 'Needs more tests.',
+      details: 'Add regression coverage for edge cases.',
+      documentPath: 'artifacts/REVIEW-1.outcome.json'
+    };
+    const tasks = [
+      makeTask({
+        id: 'review-task',
+        role: 'reviewer',
+        kind: 'review',
+        status: 'changes_requested',
+        summary: outcome.summary,
+        artifacts: [outcome.documentPath],
+        workerOutcome: outcome
+      })
+    ];
+    const { nodes } = deriveAgentGraphView({ tasks, workers: [], agentStates: undefined });
+    const reviewerNode = nodes.find((node) => node.id === 'reviewer');
+    expect(reviewerNode?.status).toBe('Changes requested');
+    expect(reviewerNode?.statusDetail).toContain('Needs more tests');
+    expect(reviewerNode?.summary).toContain('Add regression coverage');
+    expect(reviewerNode?.artifactPath).toBe(outcome.documentPath);
+  });
+});

@@ -45,5 +45,7 @@ describe('TesterExecutor', () => {
     const result = await executor.execute(createContext(tempDir));
     expect(result.summary).toContain('Test command succeeded');
     expect(result.artifacts[0].contents.trim()).toBe('running-tests');
+    expect(result.outcome.status).toBe('ok');
+    expect(result.outcome.summary).toContain('Test command succeeded');
   });
 });

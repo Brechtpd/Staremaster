@@ -46,9 +46,15 @@ describe('TaskClaimStore', () => {
     expect(claim).not.toBeNull();
     if (!claim) return;
 
+    const outcome = {
+      status: 'ok' as const,
+      summary: 'Drafted initial requirements',
+      details: 'Outlined scope and acceptance criteria.'
+    };
     const done = await claimStore.markDone(claim, {
       summary: 'Drafted initial requirements',
-      artifacts: ['codex-runs/run-test/artifacts/ANALYSIS-run-test-A.md']
+      artifacts: ['codex-runs/run-test/artifacts/ANALYSIS-run-test-A.md'],
+      workerOutcome: outcome
     });
 
     expect(done).not.toBeNull();
@@ -59,6 +65,9 @@ describe('TaskClaimStore', () => {
     expect(payload.status).toBe('done');
     expect(payload.summary).toContain('Drafted initial requirements');
     expect(Array.isArray(payload.artifacts)).toBe(true);
+    const storedOutcome = payload.worker_outcome as { status?: string; summary?: string } | undefined;
+    expect(storedOutcome?.status).toBe('ok');
+    expect(storedOutcome?.summary).toContain('Drafted initial requirements');
   });
 
   it('marks tasks as blocked on failure and releases locks', async () => {

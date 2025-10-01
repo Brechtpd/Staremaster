@@ -50,6 +50,11 @@ export class TesterExecutor implements CodexExecutor {
           return;
         }
         const summary = `Test command succeeded: ${command}`;
+        const outcome = {
+          status: 'ok' as const,
+          summary,
+          details: 'Tester confirmed the suite passed. Refer to the attached log artifact for details.'
+        };
         resolve({
           summary,
           artifacts: [
@@ -57,7 +62,8 @@ export class TesterExecutor implements CodexExecutor {
               path: `artifacts/${context.task.id}.log`,
               contents: stdout || 'Tests produced no output.'
             }
-          ]
+          ],
+          outcome
         });
       });
     });
